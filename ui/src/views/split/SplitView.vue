@@ -80,6 +80,8 @@ type EmbedStateMessage = {
   searchPanelVisible?: boolean;
   stickyNoteVisible?: boolean;
   clueBoxVisible?: boolean;
+  clueBoardEnabled?: boolean;
+  battleSummaryEnabled?: boolean;
   characterCardVisible?: boolean;
   characterCardEnabled?: boolean;
   characterCardReason?: string;
@@ -151,6 +153,8 @@ interface PaneState {
   searchPanelVisible: boolean;
   stickyNoteVisible: boolean;
   clueBoxVisible: boolean;
+  clueBoardEnabled: boolean;
+  battleSummaryEnabled: boolean;
   characterCardVisible: boolean;
   characterCardEnabled: boolean;
   characterCardReason: string;
@@ -299,6 +303,8 @@ const paneA = reactive<PaneState>({
   searchPanelVisible: false,
   stickyNoteVisible: false,
   clueBoxVisible: false,
+  clueBoardEnabled: false,
+  battleSummaryEnabled: false,
   characterCardVisible: false,
   characterCardEnabled: false,
   characterCardReason: characterApiUnsupportedText,
@@ -335,6 +341,8 @@ const paneB = reactive<PaneState>({
   searchPanelVisible: false,
   stickyNoteVisible: false,
   clueBoxVisible: false,
+  clueBoardEnabled: false,
+  battleSummaryEnabled: false,
   characterCardVisible: false,
   characterCardEnabled: false,
   characterCardReason: characterApiUnsupportedText,
@@ -671,6 +679,8 @@ const handleEmbedMessage = (event: MessageEvent) => {
       if (typeof msg.characterCardVisible === 'boolean') target.characterCardVisible = msg.characterCardVisible;
     }
     if (typeof msg.characterCardEnabled === 'boolean') target.characterCardEnabled = msg.characterCardEnabled;
+    if (typeof msg.clueBoardEnabled === 'boolean') target.clueBoardEnabled = msg.clueBoardEnabled;
+    if (typeof msg.battleSummaryEnabled === 'boolean') target.battleSummaryEnabled = msg.battleSummaryEnabled;
     if (typeof msg.characterCardReason === 'string') target.characterCardReason = msg.characterCardReason;
     if (!target.characterCardEnabled) {
       target.characterCardVisible = false;
@@ -1210,6 +1220,8 @@ watch(
               :sticky-note-active="activePaneStickyNoteActive"
               :clue-box-enabled="activePaneHasChannel"
               :clue-box-active="activePaneClueBoxActive"
+              :clue-board-enabled="activePaneHasChannel && activePane.clueBoardEnabled"
+              :battle-summary-enabled="activePaneHasChannel && activePane.battleSummaryEnabled"
               :dice3d-enabled="activePaneHasChannel"
               :dice3d-active="false"
               :character-card-enabled="activePaneHasChannel"
@@ -1230,6 +1242,8 @@ watch(
               @open-character-remark="openPanel('character-remark')"
               @toggle-sticky-note="toggleStickyNoteForActivePane"
               @toggle-clue-box="toggleClueBoxForActivePane"
+              @open-clue-board="openPanel('clue-board')"
+              @open-battle-summary="openPanel('battle-summary')"
               @open-dice3d="openPanel('dice3d')"
               @open-character-card="openCharacterCardForActivePane"
             />

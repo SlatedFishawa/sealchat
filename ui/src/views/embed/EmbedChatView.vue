@@ -9,6 +9,7 @@ import { usePushNotificationStore } from '@/stores/pushNotification';
 import { useIFormStore } from '@/stores/iform';
 import { useAudioStudioStore } from '@/stores/audioStudio';
 import { useWorldClueStore } from '@/stores/worldClue';
+import { useAIStore } from '@/stores/ai';
 import AudioDrawer from '@/components/audio/AudioDrawer.vue';
 import ChatHeader from '@/views/components/header.vue';
 import ChatSidebar from '@/views/components/sidebar.vue';
@@ -98,6 +99,9 @@ const iFormStore = useIFormStore();
 iFormStore.bootstrap();
 const audioStudio = useAudioStudioStore();
 const worldClue = useWorldClueStore();
+const aiStore = useAIStore();
+const clueBoardEnabled = computed(() => !chat.observerMode && !!chat.currentWorldId && !!chat.curChannel?.id);
+const battleSummaryEnabled = computed(() => !!chat.curChannel?.id && aiStore.isFeatureEnabled('battle_summary'));
 
 const paneId = computed(() => (typeof route.query.paneId === 'string' ? route.query.paneId : '') as PaneId | '');
 const initialWorldId = computed(() => (typeof route.query.worldId === 'string' ? route.query.worldId : ''));
@@ -758,6 +762,8 @@ const postState = (type: 'sealchat.embed.ready' | 'sealchat.embed.state') => {
     searchPanelVisible: !!channelSearch.panelVisible,
     stickyNoteVisible: !!chatViewRef.value?.getStickyNoteVisible?.(),
     clueBoxVisible: !!chatViewRef.value?.getClueBoxVisible?.(),
+    clueBoardEnabled: clueBoardEnabled.value,
+    battleSummaryEnabled: battleSummaryEnabled.value,
     characterCardVisible: !!chatViewRef.value?.getCharacterCardVisible?.(),
     characterCardEnabled: !!channelId && chat.curChannel?.characterApiEnabled !== false,
     characterCardReason: typeof chat.curChannel?.characterApiReason === 'string' ? chat.curChannel.characterApiReason : '',
@@ -1094,6 +1100,14 @@ watch(
 
 watch(
   () => [chat.curChannel?.id, chat.curChannel?.characterApiEnabled, chat.curChannel?.characterApiReason] as const,
+  () => {
+    if (restoringSession.value) return;
+    postStateThrottled('sealchat.embed.state');
+  },
+);
+
+watch(
+  [clueBoardEnabled, battleSummaryEnabled],
   () => {
     if (restoringSession.value) return;
     postStateThrottled('sealchat.embed.state');

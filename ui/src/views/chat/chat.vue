@@ -640,7 +640,9 @@ type ExternalPanelKey =
   | 'world-announcement'
   | 'character-card'
   | 'sticky-note'
-  | 'clue-box';
+  | 'clue-box'
+  | 'clue-board'
+  | 'battle-summary';
 
 const openPanelForShell = (panel: ExternalPanelKey) => {
   switch (panel) {
@@ -695,6 +697,14 @@ const openPanelForShell = (panel: ExternalPanelKey) => {
       return;
     case 'clue-box':
       setClueBoxVisible(true);
+      return;
+    case 'clue-board':
+      if (chat.observerMode || !chat.currentWorldId || !chat.curChannel?.id) return;
+      openWorldClueBoard();
+      return;
+    case 'battle-summary':
+      if (!chat.curChannel?.id || !aiStore.isFeatureEnabled('battle_summary')) return;
+      openBattleSummary();
       return;
     default:
       return;
