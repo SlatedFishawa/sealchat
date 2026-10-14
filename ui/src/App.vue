@@ -2737,7 +2737,7 @@ nav a:first-of-type {
   }
   .sc-app-shell { background: var(--sc-glass-page) !important; }
 
-  @include ordinary-glass-surface('.sc-header, .sc-sidebar, .chat-root-container > .chat:not(.chat--has-background), .chat-root-container > .edit-area, .action-ribbon, .world-lobby-root, .clue-box, .chat-search-panel, .dice-tray-floating-window, .sc-glass-settings-panel, .n-modal, .n-dialog, .n-drawer, .n-popover, .n-dropdown-menu, .n-base-select-menu') {
+  @include ordinary-glass-surface('.sc-header, .sc-sidebar, .chat-root-container > .chat:not(.chat--has-background), .chat-root-container > .edit-area, .action-ribbon, .world-lobby-root, .world-console-panel, .clue-box, .chat-search-panel, .dice-tray-floating-window, .sc-glass-settings-panel, .n-modal, .n-dialog, .n-drawer, .n-popover, .n-dropdown-menu, .n-base-select-menu') {
     background: var(--sc-glass-surface) !important;
     border-color: var(--sc-glass-border) !important;
     box-shadow: var(--sc-glass-shadow);
@@ -2823,7 +2823,7 @@ nav a:first-of-type {
   }
 
   /* Inner library wrappers share their parent's material, without extra blur layers. */
-  @include ordinary-glass-surface('.n-modal .n-card, .n-card__content, .n-card-header, .n-modal .n-card-header__main, .n-card__action, .n-dialog__content, .n-dialog__title, .n-drawer-content, .n-popover__content, .n-popover-arrow-wrapper, .n-dropdown-option, .n-base-select-option, .n-base-select-group-header, .v-binder-follower-content, .sc-sidebar .n-tabs, .sc-sidebar .n-tabs-nav, .sc-sidebar .n-tabs-wrapper, .sc-sidebar .n-tabs-rail, .sc-sidebar .n-tab-pane') {
+  @include ordinary-glass-surface('.n-modal .n-card, .n-card__content, .n-card-header, .n-modal .n-card-header__main, .n-card__action, .n-dialog__content, .n-dialog__title, .n-drawer-content, .n-popover__content, .n-popover-arrow-wrapper, .n-dropdown-option, .n-base-select-option, .n-base-select-group-header, .v-binder-follower-content, .sc-sidebar .n-tabs, .sc-sidebar .n-tabs-nav, .sc-sidebar .n-tabs-wrapper, .sc-sidebar .n-tabs-rail, .sc-sidebar .n-tab-pane, .world-console-panel .n-tabs, .world-console-panel .n-tabs-nav, .world-console-panel .n-tabs-wrapper, .world-console-panel .n-tabs-tab-wrapper') {
     background-color: transparent !important;
   }
   @include ordinary-glass-surface('.n-dropdown-option:hover, .n-dropdown-option--pending, .n-base-select-option:hover, .n-base-select-option--pending') {

@@ -2303,6 +2303,7 @@ export const useChatStore = defineStore({
       characterCardBadgeTemplate?: string;
       cursorTheme?: import('@/services/cursor/cursorTypes').CursorThemeConfig;
       stickyNoteDefaultAppearance?: unknown;
+      coverAttachmentId?: string;
     }) {
       const resp = await api.patch(`/api/v1/worlds/${worldId}`, payload);
       if (resp.data?.world) {

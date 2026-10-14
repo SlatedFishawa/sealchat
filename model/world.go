@@ -33,6 +33,7 @@ type WorldModel struct {
 	Name                                  string     `json:"name" gorm:"size:100;not null"`
 	Description                           string     `json:"description" gorm:"size:500"`
 	Avatar                                string     `json:"avatar" gorm:"size:255"`
+	CoverAttachmentID                     string     `json:"coverAttachmentId" gorm:"size:100"`                          // 世界封面图片附件引用（id:xxx），空值表示无封面
 	Visibility                            string     `json:"visibility" gorm:"size:24;default:public;index"`             // public/private/unlisted
 	ObserverSlug                          *string    `json:"-" gorm:"size:64;uniqueIndex"`                               // 专属 OB 旁观 slug，空值使用 NULL 以避免唯一索引冲突
 	ObserverEnabled                       bool       `json:"-" gorm:"default:false"`                                     // 专属 OB 旁观链接启用状态

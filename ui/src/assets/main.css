@@ -1,5 +1,6 @@
 @import './base.css';
 @import './vendor/typo-content.css';
+@import './manage-surface.css';
 
 /* Solid theme semantics stay intact; only opted-in surfaces consume these tokens. */
 :root[data-sc-glass-background='true'] {

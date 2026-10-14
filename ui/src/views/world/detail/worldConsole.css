@@ -1,0 +1,192 @@
+/*
+ * Shared building blocks for the modern world detail console (views/world/detail).
+ * Colors come only from global semantic tokens (--sc-*), so day/night palettes and custom
+ * themes apply automatically. Glass material is opted in from App.vue's ordinary-glass-surface
+ * list via `.world-console-panel`; do not add local blur/translucency here.
+ */
+
+.world-console-panel {
+  min-width: 0;
+  background: var(--sc-bg-surface);
+  border: 1px solid var(--sc-border-mute);
+  border-radius: 10px;
+  color: var(--sc-text-primary);
+}
+
+.world-console-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 20px 4px;
+}
+
+.world-console-section-title {
+  margin: 0;
+  color: var(--sc-text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.world-console-section-desc {
+  margin: 0;
+  color: var(--sc-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.world-console-list {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 8px 8px;
+}
+
+.world-console-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+}
+
+.world-console-row + .world-console-row {
+  border-top: 1px solid var(--sc-border-mute);
+}
+
+.world-console-row__icon {
+  flex: none;
+  color: var(--sc-text-secondary);
+}
+
+.world-console-row__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.world-console-row__title {
+  color: var(--sc-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.world-console-row__desc {
+  margin-top: 2px;
+  color: var(--sc-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.world-console-row__hint {
+  flex: none;
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+}
+
+.world-console-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.world-console-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--sc-text-secondary);
+}
+
+.world-console-card__block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.world-console-card__label,
+.world-console-muted {
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+}
+
+.world-console-card__foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.world-console-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.world-console-facts > div {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--sc-text-primary) 4%, transparent);
+}
+
+.world-console-facts dt {
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+}
+
+.world-console-facts dd {
+  margin: 2px 0 0;
+  color: var(--sc-text-primary);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.world-console-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.world-console-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.world-console-status-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+}
+
+@media (max-width: 640px) {
+  .world-console-section-head {
+    padding: 12px 14px 2px;
+  }
+
+  .world-console-list {
+    padding: 2px 4px 6px;
+  }
+
+  .world-console-row {
+    flex-wrap: wrap;
+    padding: 10px;
+  }
+
+  .world-console-row__text {
+    flex-basis: calc(100% - 40px);
+  }
+
+  .world-console-row > .n-button,
+  .world-console-row__hint {
+    margin-left: 32px;
+  }
+
+  .world-console-card {
+    padding: 14px;
+  }
+}

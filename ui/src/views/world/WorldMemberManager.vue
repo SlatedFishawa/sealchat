@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref, watch } from 'vue';
 import { useChatStore } from '@/stores/chat';
-import { useDialog, useMessage, NButton, NTag, NSpace } from 'naive-ui';
+import { useDialog, useMessage, NButton, NDropdown, NTag, NSpace } from 'naive-ui';
 import dayjs from 'dayjs';
 
 const props = defineProps<{
@@ -42,76 +42,72 @@ const roleLabel = (role: string) => {
   }
 };
 
+const roleChangeOptions = (row: MemberRow) => [
+  { label: '设为管理员', key: 'admin', disabled: row.role === 'admin' },
+  { label: '设为成员', key: 'member', disabled: row.role === 'member' },
+  { label: '设为旁观者', key: 'spectator', disabled: row.role === 'spectator' },
+];
+
 const columns = computed(() => [
   {
     title: '用户',
     key: 'user',
+    minWidth: 180,
     render(row: MemberRow) {
-      return h('div', { class: 'member-user-cell' }, [
-        h('div', { class: 'member-nick' }, row.nickname || row.username || '（未设置昵称）'),
-        h('div', { class: 'member-id' }, row.userId),
+      return h('div', { class: 'world-member-manager__user' }, [
+        h('div', { class: 'world-member-manager__nick' }, row.nickname || row.username || '（未设置昵称）'),
+        h('div', { class: 'world-member-manager__id' }, row.userId),
       ]);
     },
   },
   {
-    title: '角色',
+    title: '身份',
     key: 'role',
+    width: 96,
     render(row: MemberRow) {
       const type = row.role === 'owner' ? 'warning' : row.role === 'admin' ? 'info' : 'default';
-      return h(NTag, { type, size: 'small' }, { default: () => roleLabel(row.role) });
+      return h(NTag, { type, size: 'small', bordered: false }, { default: () => roleLabel(row.role) });
     },
   },
   {
     title: '加入时间',
     key: 'joinedAt',
+    width: 150,
     render(row: MemberRow) {
-      return dayjs(row.joinedAt).format('YYYY-MM-DD HH:mm');
+      return h('span', { class: 'world-member-manager__joined' }, dayjs(row.joinedAt).format('YYYY-MM-DD HH:mm'));
     },
   },
   {
     title: '操作',
     key: 'actions',
+    width: 168,
     render(row: MemberRow) {
       const disabled = row.role === 'owner';
       return h(
         NSpace,
-        { size: 'small' },
+        { size: 'small', wrap: false },
         () => [
           h(
-            NButton,
+            NDropdown,
             {
-              size: 'tiny',
-              tertiary: true,
-              disabled: disabled || row.role === 'admin',
-              onClick: () => handleRoleChange(row, 'admin'),
+              trigger: 'click',
+              disabled,
+              options: roleChangeOptions(row),
+              onSelect: (key: string) => handleRoleChange(row, key),
             },
-            { default: () => '设为管理员' },
+            {
+              default: () => h(
+                NButton,
+                { size: 'tiny', secondary: true, disabled },
+                { default: () => '更改身份' },
+              ),
+            },
           ),
           h(
             NButton,
             {
               size: 'tiny',
-              tertiary: true,
-              disabled: disabled || row.role === 'member',
-              onClick: () => handleRoleChange(row, 'member'),
-            },
-            { default: () => '设为成员' },
-          ),
-          h(
-            NButton,
-            {
-              size: 'tiny',
-              tertiary: true,
-              disabled: disabled || row.role === 'spectator',
-              onClick: () => handleRoleChange(row, 'spectator'),
-            },
-            { default: () => '设为旁观者' },
-          ),
-          h(
-            NButton,
-            {
-              size: 'tiny',
-              tertiary: true,
+              quaternary: true,
               type: 'error',
               disabled,
               onClick: () => handleRemove(row),
@@ -219,32 +215,39 @@ onMounted(() => {
 <template>
   <n-modal
     :show="visible"
-    preset="dialog"
+    preset="card"
     title="成员管理"
-    style="max-width: 760px"
+    class="sc-fluid-modal sc-manage-modal"
+    :bordered="false"
     @update:show="val => visible = val"
   >
-    <div class="member-manager-body">
-      <div class="member-toolbar">
+    <div class="sc-manage-modal__body">
+      <div class="sc-manage-toolbar">
         <n-input
           v-model:value="keyword"
           placeholder="搜索用户ID / 昵称"
-          size="small"
           clearable
           @keyup.enter="handleSearch"
           @clear="handleSearch"
         />
-        <n-button size="small" @click="handleSearch">搜索</n-button>
+        <n-button secondary @click="handleSearch">搜索</n-button>
+        <span class="sc-manage-toolbar__meta">共 {{ pagination.total }} 人</span>
       </div>
-      <n-data-table
-        :columns="columns"
-        :data="rows"
-        :loading="loading"
-        :bordered="false"
-        :pagination="false"
-        size="small"
-      />
-      <div class="member-pagination">
+      <div class="sc-modal-table-scroll">
+        <n-data-table
+          :columns="columns"
+          :data="rows"
+          :loading="loading"
+          :bordered="false"
+          :pagination="false"
+          :row-key="(row: MemberRow) => row.id"
+          :scroll-x="620"
+          size="small"
+        />
+      </div>
+    </div>
+    <template #footer>
+      <div class="sc-manage-actions">
         <n-pagination
           :page="pagination.page"
           :page-size="pagination.pageSize"
@@ -256,37 +259,28 @@ onMounted(() => {
           @update:page-size="handlePageSizeChange"
         />
       </div>
-    </div>
+    </template>
   </n-modal>
 </template>
 
-<style scoped>
-.member-manager-body {
-  max-height: 70vh;
-  overflow: auto;
-  padding-right: 4px;
+<!-- Unscoped: these cells are created with h() inside n-data-table, where scoped attrs do not apply. -->
+<style>
+.world-member-manager__user {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  min-width: 0;
 }
-.member-toolbar {
-  display: flex;
-  gap: 8px;
-}
-.member-pagination {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 4px;
-}
-.member-user-cell {
-  display: flex;
-  flex-direction: column;
-}
-.member-nick {
+.world-member-manager__nick {
   font-weight: 600;
+  color: var(--sc-text-primary);
 }
-.member-id {
+.world-member-manager__id {
   font-size: 12px;
-  color: #94a3b8;
+  font-family: var(--sc-code-font);
+  color: var(--sc-text-secondary);
+}
+.world-member-manager__joined {
+  white-space: nowrap;
+  color: var(--sc-text-secondary);
 }
 </style>
