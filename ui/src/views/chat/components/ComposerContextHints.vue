@@ -113,9 +113,10 @@ const emit = defineEmits<{
   overflow-y: hidden;
   scrollbar-width: none;
   overscroll-behavior-x: contain;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid var(--sc-border-mute, rgba(148, 163, 184, 0.22));
   border-radius: 10px;
-  background: var(--card-color, rgba(255, 255, 255, 0.85));
+  color: var(--sc-text-primary, #1f2937);
+  background: color-mix(in srgb, var(--sc-bg-elevated, #ffffff) 88%, transparent);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
@@ -155,7 +156,7 @@ const emit = defineEmits<{
 
 .composer-context-hints__group + .composer-context-hints__group {
   padding-left: 6px;
-  border-left: 1px solid rgba(148, 163, 184, 0.25);
+  border-left: 1px solid var(--sc-border-mute, rgba(148, 163, 184, 0.25));
 }
 
 .composer-context-hints__item {
@@ -178,8 +179,8 @@ const emit = defineEmits<{
 .composer-context-hints__item:hover,
 .composer-context-hints__item:focus-visible,
 .composer-context-hints__item.is-active {
-  border-color: rgba(59, 130, 246, 0.45);
-  background: rgba(59, 130, 246, 0.08);
+  border-color: color-mix(in srgb, var(--sc-primary-color, #3b82f6) 45%, transparent);
+  background: color-mix(in srgb, var(--sc-primary-color, #3b82f6) 10%, transparent);
   outline: none;
 }
 
