@@ -119,6 +119,21 @@ if (localStorage.getItem(legacyTypingPreviewKey) !== null) {
 }
 const typingPreviewActive = ref(false);
 const typingPreviewList = ref<TypingPreviewItem[]>([]);
+const typingPreviewSilentGraceMs = 2000;
+const pendingTypingPreviewRemovals = new Map<string, ReturnType<typeof setTimeout>>();
+const typingPreviewRemovalKey = (userId: string, mode: 'typing' | 'editing') => `${userId}-${mode}`;
+const cancelTypingPreviewRemoval = (userId: string, mode: 'typing' | 'editing') => {
+  const key = typingPreviewRemovalKey(userId, mode);
+  const timer = pendingTypingPreviewRemovals.get(key);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    pendingTypingPreviewRemovals.delete(key);
+  }
+};
+const cancelAllTypingPreviewRemovals = () => {
+  pendingTypingPreviewRemovals.forEach((timer) => clearTimeout(timer));
+  pendingTypingPreviewRemovals.clear();
+};
 let typingPreviewOrderSeq = Date.now();
 const previewOrderMin = 1e-6;
 const selfPreviewOrderKey = ref<number>(Number.MAX_SAFE_INTEGER);
@@ -836,7 +851,21 @@ const removeTypingPreview = (userId?: string, mode: 'typing' | 'editing' = 'typi
 	typingPreviewList.value = typingPreviewList.value.filter((item) => !(item.userId === userId && item.mode === mode));
 };
 
+const scheduleTypingPreviewRemoval = (userId: string, mode: 'typing' | 'editing') => {
+  cancelTypingPreviewRemoval(userId, mode);
+  const key = typingPreviewRemovalKey(userId, mode);
+  const timer = setTimeout(() => {
+    if (pendingTypingPreviewRemovals.get(key) !== timer) {
+      return;
+    }
+    pendingTypingPreviewRemovals.delete(key);
+    removeTypingPreview(userId, mode);
+  }, typingPreviewSilentGraceMs);
+  pendingTypingPreviewRemovals.set(key, timer);
+};
+
 const resetTypingPreview = () => {
+	cancelAllTypingPreviewRemovals();
 	typingPreviewList.value = [];
 	typingPreviewOrderSeq = Date.now();
 	resetSelfPreviewOrder();
@@ -1107,9 +1136,10 @@ const typingToggleClass = computed(() => ({
       }
     })();
     if (typingState === 'silent') {
-      removeTypingPreview(typingUserId, mode);
+      scheduleTypingPreviewRemoval(typingUserId, mode);
       return;
     }
+    cancelTypingPreviewRemoval(typingUserId, mode);
     const displayName =
       (identity?.displayName && identity.displayName.trim()) ||
       e.member?.nick ||
