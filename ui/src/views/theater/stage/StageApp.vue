@@ -239,6 +239,8 @@ const sceneOverlayImageFolderName = '场景叠加'
 const props = defineProps<{
   store: TheaterStageStore
   transparentBackdrop?: boolean
+  pipCompact?: boolean
+  pipMinimal?: boolean
   floatingWindows?: TheaterFloatingWindowSummary[]
   floatingChannelOptions?: { value: string; label: string }[]
   worldId: string
@@ -302,6 +304,9 @@ const emit = defineEmits<{
   updateSceneDialogueEnabled: [enabled: boolean]
   updateSceneAudioEnabled: [enabled: boolean]
 }>()
+
+const pipToolsOpen = ref(false)
+watch(() => props.pipMinimal, (minimal) => { if (!minimal) pipToolsOpen.value = false })
 
 const chatBridgeStatusLabel = computed(() => {
   switch (props.chatBridgeStatus) {
@@ -9101,7 +9106,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section ref="stageAppRef" class="theater-stage-app">
+  <section ref="stageAppRef" class="theater-stage-app" :class="{ 'is-pip-compact': props.pipCompact, 'is-pip-minimal': props.pipMinimal }">
     <input ref="imageInputRef" class="theater-image-input" type="file" accept="image/png,image/apng,image/jpeg,image/webp,image/gif,video/webm,.apng,.webm" @change="handleImageInput">
     <input ref="sceneAudioInputRef" class="theater-image-input" type="file" accept="audio/ogg,audio/mpeg,audio/wav,.ogg,.mp3,.wav" @change="handleSceneAudioInput">
     <input ref="packageInputRef" class="theater-image-input" type="file" accept=".zip,application/zip" @change="handlePackageInput">
@@ -9122,6 +9127,14 @@ onBeforeUnmount(() => {
         </template>
         退出小剧场
       </n-tooltip>
+      <n-tooltip v-if="props.pipMinimal" trigger="hover">
+        <template #trigger>
+          <n-button class="theater-pip-tools-toggle" quaternary size="small" aria-label="画中画工具" @click="pipToolsOpen = !pipToolsOpen">
+            <template #icon><n-icon><Dots /></n-icon></template>
+          </n-button>
+        </template>
+        画中画工具
+      </n-tooltip>
       <n-dropdown v-if="canManagePackages" trigger="click" :options="packageMenuOptions" :menu-props="theaterSecondaryMenuProps" @select="handlePackageMenuSelect">
         <button class="theater-stage-title is-actionable" type="button" :title="`${store.activeScene.value.name} · 导入/导出`" :aria-busy="packageBusy">
           {{ store.activeScene.value.name }}
@@ -9130,11 +9143,11 @@ onBeforeUnmount(() => {
       <div v-else class="theater-stage-title" :title="store.activeScene.value.name">{{ store.activeScene.value.name }}</div>
       <Teleport
         :to="stageAppRef || '.theater-stage-app'"
-        :disabled="theaterToolbarLayout === 'horizontal' || !stageAppRef"
+        :disabled="!props.pipMinimal && (theaterToolbarLayout === 'horizontal' || !stageAppRef)"
       >
         <div
           class="theater-panel-switches-wrap"
-          :class="{ 'is-vertical': theaterToolbarLayout === 'vertical', 'is-controls-visible': panelSwitchesColorsVisible }"
+          :class="{ 'is-vertical': theaterToolbarLayout === 'vertical' && !props.pipMinimal, 'is-controls-visible': panelSwitchesColorsVisible, 'is-pip-minimal': props.pipMinimal, 'is-pip-minimal-open': props.pipMinimal && pipToolsOpen }"
           @pointerenter="revealPanelSwitchesColors"
           @pointerleave="hidePanelSwitchesColors"
           @focusin="revealPanelSwitchesColors"
@@ -9587,9 +9600,10 @@ onBeforeUnmount(() => {
           <n-tooltip trigger="hover"><template #trigger><n-button :class="{ 'is-active': batchBooleanChecked('editable'), 'is-mixed': batchBooleanIndeterminate('editable') }" :disabled="!batchBooleanObjects('editable').length" aria-label="批量设置可编辑" @click.stop="toggleBatchQuickFlag('editable')"><template #icon><n-icon><Edit /></n-icon></template></n-button></template>{{ batchBooleanChecked('editable') ? '取消可编辑' : '设为可编辑' }}</n-tooltip>
           <n-tooltip trigger="hover"><template #trigger><n-button :class="{ 'is-active': batchBooleanChecked('interactive'), 'is-mixed': batchBooleanIndeterminate('interactive') }" :disabled="!batchBooleanObjects('interactive').length" aria-label="批量设置可交互" @click.stop="toggleBatchQuickFlag('interactive')"><template #icon><n-icon><component :is="batchBooleanChecked('interactive') ? Bolt : BoltOff" /></n-icon></template></n-button></template>{{ batchBooleanChecked('interactive') ? '取消可交互' : '设为可交互' }}</n-tooltip>
         </div>
-          <TheaterCharacterStatsOverlay
+        <TheaterCharacterStatsOverlay
           :world-id="worldId"
           :channel-id="channelId"
+          :compact="props.pipCompact === true"
           @open-character-card="emit('openCharacterCard', $event)"
         />
         <TheaterDialogueOverlay
@@ -11007,6 +11021,22 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
 .theater-stage-toolbar::-webkit-scrollbar { display: none; }
+.theater-stage-app.is-pip-compact .theater-stage-toolbar { height: 32px; gap: 3px; padding: 0 4px; }
+.theater-stage-app.is-pip-compact .theater-stage-toolbar :deep(.n-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
+.theater-stage-app.is-pip-compact .theater-stage-title { width: 5.5em; flex-basis: 5.5em; font-size: 12px; }
+.theater-stage-app.is-pip-compact .theater-panel-switches-wrap.is-vertical { top: 32px; width: 36px; max-height: calc(100% - 32px); gap: 2px; padding: 2px 1px; }
+.theater-stage-app.is-pip-compact .theater-panel-switches.is-vertical { width: 32px; }
+.theater-stage-app.is-pip-compact .theater-panel-switches-wrap.is-vertical :deep(.n-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
+.theater-stage-app.is-pip-compact .theater-panel-layout-toggle { width: 28px; min-width: 28px; height: 28px; }
+.theater-stage-app.is-pip-compact .theater-component-actions-toolbar { top: 32px; height: 32px; }
+.theater-stage-app.is-pip-minimal .theater-stage-toolbar { width: auto; right: auto; gap: 2px; padding: 2px 4px; overflow: visible; border: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.theater-stage-app.is-pip-minimal .theater-stage-toolbar > :not(.theater-toolbar-exit):not(.theater-pip-tools-toggle) { display: none !important; }
+.theater-stage-app.is-pip-minimal .theater-component-actions-toolbar { display: none !important; }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal { position: absolute; z-index: 10003; top: 32px; left: 4px; box-sizing: border-box; width: calc(100% - 8px); max-height: calc(100% - 36px); display: none; padding: 4px; overflow: auto; border: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .12)); border-radius: 7px; background: color-mix(in srgb, var(--sc-bg-header, #262626) 88%, transparent); box-shadow: 0 8px 18px rgba(0, 0, 0, .28); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal-open { display: block; }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal .theater-panel-layout-toggle { display: none; }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal .theater-panel-switches { width: 100%; display: flex; flex-flow: row wrap; align-items: center; gap: 2px; }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal :deep(.n-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
 .theater-panel-switches-wrap {
   position: relative; display: inline-flex; align-items: center; flex: 0 0 auto;
 }

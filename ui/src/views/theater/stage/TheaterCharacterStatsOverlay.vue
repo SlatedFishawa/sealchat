@@ -18,10 +18,13 @@ import {
   type ChannelCharacterSnapshotItem,
 } from '@/stores/channelCharacterSnapshot';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   worldId: string;
   channelId: string;
-}>();
+  compact?: boolean;
+}>(), {
+  compact: false,
+});
 
 const emit = defineEmits<{
   openCharacterCard: [payload: { resource: TheaterFloatingResource; clientX: number; clientY: number }];
@@ -57,12 +60,14 @@ const stableCharactersByUser = ref<Record<string, ResolvedCharacter>>({});
 const overlayReady = ref(false);
 let nextSlotOrder = 0;
 let resizeObserver: ResizeObserver | null = null;
+const viewport = reactive({ width: 960, height: 640 });
 let interaction: {
   mode: 'drag' | 'resize';
   pointerId: number;
   startX: number;
   startY: number;
   layout: OverlayLayout;
+  scale: number;
 } | null = null;
 
 const viewportClass = () => {
@@ -93,17 +98,37 @@ const slotStorageKey = () => [
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-const clampLayout = (candidate: OverlayLayout): OverlayLayout => {
+const viewportSize = () => {
   const parent = rootRef.value?.parentElement;
-  const viewportWidth = Math.max(1, parent?.clientWidth || window.innerWidth || 960);
-  const viewportHeight = Math.max(1, parent?.clientHeight || window.innerHeight || 640);
-  const minimumWidth = Math.min(240, viewportWidth);
-  const minimumHeight = Math.min(180, viewportHeight);
-  const width = clamp(Number(candidate.width) || 300, minimumWidth, viewportWidth);
-  const height = clamp(Number(candidate.height) || 280, minimumHeight, viewportHeight);
   return {
-    x: clamp(Number(candidate.x) || 0, 0, Math.max(0, viewportWidth - width)),
-    y: clamp(Number(candidate.y) || 0, 0, Math.max(0, viewportHeight - height)),
+    width: Math.max(1, parent?.clientWidth || window.innerWidth || 960),
+    height: Math.max(1, parent?.clientHeight || window.innerHeight || 640),
+  };
+};
+
+const syncViewportSize = () => Object.assign(viewport, viewportSize());
+const compactScaleFor = (candidate: Pick<OverlayLayout, 'width' | 'height'>) => {
+  if (!props.compact) return 1;
+  return Math.min(
+    1,
+    Math.max(1, viewport.width - 8) / Math.max(1, candidate.width),
+    Math.max(1, viewport.height - 8) / Math.max(1, candidate.height),
+  );
+};
+
+const clampLayout = (candidate: OverlayLayout): OverlayLayout => {
+  const viewportWidth = viewport.width;
+  const viewportHeight = viewport.height;
+  const width = props.compact
+    ? Math.max(240, Number(candidate.width) || 300)
+    : clamp(Number(candidate.width) || 300, Math.min(240, viewportWidth), viewportWidth);
+  const height = props.compact
+    ? Math.max(180, Number(candidate.height) || 280)
+    : clamp(Number(candidate.height) || 280, Math.min(180, viewportHeight), viewportHeight);
+  const scale = compactScaleFor({ width, height });
+  return {
+    x: clamp(Number(candidate.x) || 0, 0, Math.max(0, viewportWidth - width * scale)),
+    y: clamp(Number(candidate.y) || 0, 0, Math.max(0, viewportHeight - height * scale)),
     width,
     height,
   };
@@ -112,9 +137,8 @@ const clampLayout = (candidate: OverlayLayout): OverlayLayout => {
 const setLayout = (candidate: OverlayLayout) => Object.assign(layout, clampLayout(candidate));
 
 const defaultLayout = (): OverlayLayout => {
-  const parent = rootRef.value?.parentElement;
-  const viewportWidth = parent?.clientWidth || window.innerWidth || 960;
-  const viewportHeight = parent?.clientHeight || window.innerHeight || 640;
+  const viewportWidth = viewport.width;
+  const viewportHeight = viewport.height;
   return clampLayout({
     x: 12,
     y: 54,
@@ -124,6 +148,7 @@ const defaultLayout = (): OverlayLayout => {
 };
 
 const persistLayout = () => {
+  if (props.compact) return;
   const parent = rootRef.value?.parentElement;
   const viewportWidth = Math.max(1, parent?.clientWidth || window.innerWidth || 1);
   const viewportHeight = Math.max(1, parent?.clientHeight || window.innerHeight || 1);
@@ -217,11 +242,14 @@ const minimize = () => {
   const parent = rootRef.value?.parentElement;
   const viewportWidth = Math.max(1, parent?.clientWidth || window.innerWidth || 1);
   const viewportHeight = Math.max(1, parent?.clientHeight || window.innerHeight || 1);
+  const scale = compactScaleFor(layout);
+  const visualWidth = layout.width * scale;
+  const visualHeight = layout.height * scale;
   const topDistance = layout.y;
   const distances: Array<[MinimizedEdge, number]> = [
     ['left', layout.x],
-    ['right', viewportWidth - (layout.x + layout.width)],
-    ['bottom', viewportHeight - (layout.y + layout.height)],
+    ['right', viewportWidth - (layout.x + visualWidth)],
+    ['bottom', viewportHeight - (layout.y + visualHeight)],
   ];
   if (topDistance <= Math.min(...distances.map(([, distance]) => distance))) {
     setLayout({ ...layout, y: 0 });
@@ -249,6 +277,7 @@ const beginInteraction = (mode: 'drag' | 'resize', event: PointerEvent) => {
     startX: event.clientX,
     startY: event.clientY,
     layout: { ...layout },
+    scale: compactScaleFor(layout),
   };
   showControls();
   (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
@@ -262,7 +291,8 @@ const moveInteraction = (event: PointerEvent) => {
   if (interaction.mode === 'drag') {
     setLayout({ ...interaction.layout, x: interaction.layout.x + dx, y: interaction.layout.y + dy });
   } else {
-    setLayout({ ...interaction.layout, width: interaction.layout.width + dx, height: interaction.layout.height + dy });
+    const scale = Math.max(0.01, interaction.scale);
+    setLayout({ ...interaction.layout, width: interaction.layout.width + dx / scale, height: interaction.layout.height + dy / scale });
   }
 };
 
@@ -367,10 +397,13 @@ const minimizedLayout = (): OverlayLayout => {
   return { x: 0, y: clamp(layout.y, 0, Math.max(0, viewportHeight - tabLength)), width: tabWidth, height: tabLength };
 };
 
+const panelScale = computed(() => minimized.value ? 1 : compactScaleFor(layout));
 const panelStyle = computed(() => {
   const panel = minimized.value ? minimizedLayout() : layout;
   return {
-    transform: `translate3d(${panel.x}px, ${panel.y}px, 0)`,
+    left: `${panel.x}px`,
+    top: `${panel.y}px`,
+    transform: `scale(${panelScale.value})`,
     width: `${panel.width}px`,
     height: `${panel.height}px`,
     '--theater-character-columns': String(columnCount.value),
@@ -378,8 +411,8 @@ const panelStyle = computed(() => {
 });
 
 const onViewportResize = () => {
+  syncViewportSize();
   setLayout({ ...layout });
-  persistLayout();
 };
 
 watch(() => [props.worldId, props.channelId], async () => {
@@ -399,11 +432,18 @@ watch(() => [props.worldId, props.channelId], async () => {
 }, { immediate: true });
 
 watch([snapshotItems, resolvedCharacters], reconcileCharacters, { immediate: true });
+watch(() => props.compact, async (compact) => {
+  await nextTick();
+  syncViewportSize();
+  if (compact) setLayout({ ...layout });
+  else restoreLayout();
+});
 
 onMounted(() => {
+  syncViewportSize();
+  restoreLayout();
   resizeObserver = new ResizeObserver(onViewportResize);
   if (rootRef.value?.parentElement) resizeObserver.observe(rootRef.value.parentElement);
-  restoreLayout();
 });
 
 onBeforeUnmount(() => {
@@ -528,7 +568,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .theater-character-overlay-root { position: absolute; inset: 0; z-index: 9500; pointer-events: none; overflow: hidden; }
-.theater-character-overlay { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; min-width: 240px; min-height: 180px; overflow: hidden; pointer-events: auto; color: #fff; background: transparent; outline: 1px solid transparent; outline-offset: -1px; transition: outline-color .14s ease; }
+.theater-character-overlay { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; min-width: 240px; min-height: 180px; overflow: hidden; pointer-events: auto; color: #fff; background: transparent; outline: 1px solid transparent; outline-offset: -1px; transform-origin: top left; transition: outline-color .14s ease; }
 .theater-character-overlay.is-chrome-visible, .theater-character-overlay:focus-within { outline-color: rgba(255, 255, 255, .34); }
 .theater-character-overlay__handle { flex: 0 0 20px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; color: transparent; background: transparent; font-size: 10px; letter-spacing: .06em; cursor: move; touch-action: none; user-select: none; transition: color .14s ease, background-color .14s ease; }
 .is-chrome-visible .theater-character-overlay__handle, .theater-character-overlay:focus-within .theater-character-overlay__handle { color: rgba(255, 255, 255, .8); background: rgba(12, 14, 18, .42); }

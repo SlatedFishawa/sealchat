@@ -165,6 +165,7 @@ const splitDragging = ref(false)
 const chatHidden = ref(false)
 const mobileTab = ref<'stage' | 'chat'>('stage')
 const mobilePipWidth = ref<number | null>(null)
+const mobilePipMinimumWidth = 140
 const mobilePipOffset = ref({ x: 0, y: 0 })
 let mobilePipResize: { pointerId: number, startX: number, startWidth: number, maximumWidth: number } | null = null
 let mobilePipMove: {
@@ -206,6 +207,11 @@ const theaterPipActive = computed(() => (
     || mobileAutoPipActive.value
   )
 ))
+const resolvedMobilePipWidth = computed(() => mobilePipWidth.value ?? (
+  width.value <= 420 ? width.value * 0.54 : Math.min(width.value * 0.58, 320)
+))
+const theaterPipCompact = computed(() => theaterPipActive.value)
+const theaterPipMinimal = computed(() => theaterPipActive.value && resolvedMobilePipWidth.value < 240)
 const mobileStageHiddenByInput = computed(() => (
   isMobilePortrait.value
   && display.settings.mobileTheaterHideWhileTyping
@@ -398,6 +404,7 @@ const stageSurfaceStyle = computed(() => {
     const style: Record<string, string> = {
       '--mobile-theater-pip-translate-x': `${mobilePipOffset.value.x}px`,
       '--mobile-theater-pip-translate-y': `${mobilePipOffset.value.y}px`,
+      '--mobile-theater-pip-min-width': `${mobilePipMinimumWidth}px`,
     }
     if (mobilePipWidth.value !== null) {
       style['--mobile-theater-pip-width'] = `${mobilePipWidth.value}px`
@@ -450,7 +457,7 @@ const handleMobilePipResizeDown = (event: PointerEvent) => {
     pointerId: event.pointerId,
     startX: event.clientX,
     startWidth: stage.width,
-    maximumWidth: Math.max(200, Math.min(
+    maximumWidth: Math.max(mobilePipMinimumWidth, Math.min(
       stage.right - 8,
       (window.innerHeight - stage.top - 8) * 16 / 9,
     )),
@@ -461,7 +468,7 @@ const handleMobilePipResizeDown = (event: PointerEvent) => {
 
 const handleMobilePipResizeMove = (event: PointerEvent) => {
   if (!mobilePipResize || mobilePipResize.pointerId !== event.pointerId) return
-  mobilePipWidth.value = Math.min(mobilePipResize.maximumWidth, Math.max(200,
+  mobilePipWidth.value = Math.min(mobilePipResize.maximumWidth, Math.max(mobilePipMinimumWidth,
     mobilePipResize.startWidth + mobilePipResize.startX - event.clientX,
   ))
 }
@@ -1631,6 +1638,8 @@ function handleDice3DMessage(event: MessageEvent) {
           ref="stageAppRef"
           :store="stageStore"
           :transparent-backdrop="theaterPipActive"
+          :pip-compact="theaterPipCompact"
+          :pip-minimal="theaterPipMinimal"
           :floating-windows="floatingWindows"
           :floating-channel-options="floatingChannelOptions"
           @floating-window-action="handleFloatingWindowAction"
@@ -1804,12 +1813,13 @@ function handleDice3DMessage(event: MessageEvent) {
 .theater-host-layout.is-theater-pip .theater-host-stage :deep(.theater-floating-character-dock) { top: min(calc(env(safe-area-inset-top, 0px) + 20px + var(--mobile-theater-pip-translate-y, 0px) + var(--mobile-theater-pip-width, min(58vw, 320px)) * 9 / 16), calc(100dvh - env(safe-area-inset-bottom, 0px) - 48px - 8px)); right: max(8px, calc(12px - var(--mobile-theater-pip-translate-x, 0px))); }
 .theater-mobile-pip-move { position: absolute; z-index: 10020; top: 0; left: 50%; width: 52px; height: 24px; touch-action: none; cursor: move; transform: translateX(-50%); }
 .theater-mobile-pip-move::after { position: absolute; top: 6px; left: 50%; width: 24px; height: 4px; border-radius: 999px; background: rgba(255, 255, 255, .82); box-shadow: 0 1px 3px rgba(0, 0, 0, .72); transform: translateX(-50%); content: ''; }
-.theater-mobile-pip-resize { position: absolute; z-index: 10020; bottom: 0; left: 0; width: 28px; height: 28px; touch-action: none; cursor: nesw-resize; }
-.theater-mobile-pip-resize::after { position: absolute; bottom: 5px; left: 5px; width: 9px; height: 9px; border-bottom: 2px solid rgba(255, 255, 255, .82); border-left: 2px solid rgba(255, 255, 255, .82); filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .72)); content: ''; }
+.theater-mobile-pip-resize { position: absolute; z-index: 10020; bottom: 0; left: 0; width: 34px; height: 34px; touch-action: none; cursor: nesw-resize; }
+.theater-mobile-pip-resize::before { position: absolute; bottom: 4px; left: 4px; width: 22px; height: 22px; border-radius: 7px; background: rgba(0, 0, 0, .32); box-shadow: 0 1px 4px rgba(0, 0, 0, .34); content: ''; }
+.theater-mobile-pip-resize::after { position: absolute; bottom: 8px; left: 8px; width: 13px; height: 13px; border-bottom: 2px solid rgba(255, 255, 255, .9); border-left: 2px solid rgba(255, 255, 255, .9); filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .72)); content: ''; }
 .theater-host-layout.is-mobile-portrait.is-mobile-stage-hidden .theater-host-stage { height: 0; min-height: 0; flex-basis: 0; opacity: 0; visibility: hidden; pointer-events: none; border: 0; }
 
 @media (max-width: 420px) {
-  .theater-host-layout.is-mobile-portrait.is-theater-pip .theater-host-stage { width: var(--mobile-theater-pip-width, 54vw) !important; min-width: 200px; }
-  .theater-host-layout.is-mobile-portrait.is-theater-pip .theater-host-stage :deep(.theater-floating-character-dock) { top: min(calc(env(safe-area-inset-top, 0px) + 20px + var(--mobile-theater-pip-translate-y, 0px) + max(var(--mobile-theater-pip-width, 54vw), 200px) * 9 / 16), calc(100dvh - env(safe-area-inset-bottom, 0px) - 48px - 8px)); }
+  .theater-host-layout.is-mobile-portrait.is-theater-pip .theater-host-stage { width: var(--mobile-theater-pip-width, 54vw) !important; min-width: var(--mobile-theater-pip-min-width, 140px); }
+  .theater-host-layout.is-mobile-portrait.is-theater-pip .theater-host-stage :deep(.theater-floating-character-dock) { top: min(calc(env(safe-area-inset-top, 0px) + 20px + var(--mobile-theater-pip-translate-y, 0px) + max(var(--mobile-theater-pip-width, 54vw), var(--mobile-theater-pip-min-width, 140px)) * 9 / 16), calc(100dvh - env(safe-area-inset-bottom, 0px) - 48px - 8px)); }
 }
 </style>
