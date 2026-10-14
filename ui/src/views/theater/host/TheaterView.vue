@@ -1630,6 +1630,7 @@ function handleDice3DMessage(event: MessageEvent) {
         <StageApp
           ref="stageAppRef"
           :store="stageStore"
+          :transparent-backdrop="theaterPipActive"
           :floating-windows="floatingWindows"
           :floating-channel-options="floatingChannelOptions"
           @floating-window-action="handleFloatingWindowAction"
@@ -1795,8 +1796,10 @@ function handleDice3DMessage(event: MessageEvent) {
 .theater-host-layout.is-mobile-portrait .theater-host-stage :deep(.theater-dialogue-actions .n-button), .theater-host-layout.is-theater-pip .theater-host-stage :deep(.theater-dialogue-actions .n-button) { width: clamp(24px, 2.291667cqw, 44px); height: clamp(24px, 2.291667cqw, 44px); min-width: clamp(24px, 2.291667cqw, 44px); padding: 0; }
 .theater-host-layout.is-mobile-portrait .theater-host-stage :deep(.theater-dialogue-actions svg), .theater-host-layout.is-theater-pip .theater-host-stage :deep(.theater-dialogue-actions svg) { width: clamp(12px, .9375cqw, 18px); height: clamp(12px, .9375cqw, 18px); }
 .theater-host-layout.is-mobile-portrait .theater-host-stage :deep(.theater-floating-host--stage), .theater-host-layout.is-theater-pip .theater-host-stage :deep(.theater-floating-host--stage) { position: fixed; inset: 0; overflow: hidden; }
-.theater-host-layout.is-theater-pip .theater-host-stage { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 12px + var(--mobile-theater-pip-translate-y, 0px)); right: calc(12px - var(--mobile-theater-pip-translate-x, 0px)); z-index: 30; width: var(--mobile-theater-pip-width, min(58vw, 320px)) !important; height: auto; aspect-ratio: 16 / 9; flex: none; overflow: hidden; border: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .12)); border-radius: 14px; background: var(--sc-bg-page, #141418); box-shadow: 0 10px 30px rgba(0, 0, 0, .28); }
+.theater-host-layout.is-theater-pip .theater-host-stage { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 12px + var(--mobile-theater-pip-translate-y, 0px)); right: calc(12px - var(--mobile-theater-pip-translate-x, 0px)); z-index: 30; width: var(--mobile-theater-pip-width, min(58vw, 320px)) !important; height: auto; aspect-ratio: 16 / 9; flex: none; overflow: hidden; border: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .12)); border-radius: 14px; background: transparent; box-shadow: 0 10px 30px rgba(0, 0, 0, .28); }
 .theater-host-layout.is-theater-pip .theater-host-chat { width: 100% !important; height: 100%; flex: 1 1 100%; border-left: 0; }
+.theater-host-layout.is-theater-pip .theater-host-stage :deep(.theater-stage-app) { background: transparent; }
+.theater-host-layout.is-theater-pip .theater-host-stage :deep(.theater-stage-viewport) { background: transparent; }
 /* 画中画时浮窗层铺满视口，停靠区优先放在画中画下方；按 48px 高度限制底部位置，确保头像可点击恢复 */
 .theater-host-layout.is-theater-pip .theater-host-stage :deep(.theater-floating-character-dock) { top: min(calc(env(safe-area-inset-top, 0px) + 20px + var(--mobile-theater-pip-translate-y, 0px) + var(--mobile-theater-pip-width, min(58vw, 320px)) * 9 / 16), calc(100dvh - env(safe-area-inset-bottom, 0px) - 48px - 8px)); right: max(8px, calc(12px - var(--mobile-theater-pip-translate-x, 0px))); }
 .theater-mobile-pip-move { position: absolute; z-index: 10020; top: 0; left: 50%; width: 52px; height: 24px; touch-action: none; cursor: move; transform: translateX(-50%); }

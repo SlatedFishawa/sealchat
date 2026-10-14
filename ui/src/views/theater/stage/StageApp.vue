@@ -238,6 +238,7 @@ const sceneOverlayImageFolderName = '场景叠加'
 
 const props = defineProps<{
   store: TheaterStageStore
+  transparentBackdrop?: boolean
   floatingWindows?: TheaterFloatingWindowSummary[]
   floatingChannelOptions?: { value: string; label: string }[]
   worldId: string
@@ -6404,7 +6405,7 @@ const updateSurfaceSlot = (
     slot.style = nextStyle
     slot.group.position({ x: box.x, y: box.y })
     slot.group.clip({ x: 0, y: 0, width: box.width, height: box.height })
-    slot.base?.setAttrs({ width: box.width, height: box.height, fill: props.store.state.liveState.backgroundColor })
+    slot.base?.setAttrs({ width: box.width, height: box.height, fill: props.transparentBackdrop ? 'rgba(0, 0, 0, 0)' : props.store.state.liveState.backgroundColor })
     slot.placeholder.setAttrs({ width: box.width, height: box.height })
     slot.label.setAttrs({ width: box.width, height: box.height })
     slot.media.setAttrs({ width: box.width, height: box.height, opacity: nextStyle.opacity })
@@ -8883,6 +8884,7 @@ watch(() => ({
   surfaceStyles: props.store.state.liveState.surfaceStyles,
   foregroundEmbed: Boolean(props.store.state.liveState.surfaceEmbeds.foreground),
   backgroundColor: props.store.state.liveState.backgroundColor,
+  transparentBackdrop: props.transparentBackdrop,
   fieldWidth: props.store.state.liveState.fieldWidth,
   fieldHeight: props.store.state.liveState.fieldHeight,
   fieldObjectFit: props.store.state.liveState.fieldObjectFit,
