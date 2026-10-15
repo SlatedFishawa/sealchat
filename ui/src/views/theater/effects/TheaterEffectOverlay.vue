@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import type { StageImageRef, StageObjectTransform } from '../shared/stage-types'
 import { resolveTheaterReducedMotion } from '../shared/theater-reduced-motion'
-import { resolveMediaFxCapabilities } from '@/features/media-fx/media-fx'
+import { mediaFxFilterToCss, normalizeMediaFxSpec, resolveMediaFxCapabilities } from '@/features/media-fx/media-fx'
 import { vMediaFx, type MediaFxDirectiveValue } from '@/features/media-fx/media-fx-dom'
 import { cloneStageData } from '../stage/stage-editing'
 import type { TheaterEffectPlayback } from './theater-effect-runtime'
@@ -60,12 +60,16 @@ const objectStyle = (playback: TheaterEffectPlayback) => {
 
 const mediaStyle = (playback: TheaterEffectPlayback) => {
   const transform = playback.config.builtin.mediaTransform
+  const filter = mediaIsAnimated(playback)
+    ? mediaFxFilterToCss(normalizeMediaFxSpec(playback.object.metadata?.mediaFx).filter)
+    : ''
   return {
     '--effect-media-x': `${transform.x}px`,
     '--effect-media-y': `${transform.y}px`,
     '--effect-media-rotation': `${transform.rotation}deg`,
     '--effect-media-scale-x': transform.mirror ? -transform.scale : transform.scale,
     '--effect-media-scale-y': transform.scale,
+    ...(filter ? { filter } : {}),
   }
 }
 
@@ -92,7 +96,9 @@ const mediaFxBinding = (playback: TheaterEffectPlayback): MediaFxDirectiveValue 
   const capabilities = resolveMediaFxCapabilities('dom', mediaIsAnimated(playback))
   return {
     spec: playback.object.metadata?.mediaFx,
-    filters: capabilities.filters,
+    // Dynamic assets receive Basic Filters on the img/video itself. Keeping the filter
+    // off this motion wrapper avoids compositor snapshotting that can freeze animation.
+    filters: capabilities.filters && !mediaIsAnimated(playback),
     reducedMotion: resolveTheaterReducedMotion().effectiveReducedMotion,
   }
 }

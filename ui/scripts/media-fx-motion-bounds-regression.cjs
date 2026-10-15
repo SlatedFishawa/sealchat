@@ -15,10 +15,12 @@ new Function('exports', compile(coreSource))(mediaFx)
 const { createDefaultMediaFxSpec, mediaFxHasContent, mediaFxMotionPresets, resolveMediaFxMotionTrack, resolveMediaFxMotionOverscanScale } = mediaFx
 const motion = (preset, intensity = 1) => ({ preset, intensity, durationMs: 4000, loop: true })
 
-for (const [preset, expected] of Object.entries({ none: 1, shake: 1.048, 'shake-x': 1.048, 'shake-y': 1.048, float: 1.08, drift: 1.06, breathe: 1, zoom: 1 })) {
+for (const [preset, expected] of Object.entries({ none: 1, shake: 1.048, 'shake-x': 1.048, 'shake-y': 1.048, float: 1.11, drift: 1.06, breathe: 1, zoom: 1 })) {
   assert.equal(resolveMediaFxMotionOverscanScale(motion(preset)), expected, preset)
   assert.equal(resolveMediaFxMotionOverscanScale(motion(preset, 0)), 1, `${preset}: zero intensity`)
 }
+assert.equal(resolveMediaFxMotionTrack(motion('breathe')).frames[1].scale, 1.065, 'breathe peak stays intentionally visible')
+assert.equal(resolveMediaFxMotionTrack(motion('float')).frames[1].y, -0.055, 'float peak stays intentionally visible')
 for (const preset of mediaFxMotionPresets) {
   for (const intensity of [0.001, 0.125, 0.333, 0.5, 0.999, 1]) {
     const spec = motion(preset, intensity)

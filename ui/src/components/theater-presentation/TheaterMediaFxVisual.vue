@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch, type CSSProperties } from 'vue'
-import { mediaFxTemporalHasContent, mediaFxTemporalKeys, normalizeMediaFxSpec } from '@/features/media-fx/media-fx'
+import { mediaFxFilterToCss, mediaFxTemporalHasContent, mediaFxTemporalKeys, normalizeMediaFxSpec } from '@/features/media-fx/media-fx'
 import { vMediaFx } from '@/features/media-fx/media-fx-dom'
 import {
   mediaFxGpuMaxTextureSize,
@@ -12,7 +12,7 @@ import { mediaFxStaticSignature } from '@/features/media-fx/media-fx-preview'
 import { createMediaFxTemporalPlayer, presentMediaFxTemporalFrame } from '@/features/media-fx/media-fx-temporal'
 import type { TheaterMediaRef } from '@/types/theaterPresentation'
 import TheaterPresentationMedia from './TheaterPresentationMedia.vue'
-import { resolveTheaterMediaFxBinding, resolveTheaterMediaFxCapabilities } from './theaterPresentationMedia'
+import { isAnimatedTheaterMedia, resolveTheaterMediaFxBinding, resolveTheaterMediaFxCapabilities } from './theaterPresentationMedia'
 import {
   createTheaterMediaFxAdvancedController,
   loadTheaterMediaFxSource,
@@ -76,13 +76,23 @@ const onScreen = ref(true)
 // transactions may update a nested spec without replacing every surrounding object;
 // basic/motion still refresh through the directive, so Advanced needs its own stable key.
 const staticFxSignature = computed(() => mediaFxStaticSignature(props.mediaFx))
+const animatedMedia = computed(() => isAnimatedTheaterMedia(props.media))
 const binding = computed(() => {
   const base = resolveTheaterMediaFxBinding(props.mediaFx, props.media, props.reducedMotion)
-  return advancedReady.value ? { ...base, filters: false } : base
+  return advancedReady.value || animatedMedia.value ? { ...base, filters: false } : base
 })
-const mediaStyle = computed<CSSProperties | undefined>(() => (
-  advancedReady.value || (advancedEligible.value && !advancedFallback.value) ? { visibility: 'hidden' } : undefined
-))
+const mediaStyle = computed<CSSProperties | undefined>(() => {
+  const style: CSSProperties = {}
+  if (advancedReady.value || (advancedEligible.value && !advancedFallback.value)) style.visibility = 'hidden'
+  // Keep animated pixels live: filtering an ancestor can snapshot the whole animated
+  // subtree on some browser/compositor paths. Filter the img/video itself instead,
+  // while WAAPI motion remains isolated on the wrapper.
+  if (animatedMedia.value) {
+    const filter = mediaFxFilterToCss(normalizeMediaFxSpec(props.mediaFx).filter)
+    if (filter) style.filter = filter
+  }
+  return Object.keys(style).length ? style : undefined
+})
 
 // Static output kept as the temporal baseline, only while temporal plays live; an
 // advanced-only layer does not hold a second copy of its raster.

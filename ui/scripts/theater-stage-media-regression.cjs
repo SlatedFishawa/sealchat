@@ -25,17 +25,22 @@ const legacy = resolveTheaterStageMediaLocation({
   mimeType: 'video/webm',
   animated: true,
 }, scope)
-assert.equal(legacy.url, 'https://api.test/api/v1/worlds/world/channels/channel/theater/resources/apng-1/content')
+assert.equal(legacy.url, 'https://api.test/api/v1/worlds/world/channels/channel/theater/resources/apng-1/variants/display/content')
 assert.equal(legacy.managed, true)
-assert.equal(legacy.sourceKind, 'image')
+assert.equal(legacy.sourceKind, 'video')
 
 const legacyWithoutAnimated = resolveTheaterStageMediaLocation({
   resourceId: 'apng-missing-flag',
   url: '/api/v1/worlds/world/channels/channel/theater/resources/apng-missing-flag/variants/display/content',
   mimeType: 'video/webm',
-}, scope, 'https://sealchat.test/', { kind: 'animated_image', mimeType: 'image/apng' })
-assert.equal(legacyWithoutAnimated.url, 'https://api.test/api/v1/worlds/world/channels/channel/theater/resources/apng-missing-flag/content')
-assert.equal(legacyWithoutAnimated.sourceKind, 'image')
+}, scope, 'https://sealchat.test/', {
+  kind: 'animated_image',
+  mimeType: 'image/apng',
+  playbackVariant: 'display',
+  playbackMimeType: 'video/webm',
+})
+assert.equal(legacyWithoutAnimated.url, 'https://api.test/api/v1/worlds/world/channels/channel/theater/resources/apng-missing-flag/variants/display/content')
+assert.equal(legacyWithoutAnimated.sourceKind, 'video')
 
 const normalizedLegacy = resolveTheaterMediaPlaybackReference({
   variant: 'display',
@@ -44,10 +49,10 @@ const normalizedLegacy = resolveTheaterMediaPlaybackReference({
   resourceMimeType: 'image/gif',
 })
 assert.deepEqual(normalizedLegacy, {
-  variant: 'original',
-  mimeType: 'image/gif',
-  sourceKind: 'image',
-  legacyAnimatedImageDisplay: true,
+  variant: 'display',
+  mimeType: 'video/webm',
+  sourceKind: 'video',
+  legacyAnimatedImageDisplay: false,
 })
 
 const actualVideo = resolveTheaterStageMediaLocation({
@@ -127,8 +132,8 @@ const overlayContext = {
 const overlayHandle = mediaSceneOverlayRenderer.mount(host, {
   media: { resourceId: 'overlay-apng', variant: 'display', mimeType: 'video/webm', animated: true },
 }, overlayContext)
-assert.equal(mountedElements.at(-1) instanceof FakeImageElement, true, 'legacy animated overlay renders as image')
-assert.equal(mountedElements.at(-1).src, '/resource/overlay-apng/original')
+assert.equal(mountedElements.at(-1) instanceof FakeVideoElement, true, 'animated overlay keeps the transparent WebM playback variant')
+assert.equal(mountedElements.at(-1).src, '/resource/overlay-apng/display')
 overlayHandle.update({
   media: { resourceId: 'overlay-video', variant: 'display', mimeType: 'video/webm' },
 })
@@ -143,7 +148,10 @@ const stageAppSource = fs.readFileSync(path.join(__dirname, '../src/views/theate
 assert.match(effectOverlaySource, /props\.resolveMedia\(image\)/, 'effect media must use the shared stage media resolver')
 assert.match(effectOverlaySource, /mediaLocation\(playback\)\?\.sourceKind === 'video'/, 'effect video selection must use resolved source kind')
 assert.match(effectOverlaySource, /mimeType\.startsWith\('video\/'\)/, 'legacy effect media must remain classified as animated after image fallback')
-assert.match(stageAppSource, /else if \(isAnimatedStageImageRef\(imageRef\)\)/, 'legacy image fallback must keep Konva animation redraw active')
+assert.match(effectOverlaySource, /mediaFxFilterToCss\(normalizeMediaFxSpec\(playback\.object\.metadata\?\.mediaFx\)\.filter\)/, 'animated effect filters must stay on the live media element')
+assert.match(effectOverlaySource, /filters: capabilities\.filters && !mediaIsAnimated\(playback\)/, 'animated effect wrapper must not own the CSS filter')
+assert.match(stageAppSource, /else if \(isAnimatedStageImageRef\(imageRef\)\)/, 'native fallback remains classified as animated when no display WebM exists')
+assert.match(stageAppSource, /reveal\?\.\(\)\s*\n\s*activate\?\.\(\)/, 'media activation must not depend on having a reveal callback')
 assert.match(stageAppSource, /:resolve-media="resolveTheaterStageMedia"/, 'StageApp must provide the shared media resolver to effects')
 assert.match(stageAppSource, /:overlays="sceneOverlayRenderBindings"/, 'scene overlays must use runtime compatibility bindings')
 

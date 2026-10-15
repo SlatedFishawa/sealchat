@@ -40,9 +40,9 @@ export const resolveTheaterMediaFxCapabilities = (
   gpuAvailable && media?.kind === 'static_image',
 )
 
-// v-media-fx binding for one theater visual layer. Animated media keeps the Media FX v1
-// capability rule (motion only, no live filters); reduced motion stops motion but keeps
-// static filters. The directive must sit on a wrapper inside the layout element so
+// v-media-fx binding for one theater visual layer. DOM CSS basic filters preserve
+// animated media playback; reduced motion stops motion but keeps basic filters.
+// The directive must sit on a wrapper inside the layout element so
 // WAAPI motion never replaces the layer's own transform.
 export const resolveTheaterMediaFxBinding = (
   spec: unknown,

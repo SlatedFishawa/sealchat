@@ -234,7 +234,7 @@ const mediaFxMotionShapes: Record<Exclude<MediaFxMotionPreset, 'none'>, MediaFxM
   breathe: {
     defaultDurationMs: 4_000,
     easing: 'ease-in-out',
-    maxAmount: 0.05,
+    maxAmount: 0.065,
     frames: (amount) => [
       { x: 0, y: 0, scale: 1 },
       { x: 0, y: 0, scale: 1 + amount },
@@ -244,7 +244,7 @@ const mediaFxMotionShapes: Record<Exclude<MediaFxMotionPreset, 'none'>, MediaFxM
   float: {
     defaultDurationMs: 4_000,
     easing: 'ease-in-out',
-    maxAmount: 0.04,
+    maxAmount: 0.055,
     frames: (amount) => [
       { x: 0, y: 0, scale: 1 },
       { x: 0, y: -amount, scale: 1 },
@@ -618,8 +618,9 @@ export interface MediaFxCapabilities {
 
 export type MediaFxRendererKind = 'dom' | 'konva' | 'bake'
 
-// Animated media is excluded from live filters so the Konva static cache path never
-// freezes a frame and all live surfaces share one rule. Bake never has motion.
+// DOM CSS filters preserve animated image / video playback. Other renderers keep
+// animated media out of static pixel filters so the Konva cache never freezes a frame.
+// Bake never has motion.
 // Advanced effects stay off unless the consumer opts in (Stage static images, static
 // non-tile Stage surfaces, the image editor, TheaterPresentation static image layers);
 // an unsupported renderer keeps the data untouched, it just does not render it.
@@ -631,7 +632,7 @@ export const resolveMediaFxCapabilities = (
   temporal = false,
 ): MediaFxCapabilities => ({
   motion: renderer !== 'bake',
-  filters: !animatedMedia,
+  filters: renderer === 'dom' || !animatedMedia,
   advanced: advanced && !animatedMedia,
   temporal: temporal && renderer !== 'bake' && !animatedMedia,
   animatedMedia,

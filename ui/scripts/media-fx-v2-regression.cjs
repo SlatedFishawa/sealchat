@@ -133,6 +133,16 @@ async function run() {
   }
 
   // --- capabilities ---------------------------------------------------------
+  for (const renderer of ['dom', 'konva', 'bake']) {
+    assert.equal(resolveMediaFxCapabilities(renderer).filters, true, `${renderer}: static basic filters stay available`)
+    assert.deepEqual(resolveMediaFxCapabilities(renderer, true, true, true), {
+      motion: renderer !== 'bake',
+      filters: renderer === 'dom',
+      advanced: false,
+      temporal: false,
+      animatedMedia: true,
+    }, `${renderer}: only DOM supports animated basic filters; GPU effects stay off`)
+  }
   assert.equal(resolveMediaFxCapabilities('konva').advanced, false, 'existing callers never gain advanced')
   assert.equal(resolveMediaFxCapabilities('dom', false).advanced, false)
   assert.equal(resolveMediaFxCapabilities('bake').advanced, false)
@@ -494,6 +504,11 @@ async function run() {
   assert.deepEqual(imageNode.filters(), ['blur(2px)'], 'consumers without advanced never run the GPU')
   controller.update(blurPixelate, { ...context, filters: false })
   assert.deepEqual(imageNode.filters(), [], 'animated media (filters off) never runs the GPU')
+  assert.equal(gpuCalls.length, callsBefore)
+  const animatedCaches = caches
+  controller.update(blurPixelate, { ...context, ...resolveMediaFxCapabilities('konva', true, true, true) })
+  assert.equal(caches, animatedCaches, 'animated Konva capabilities never build a static cache')
+  assert.deepEqual(imageNode.filters(), [])
   assert.equal(gpuCalls.length, callsBefore)
 
   controller.dispose()

@@ -1348,15 +1348,15 @@ const theaterImageResourceById = computed(() => new Map(
 const sceneOverlayRenderBindings = computed(() => props.store.state.liveState.sceneOverlays.map((binding) => {
   const media = binding.media
   const resource = media ? theaterImageResourceById.value.get(media.resourceId) : undefined
-  if (!media || !resource) return binding
+  if (!media || !resource || resource.kind !== 'animated_image') return binding
   const playback = resolveTheaterMediaPlaybackReference({
-    variant: media.variant,
-    mimeType: media.mimeType,
-    animated: media.animated,
+    variant: resource.playbackVariant || media.variant,
+    mimeType: resource.playbackMimeType || media.mimeType,
+    animated: true,
     resourceKind: resource.kind,
     resourceMimeType: resource.mimeType,
   })
-  if (!playback.legacyAnimatedImageDisplay) return binding
+  if (playback.variant === media.variant && playback.mimeType === media.mimeType) return binding
   return {
     ...binding,
     media: {
@@ -4857,7 +4857,6 @@ const stageMediaRequestControllers = new WeakMap<StageMediaSource, AbortControll
 const stageMediaObjectUrls = new WeakMap<StageMediaSource, string>()
 const stageMediaBlobCache = new Map<string, Blob>()
 const stageMediaBlobRequests = new Map<string, Promise<Blob>>()
-
 const cacheStageMediaBlob = (url: string, blob: Blob) => {
   stageMediaBlobCache.delete(url)
   stageMediaBlobCache.set(url, blob)
@@ -5926,6 +5925,9 @@ const activateStageMedia = (source: StageMediaSource, imageRef: StageImageRef) =
     activeAnimatedMedia.add(source)
     void source.play().catch((error) => theaterMediaDebug('video play error', stageMediaErrorMessage(error)))
   } else if (isAnimatedStageImageRef(imageRef)) {
+    // Native animated images are a last-resort fallback when no display WebM exists.
+    // Canvas/Konva cannot reliably obtain their live frames, so managed resources
+    // should resolve to the transparent WebM playback variant whenever available.
     activeAnimatedMedia.add(source)
   }
   syncMediaAnimation()
@@ -5954,7 +5956,7 @@ const settleSceneMedia = (key: string, url: string, reveal?: () => void, activat
   const batch = sceneMediaBatch
   if (!batch || batch.sceneId !== props.store.state.activeSceneId || batch.expected.get(key) !== url || batch.released) {
     reveal?.()
-    if (reveal) activate?.()
+    activate?.()
     return
   }
   if (reveal) batch.reveals.push(reveal)
@@ -8016,9 +8018,8 @@ const uploadTheaterImageResource = async (file: File, targetObjectId = '', scope
   if (!resourceId) throw new Error('上传响应缺少资源 ID')
   if (resource?.status !== 'ready') resource = await waitForResource(resourceId, scope)
   const originalMimeType = resource?.mimeType?.trim().toLowerCase() || prepared.type || normalizedFileType(prepared)
-  const useOriginalAnimatedImage = resource?.animated === true && originalMimeType.startsWith('image/')
-  const variant = useOriginalAnimatedImage ? 'original' : resource?.playbackVariant || 'original'
-  const mimeType = useOriginalAnimatedImage ? originalMimeType : resource?.playbackMimeType || originalMimeType
+  const variant = resource?.playbackVariant || 'original'
+  const mimeType = resource?.playbackMimeType || originalMimeType
   const resourceBase = urlBase.startsWith('//') ? `${window.location.protocol}${urlBase}` : urlBase
   return {
     resource,

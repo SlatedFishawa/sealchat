@@ -33,21 +33,11 @@ export const resolveTheaterMediaPlaybackReference = (
 ): TheaterMediaPlaybackResolution => {
   const variant = reference.variant?.trim() || 'original'
   const mimeType = reference.mimeType?.trim().toLowerCase() || ''
-  const resourceKind = reference.resourceKind?.trim().toLowerCase() || ''
-  const resourceMimeType = reference.resourceMimeType?.trim().toLowerCase() || ''
-  const animatedImage = reference.animated === true
-    || resourceKind === 'animated_image'
-    || (!resourceKind && resourceMimeType.startsWith('image/'))
-  const legacyAnimatedImageDisplay = variant === 'display'
-    && mimeType === 'video/webm'
-    && animatedImage
   return {
-    variant: legacyAnimatedImageDisplay ? 'original' : variant,
-    mimeType: legacyAnimatedImageDisplay
-      ? (resourceMimeType.startsWith('image/') ? resourceMimeType : '')
-      : mimeType,
-    sourceKind: legacyAnimatedImageDisplay ? 'image' : mimeType.startsWith('video/') ? 'video' : 'image',
-    legacyAnimatedImageDisplay,
+    variant,
+    mimeType,
+    sourceKind: mimeType.startsWith('video/') ? 'video' : 'image',
+    legacyAnimatedImageDisplay: false,
   }
 }
 
@@ -79,7 +69,7 @@ export const resolveTheaterStageMediaLocation = (
   imageRef: StageImageRef,
   scope: TheaterStageMediaScope,
   baseHref = typeof window !== 'undefined' ? window.location.href : 'https://sealchat.invalid/',
-  resource?: { kind?: string, mimeType?: string },
+  resource?: { kind?: string, mimeType?: string, playbackVariant?: string, playbackMimeType?: string },
 ): TheaterStageMediaLocation | null => {
   const normalized = imageRef.url.trim()
   if (!normalized) return null
@@ -93,14 +83,15 @@ export const resolveTheaterStageMediaLocation = (
     const match = parsed.pathname.match(managedTheaterContentPath)
     if (match && imageRef.resourceId.trim()) {
       const variant = decodedPathSegment(match[1])
+      const preferResourcePlayback = resource?.kind?.trim().toLowerCase() === 'animated_image'
       const playback = resolveTheaterMediaPlaybackReference({
-        variant,
-        mimeType,
+        variant: preferResourcePlayback ? resource?.playbackVariant || variant : variant,
+        mimeType: preferResourcePlayback ? resource?.playbackMimeType || mimeType : mimeType,
         animated: imageRef.animated,
         resourceKind: resource?.kind,
         resourceMimeType: resource?.mimeType,
       })
-      candidate = `${scope.urlBase.replace(/\/$/, '')}${theaterResourceContentPath(scope, imageRef.resourceId, playback.legacyAnimatedImageDisplay ? '' : variant)}`
+      candidate = `${scope.urlBase.replace(/\/$/, '')}${theaterResourceContentPath(scope, imageRef.resourceId, playback.variant === 'original' ? '' : playback.variant)}`
       sourceKind = playback.sourceKind
       managed = true
     } else if (normalized.startsWith('/api/')) {
