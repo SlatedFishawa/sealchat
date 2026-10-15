@@ -151,6 +151,7 @@ const editorMediaFxCapabilities = computed<MediaFxCapabilities>(() => {
         && (mediaFxGpuAvailable.value || mediaFxAdvancedHasContent(mediaFx.value.advanced)),
       temporal: false,
       animatedMedia: false,
+      livePixels: false,
     };
   }
   return {
@@ -159,6 +160,8 @@ const editorMediaFxCapabilities = computed<MediaFxCapabilities>(() => {
     advanced: caller.advanced === true && caller.animatedMedia !== true,
     temporal: caller.temporal === true && caller.animatedMedia !== true,
     animatedMedia: caller.animatedMedia === true,
+    // The image editor previews a still raster; it never has a live-frame input.
+    livePixels: false,
   };
 });
 const mediaFxPanelMode = computed(() => (isPreserveMode.value ? 'live' : 'bake'));

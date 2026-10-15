@@ -154,5 +154,8 @@ assert.match(stageAppSource, /else if \(isAnimatedStageImageRef\(imageRef\)\)/, 
 assert.match(stageAppSource, /reveal\?\.\(\)\s*\n\s*activate\?\.\(\)/, 'media activation must not depend on having a reveal callback')
 assert.match(stageAppSource, /:resolve-media="resolveTheaterStageMedia"/, 'StageApp must provide the shared media resolver to effects')
 assert.match(stageAppSource, /:overlays="sceneOverlayRenderBindings"/, 'scene overlays must use runtime compatibility bindings')
+assert.match(stageAppSource, /surfaceMediaFxFilterCss\(slot, raster\.pixelRatio, true\)/, 'video surfaces must stage Media FX Basic filters before live Advanced/Temporal')
+assert.match(stageAppSource, /mediaFxFilterToCss\(stageObjectMediaFx\(current\)\.filter, \{ blurScale: raster\.pixelRatio \}\)/, 'video objects must stage their Basic filter without entering Konva cache')
+assert.match(stageAppSource, /basic,\s*\n\s*advanced: mediaFxGpuAvailable\.value \? spec\.advanced : null/, 'Stage live objects must keep Basic independently of GPU availability')
 
 console.log('theater stage media regression checks passed')

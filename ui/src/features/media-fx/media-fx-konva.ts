@@ -18,6 +18,12 @@ import {
 import { canvasFilterSupported } from './media-fx-canvas'
 import { createMediaFxGpuFilter, mediaFxGpuSupported } from './media-fx-gpu'
 import {
+  createMediaFxLiveRenderer,
+  resolveMediaFxLiveRaster,
+  type MediaFxLiveRenderer,
+  type MediaFxLiveRendererOptions,
+} from './media-fx-live'
+import {
   createMediaFxTemporalPlayer,
   presentMediaFxTemporalFrame,
   resolveMediaFxTemporalRaster,
@@ -35,6 +41,10 @@ import {
 //                         last step of the same cache filter chain. When the consumer
 //                         enables `temporal`, live frames are drawn in place of the
 //                         node's cached canvas (see createKonvaMediaFxTemporalController)
+//   live output node   -> animated media playing through an HTMLVideoElement never enters
+//                         the cache: a separate output node next to the source shows the
+//                         processed frames (see createKonvaMediaFxLiveController) while the
+//                         source node keeps the video, its size and lifecycle
 //
 // The controller never touches the root group, so continuous motion cannot fight
 // with drag, rotation, entrance tweens or persisted object.transform values.
@@ -508,4 +518,138 @@ export const createKonvaMediaFxController = (nodes: KonvaMediaFxNodes): KonvaMed
       disposed = true
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Live media output (video sources): a separate render node
+// ---------------------------------------------------------------------------
+
+export interface KonvaMediaFxLiveInput {
+  // The playing source of the original node; null while there is none / it is no video.
+  video: HTMLVideoElement | null
+  sourceKey: string
+  // Signature of the geometry / filters `stage` draws besides the video frame.
+  stageKey: string
+  // Content rect of the output node in its parent's coordinates (= the source's drawn rect).
+  rect: { x: number, y: number, width: number, height: number }
+  // Device pixels per unit of `rect` (Konva.pixelRatio x the absolute display scale).
+  displayScale: number
+  opacity?: number
+  basic?: boolean
+  advanced: MediaFxAdvanced | null | undefined
+  temporal: MediaFxTemporal | null | undefined
+  active: boolean
+}
+
+export interface KonvaMediaFxLiveController {
+  update(input: KonvaMediaFxLiveInput): void
+  readonly live: boolean
+  readonly outputNode: Konva.Image
+  dispose(): void
+}
+
+export interface KonvaMediaFxLiveOptions {
+  // The output node is inserted right above this node, in the same parent (so it shares
+  // the motion group and clip of the source).
+  sourceNode: Konva.Node
+  // Draws the current frame (geometry + filters) into the staging raster.
+  stage: MediaFxLiveRendererOptions<HTMLVideoElement>['stage']
+  // Suppresses / restores drawing of the original source while live output is shown. The
+  // source node keeps its image, size, hit region and lifecycle either way.
+  setSourceHidden: (hidden: boolean) => void
+  name?: string
+  createRenderer?: (options: MediaFxLiveRendererOptions<HTMLVideoElement>) => MediaFxLiveRenderer<HTMLVideoElement>
+  createCanvas?: () => HTMLCanvasElement
+}
+
+// Live output for an animated Konva source (Stage objects and surfaces): the original
+// node keeps decoding / looping / sizing the video and stays the fallback; the output node
+// only displays processed frames (copied from the shared GPU canvas into its own canvas).
+// It is shown only after the first frame was presented, and hidden again on any stop or
+// failure. It never uses cache(): animated sources never reach the static filter path.
+export const createKonvaMediaFxLiveController = (options: KonvaMediaFxLiveOptions): KonvaMediaFxLiveController => {
+  const createCanvas = options.createCanvas ?? (() => document.createElement('canvas'))
+  const outputNode = new Konva.Image({
+    name: options.name ?? 'media-fx-live-output',
+    image: undefined,
+    visible: false,
+    listening: false,
+  })
+  const parent = options.sourceNode.getParent()
+  if (parent) {
+    parent.add(outputNode)
+    outputNode.zIndex(options.sourceNode.zIndex() + 1)
+  }
+  let output: HTMLCanvasElement | null = null
+  let disposed = false
+
+  const requestDraw = () => outputNode.getLayer()?.batchDraw()
+
+  const renderer = (options.createRenderer ?? createMediaFxLiveRenderer)({
+    stage: options.stage,
+    present: (frame) => {
+      output ??= createCanvas()
+      if (!presentMediaFxTemporalFrame(output, frame)) return false
+      if (outputNode.image() !== output) outputNode.image(output)
+      requestDraw()
+      return true
+    },
+    onLiveChange: (live) => {
+      if (disposed) return
+      outputNode.visible(live)
+      options.setSourceHidden(live)
+      if (!live && output) {
+        // Never keep (or later flash) a frame of a previous source.
+        output.width = output.height = 0
+        outputNode.image(undefined)
+        output = null
+      }
+      requestDraw()
+    },
+    canRender: () => Boolean(outputNode.getLayer()) && Boolean(outputNode.getParent()?.isVisible()),
+  })
+
+  return {
+    update(input) {
+      if (disposed) return
+      const { rect } = input
+      outputNode.position({ x: rect.x, y: rect.y })
+      outputNode.size({ width: rect.width, height: rect.height })
+      outputNode.opacity(input.opacity ?? 1)
+      renderer.update({
+        video: input.video,
+        sourceKey: input.sourceKey,
+        stageKey: input.stageKey,
+        raster: resolveMediaFxLiveRaster(rect.width, rect.height, input.displayScale),
+        basic: input.basic,
+        advanced: input.advanced,
+        temporal: input.temporal,
+        active: input.active,
+      })
+    },
+    get live() {
+      return renderer.live
+    },
+    outputNode,
+    dispose() {
+      if (disposed) return
+      const wasLive = renderer.live
+      disposed = true
+      renderer.dispose()
+      if (wasLive) options.setSourceHidden(false)
+      if (output) output.width = output.height = 0
+      output = null
+      const layer = outputNode.getLayer()
+      outputNode.destroy()
+      layer?.batchDraw()
+    },
+  }
+}
+
+// Device pixels per local unit of a Konva node (Konva.pixelRatio x absolute scale).
+export const konvaMediaFxDisplayScale = (node: Konva.Node) => {
+  const scale = node.getAbsoluteScale()
+  const ratio = Konva.pixelRatio || 1
+  const value = Math.max(Math.abs(scale.x), Math.abs(scale.y)) * ratio
+  return Number.isFinite(value) && value > 0 ? value : ratio
 }

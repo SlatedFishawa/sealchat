@@ -12,7 +12,13 @@ const props = withDefaults(defineProps<{
 }>(), { playbackRate: 1, active: true })
 
 const display = useDisplayStore()
-const emit = defineEmits<{ dimensions: [width: number, height: number], imageLoad: [image: HTMLImageElement, attachmentId: string], imageLoading: [] }>()
+const emit = defineEmits<{
+  dimensions: [width: number, height: number]
+  imageLoad: [image: HTMLImageElement, attachmentId: string]
+  // The video candidate has a decodable frame; the element keeps owning loop / rate / play.
+  videoLoad: [video: HTMLVideoElement, attachmentId: string]
+  imageLoading: []
+}>()
 const failedIndex = ref(-1)
 const supportsVideo = ref(true)
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -57,6 +63,7 @@ const handleVideoLoaded = () => {
   videoRef.value.defaultPlaybackRate = props.playbackRate
   if (props.active) void videoRef.value.play().catch(() => undefined)
   else videoRef.value.pause()
+  emit('videoLoad', videoRef.value, candidate.value?.attachmentId || '')
 }
 </script>
 

@@ -7,6 +7,7 @@ import { mediaFxFilterToCss, normalizeMediaFxSpec, resolveMediaFxCapabilities } 
 import { vMediaFx, type MediaFxDirectiveValue } from '@/features/media-fx/media-fx-dom'
 import { cloneStageData } from '../stage/stage-editing'
 import type { TheaterEffectPlayback } from './theater-effect-runtime'
+import TheaterEffectMediaVideo from './TheaterEffectMediaVideo.vue'
 import TheaterEffectWebFrame from './TheaterEffectWebFrame.vue'
 import {
   THEATER_EFFECT_DESIGN_HEIGHT,
@@ -237,7 +238,17 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
           @pointercancel="endGesture"
         >
           <div v-if="mediaUrl(playback)" v-media-fx="mediaFxBinding(playback)" class="theater-effect-media-fx">
-            <video v-if="mediaIsVideo(playback)" class="theater-effect-media-only__asset" :style="mediaStyle(playback)" :src="mediaUrl(playback)!" autoplay :loop="mediaLoopCount(playback) === null" muted playsinline @ended="handleVideoEnded($event, playback)" />
+            <TheaterEffectMediaVideo
+              v-if="mediaIsVideo(playback)"
+              :src="mediaUrl(playback)!"
+              :loop="mediaLoopCount(playback) === null"
+              :media-style="mediaStyle(playback)"
+              :media-fx="playback.object.metadata?.mediaFx"
+              :animated="mediaIsAnimated(playback)"
+              :display-scale="scale"
+              :reduced-motion="resolveTheaterReducedMotion().effectiveReducedMotion"
+              @ended="handleVideoEnded($event, playback)"
+            />
             <img v-else class="theater-effect-media-only__asset" :style="mediaStyle(playback)" :src="mediaUrl(playback)!" alt="" draggable="false">
           </div>
           <span v-else-if="editing && playback.effectId === selectedObject?.id">未设置媒体</span>

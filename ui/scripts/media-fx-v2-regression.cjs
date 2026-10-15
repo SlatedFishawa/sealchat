@@ -141,6 +141,7 @@ async function run() {
       advanced: false,
       temporal: false,
       animatedMedia: true,
+      livePixels: false,
     }, `${renderer}: only DOM supports animated basic filters; GPU effects stay off`)
   }
   assert.equal(resolveMediaFxCapabilities('konva').advanced, false, 'existing callers never gain advanced')
@@ -267,7 +268,8 @@ async function run() {
   for (const forbidden of [/requestAnimationFrame/, /setTimeout|setInterval/, /Date\.now|performance\.now|Math\.random/, /createRenderbuffer/, /three/i, /getImageData/]) {
     assert.equal(forbidden.test(gpuSource), false, `GPU adapter must not contain ${forbidden}`)
   }
-  assert.equal((gpuSource.match(/createFramebuffer\(/g) || []).length, 1, 'framebuffers are only created for the light targets')
+  // Phase 2 adds exactly one more: the live session's advanced-result target.
+  assert.equal((gpuSource.match(/createFramebuffer\(/g) || []).length, 2, 'framebuffers are only created for the light targets and the live advanced target')
   assert.equal((gpuSource.match(/getContext\(/g) || []).length, 1, 'one WebGL2 context per page')
 
   // Lazy capability starts optimistic when WebGL2 exists, then becomes unavailable

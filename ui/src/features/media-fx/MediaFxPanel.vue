@@ -69,13 +69,20 @@ const emit = defineEmits<{
 
 const spec = computed(() => normalizeMediaFxSpec(props.modelValue))
 const isAnimatedMedia = computed(() => props.capabilities.animatedMedia === true)
-const filtersAvailable = computed(() => props.capabilities.filters !== false && !isAnimatedMedia.value)
+// Animated media only gets pixel controls when its renderer processes live frames
+// (resolveMediaFxCapabilities livePixels); otherwise they stay read-only as before.
+const pixelControlsAvailable = computed(() => !isAnimatedMedia.value || props.capabilities.livePixels === true)
+// `filters` describes the renderer's ordinary Basic path. A live-pixel renderer may
+// intentionally keep that path off (e.g. Konva cache) and apply Basic in staging instead.
+const filtersAvailable = computed(() => pixelControlsAvailable.value && (
+  props.capabilities.filters !== false || props.capabilities.livePixels === true
+))
 const motionVisible = computed(() => props.mode === 'live' && props.capabilities.motion !== false)
 const activeFilterPreset = computed(() => matchMediaFxFilterPreset(spec.value.filter))
 const filterChanged = computed(() => mediaFxFilterHasContent(spec.value.filter))
 const anyChanged = computed(() => mediaFxHasContent(spec.value))
 const advancedChanged = computed(() => mediaFxAdvancedHasContent(spec.value.advanced))
-const advancedAvailable = computed(() => props.capabilities.advanced === true && !isAnimatedMedia.value)
+const advancedAvailable = computed(() => props.capabilities.advanced === true && pixelControlsAvailable.value)
 const lightGpuAvailable = ref(mediaFxGpuLightSupported())
 const stopLightAvailability = subscribeMediaFxGpuLightAvailability((available) => {
   lightGpuAvailable.value = available
@@ -93,7 +100,7 @@ const temporalChanged = computed(() => mediaFxTemporalHasContent(spec.value.temp
 // Temporal is live-only and opt-in like advanced; unsupported consumers only show (and
 // keep) existing temporal data, read-only.
 const temporalAvailable = computed(() => (
-  props.mode === 'live' && props.capabilities.temporal === true && !isAnimatedMedia.value
+  props.mode === 'live' && props.capabilities.temporal === true && pixelControlsAvailable.value
 ))
 const temporalVisible = computed(() => temporalAvailable.value || temporalChanged.value)
 const previewPauseAvailable = computed(() => spec.value.motion.preset !== 'none' || temporalChanged.value)
@@ -293,7 +300,7 @@ const resetAll = () => {
         <span>图像调整</span>
         <n-button text size="tiny" :disabled="disabled || !filtersAvailable || !filterChanged" @click="resetFilter">重置图像调整</n-button>
       </header>
-      <p v-if="isAnimatedMedia" class="media-fx-panel__hint">动态媒体暂不支持实时图像滤镜</p>
+      <p v-if="isAnimatedMedia && !filtersAvailable" class="media-fx-panel__hint">动态媒体暂不支持实时图像滤镜</p>
       <div class="media-fx-panel__rows">
         <div v-for="row in filterRows" :key="row.key" class="media-fx-panel__row">
           <span class="media-fx-panel__label" title="双击恢复默认" @dblclick="resetFilterValue(row.key)">{{ row.label }}</span>

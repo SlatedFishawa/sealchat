@@ -19,6 +19,7 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code, Edit, Eye, EyeOff,
 
 import { setStageObjectMediaFx, stageObjectMediaFx, type StageObject } from '../shared/stage-types'
 import { mediaFxHasContent, resolveMediaFxCapabilities, type MediaFxSpec } from '@/features/media-fx/media-fx'
+import { mediaFxGpuSupported, subscribeMediaFxGpuAvailability } from '@/features/media-fx/media-fx-gpu'
 import MediaFxPanel from '@/features/media-fx/MediaFxPanel.vue'
 import type { AudioAsset } from '@/types/audio'
 import type { TheaterStageStore } from '../stage/StageStore'
@@ -101,9 +102,22 @@ const hasAnimatedMedia = computed(() => (config.value?.media || selectedEffect.v
 // config itself carries no Media FX fields.
 const mediaFx = computed(() => selectedEffect.value ? stageObjectMediaFx(selectedEffect.value) : null)
 const mediaFxActive = computed(() => mediaFxHasContent(mediaFx.value))
+const mediaFxGpuAvailable = ref(mediaFxGpuSupported())
+const unsubscribeMediaFxGpuAvailability = subscribeMediaFxGpuAvailability((available) => {
+  mediaFxGpuAvailable.value = available
+})
+// Media-only video assets are processed live by TheaterEffectMediaVideo, so they get
+// advanced / temporal; other effect media keeps its current DOM capabilities.
 const mediaFxCapabilities = computed(() => {
   const media = config.value?.media || selectedEffect.value?.image
-  return resolveMediaFxCapabilities('dom', media?.animated === true || media?.mimeType?.startsWith('video/') === true)
+  const video = media?.mimeType?.startsWith('video/') === true && config.value?.kind === 'media'
+  return resolveMediaFxCapabilities(
+    'dom',
+    media?.animated === true || media?.mimeType?.startsWith('video/') === true,
+    video && mediaFxGpuAvailable.value,
+    video && mediaFxGpuAvailable.value,
+    video,
+  )
 })
 const keywordDraft = ref('')
 const targetActorNameDraft = ref('')
@@ -262,6 +276,7 @@ const saveWebCode = (html: string) => {
 
 onBeforeUnmount(() => {
   endMediaFxEdit()
+  unsubscribeMediaFxGpuAvailability()
 })
 
 const addEffect = (kind: TheaterEffectKind) => {

@@ -56,13 +56,16 @@ async function run() {
     return statement.getText(ast)
   }).join('\n')
   let reducedMotion = false
+  // Live output sync (video surfaces) runs with every surface sync; motion is never part of it.
+  const liveSyncs = []
   const { syncSurfaceMediaFx: sync } = new Function(
     'resolveMediaFxMotionOverscanScale', 'mediaFxHasContent', 'resolveTheaterReducedMotion',
-    'mediaFxTemporalHasContent', 'mediaFxGpuSupported', 'isVideoSource',
+    'mediaFxTemporalHasContent', 'mediaFxGpuSupported', 'isVideoSource', 'syncSurfaceLiveFx',
     compile(declarations) + '\nreturn { syncSurfaceMediaFx }',
   )(
     resolveMediaFxMotionOverscanScale, mediaFxHasContent, () => ({ effectiveReducedMotion: reducedMotion }),
     mediaFx.mediaFxTemporalHasContent, () => true, source => source.video === true,
+    (_slot, _box, reduced) => liveSyncs.push(reduced),
   )
   const temporalUpdates = []
   const updates = []

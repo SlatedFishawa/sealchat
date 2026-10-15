@@ -167,6 +167,7 @@ import {
   compactMediaFxSpec,
   createDefaultMediaFxSpec,
   mediaFxAdvancedHasContent,
+  mediaFxFilterHasContent,
   mediaFxFilterToCss,
   mediaFxHasContent,
   mediaFxSpecsEqual,
@@ -180,12 +181,16 @@ import {
 import { canvasFilterSupported } from '@/features/media-fx/media-fx-canvas'
 import {
   createKonvaMediaFxController,
+  createKonvaMediaFxLiveController,
   createKonvaMediaFxTemporalController,
+  konvaMediaFxDisplayScale,
   mediaFxAdvancedSignature,
   type KonvaMediaFxController,
+  type KonvaMediaFxLiveController,
   type KonvaMediaFxTemporalController,
 } from '@/features/media-fx/media-fx-konva'
 import { createMediaFxGpuFilter, mediaFxGpuSupported, subscribeMediaFxGpuAvailability } from '@/features/media-fx/media-fx-gpu'
+import { mediaFxLiveWanted } from '@/features/media-fx/media-fx-live'
 import type { MessageImageEditorResult } from '@/composables/useMessageImageEditor'
 import MediaFxPanel from '@/features/media-fx/MediaFxPanel.vue'
 import TheaterDialogueOverlay from '../dialogue/TheaterDialogueOverlay.vue'
@@ -1216,17 +1221,24 @@ const updateSurfaceOverlay = (target: StageSurfaceTarget, patch: Partial<StageSu
 // Surface Media FX is layered over the base display parameters; an all-default spec
 // (including the panel's own reset) removes the field instead of storing it.
 const surfaceMediaFx = (target: StageSurfaceTarget) => surfaceStyle(target).mediaFx ?? createDefaultMediaFxSpec()
-// Advanced and temporal GPU effects only render on the static direct-image path (not
-// tile, video or animated media). Unsupported cases keep any stored values untouched.
+// Advanced and temporal GPU effects render on the static direct-image path, or for
+// animated media that plays through a video source on the live output path (never tile).
+// Unsupported cases keep any stored values untouched.
 const isAnimatedStageImageRef = (image: StageImageRef | null | undefined) => {
   const mimeType = image?.mimeType?.trim().toLowerCase()
   return Boolean(image && (image.animated === true || mimeType === 'image/apng' || mimeType === 'image/gif' || mimeType?.startsWith('video/')))
 }
+// Animated media whose playback source is an HTMLVideoElement (video, or the transparent
+// WebM playback variant of an animated image): only these have live-frame input.
+const stageImageRefPlaysAsVideo = (image: StageImageRef | null | undefined) => (
+  Boolean(image) && resolveTheaterStageMedia(image!)?.sourceKind === 'video'
+)
 const surfaceMediaFxCapabilities = (target: StageSurfaceTarget) => {
   const image = props.store.state.liveState[target]
   const animatedMedia = isAnimatedStageImageRef(image)
   const gpuPixels = Boolean(image) && surfaceStyle(target).fit !== 'tile' && mediaFxGpuAvailable.value
-  return resolveMediaFxCapabilities('konva', animatedMedia, gpuPixels, gpuPixels)
+  const livePixels = animatedMedia && surfaceStyle(target).fit !== 'tile' && stageImageRefPlaysAsVideo(image)
+  return resolveMediaFxCapabilities('konva', animatedMedia, gpuPixels, gpuPixels, livePixels)
 }
 const updateSurfaceMediaFx = (target: StageSurfaceTarget, spec: MediaFxSpec) => {
   props.store.patchSceneSurfaceStyle(target, { mediaFx: compactMediaFxSpec(spec) })
@@ -3065,6 +3077,8 @@ const imageLoadVersions = new Map<string, number>()
 const objectEntranceTweens = new Map<string, Konva.Tween>()
 // Media FX motion/filter controllers for image objects, keyed by object id.
 const objectMediaFxControllers = new Map<string, KonvaMediaFxController>()
+// Live advanced / temporal output of image objects playing a video source.
+const objectLiveFxControllers = new Map<string, KonvaMediaFxLiveController>()
 const pendingObjectEntrances = new Set<string>()
 type StageMediaSource = HTMLImageElement | HTMLVideoElement
 const activeAnimatedMedia = new Set<StageMediaSource>()
@@ -3116,6 +3130,9 @@ interface SurfaceSlot {
   mediaFxController: KonvaMediaFxController
   // Temporal live frames drawn in place of directImage's cached static look.
   mediaFxTemporal: KonvaMediaFxTemporalController
+  // Advanced / temporal for a video source: a separate output node over `media`, created
+  // only while the spec needs it (see syncSurfaceLiveFx).
+  liveFx: KonvaMediaFxLiveController | null
   media: Konva.Shape
   directImage: Konva.Image
   overlay: Konva.Rect
@@ -3819,15 +3836,23 @@ const selectedMediaFx = computed(() => (
 const selectedMediaFxActive = computed(() => mediaFxHasContent(selectedMediaFx.value))
 // Image objects render through Konva (filters are cached, so animated media disables
 // them). Iframe objects render as DOM, where CSS filter composites the live frame.
-// Advanced and temporal GPU effects are only offered for static images.
+// Advanced and temporal GPU effects are offered for static images (cache path) and for
+// animated images / videos playing through a video source (live output path).
+const isLiveVideoImageObject = (object: StageObject | null | undefined) => (
+  object?.type === 'image'
+  && Boolean(object.image)
+  && !isStaticImageObject(object)
+  && stageImageRefPlaysAsVideo(object.image)
+)
 const selectedMediaFxCapabilities = computed(() => (
   selectedObject.value?.type === 'iframe'
     ? resolveMediaFxCapabilities('dom', false)
     : resolveMediaFxCapabilities(
       'konva',
       selectedObject.value?.type === 'image' && Boolean(selectedObject.value.image) && !isStaticImageObject(selectedObject.value),
-      isStaticImageObject(selectedObject.value) && mediaFxGpuAvailable.value,
-      isStaticImageObject(selectedObject.value) && mediaFxGpuAvailable.value,
+      (isStaticImageObject(selectedObject.value) || isLiveVideoImageObject(selectedObject.value)) && mediaFxGpuAvailable.value,
+      (isStaticImageObject(selectedObject.value) || isLiveVideoImageObject(selectedObject.value)) && mediaFxGpuAvailable.value,
+      isLiveVideoImageObject(selectedObject.value),
     )
 ))
 let selectedMediaFxEditing = false
@@ -6136,15 +6161,15 @@ const surfaceDrawRect = (
 // Base Surface brightness / blur keep their legacy ranges and output; Media FX filters
 // are appended after them so the two layers compose instead of overriding each other.
 // Every token comes from normalized numbers, never from persisted CSS text.
-const surfaceMediaFxFilterCss = (slot: SurfaceSlot) => {
+const surfaceMediaFxFilterCss = (slot: SurfaceSlot, blurScale = 1, includeVideo = false) => {
   const mediaFx = slot.style.mediaFx
-  if (!mediaFx || (slot.source && isVideoSource(slot.source))) return ''
-  return mediaFxFilterToCss(mediaFx.filter)
+  if (!mediaFx || (!includeVideo && slot.source && isVideoSource(slot.source))) return ''
+  return mediaFxFilterToCss(mediaFx.filter, { blurScale })
 }
 
-const surfaceFilterCss = (style: StageSurfaceStyle, mediaFxCss: string) => {
+const surfaceFilterCss = (style: StageSurfaceStyle, mediaFxCss: string, blurScale = 1) => {
   const parts: string[] = []
-  if (style.brightness !== 1 || style.blurPx > 0) parts.push(`brightness(${style.brightness}) blur(${style.blurPx}px)`)
+  if (style.brightness !== 1 || style.blurPx > 0) parts.push(`brightness(${style.brightness}) blur(${style.blurPx * blurScale}px)`)
   if (mediaFxCss) parts.push(mediaFxCss)
   return parts.join(' ')
 }
@@ -6152,6 +6177,8 @@ const surfaceFilterCss = (style: StageSurfaceStyle, mediaFxCss: string) => {
 const drawSurfaceMedia = (slot: SurfaceSlot, context: Konva.Context) => {
   const source = slot.source
   if (!source) return
+  // The live output node shows the processed frames of this source instead.
+  if (slot.liveFx?.live) return
   if (slot.debugDrawCount < 2) {
     slot.debugDrawCount += 1
     theaterMediaDebug('surface draw', {
@@ -6237,6 +6264,7 @@ const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget,
       },
     }),
     mediaFxTemporal: createKonvaMediaFxTemporalController(directImage),
+    liveFx: null,
     media,
     directImage,
     overlay,
@@ -6260,6 +6288,73 @@ const surfaceMediaFxOverscanScale = (slot: SurfaceSlot, style: StageSurfaceStyle
   return resolveMediaFxMotionOverscanScale(style.mediaFx.motion)
 }
 
+// Same pixels as drawSurfaceMedia's non-tile branch (legacy brightness / blur, then the
+// Media FX basic filter, fit / zoom rect), drawn into the live staging raster. The filter
+// string is the one the media shape uses on its own canvas, so the live frame matches the
+// original look before advanced / temporal are applied on top.
+const drawSurfaceLiveFrame = (slot: SurfaceSlot, context: CanvasRenderingContext2D, video: HTMLVideoElement, raster: { width: number, height: number }) => {
+  const width = slot.placeholder.width()
+  const height = slot.placeholder.height()
+  const style = slot.style
+  if (style.fit === 'tile' || !(width > 0 && height > 0)) return false
+  const filter = surfaceFilterCss(
+    style,
+    surfaceMediaFxFilterCss(slot, raster.pixelRatio, true),
+    raster.pixelRatio,
+  )
+  if (filter && !canvasFilterSupported()) return false
+  const scaleX = raster.width / width
+  const scaleY = raster.height / height
+  const rect = surfaceDrawRect(video, width, height, style.fit, style.blurPx, style.zoom)
+  const dimensions = stageMediaDimensions(video)
+  context.filter = filter || 'none'
+  context.imageSmoothingEnabled = true
+  context.drawImage(video, 0, 0, dimensions.width, dimensions.height, rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY)
+  return true
+}
+
+// Advanced / temporal for a video surface source: a live output node over the media shape
+// (inside the motion / overscan groups), created only while the spec needs it. Tile keeps
+// its current pattern path without live pixels; static images keep directImage's cache.
+const syncSurfaceLiveFx = (slot: SurfaceSlot, box: { width: number, height: number }, reducedMotion: boolean) => {
+  // slot.source is always a loaded source; while a replacement loads it is still the one
+  // drawn, so its processed frames keep showing until the new source takes over.
+  const source = slot.source
+  const spec = slot.style.mediaFx
+  const video = source && isVideoSource(source) ? source : null
+  const basic = Boolean(spec && mediaFxFilterHasContent(spec.filter))
+  const gpuWanted = Boolean(spec && mediaFxLiveWanted(spec.advanced, spec.temporal))
+  const wanted = Boolean(video && spec)
+    && slot.animatedMedia
+    && slot.style.fit !== 'tile'
+    && (basic || (mediaFxGpuAvailable.value && gpuWanted))
+  if (!wanted) {
+    slot.liveFx?.dispose()
+    slot.liveFx = null
+    return
+  }
+  slot.liveFx ??= createKonvaMediaFxLiveController({
+    sourceNode: slot.media,
+    name: 'theater-surface-live-fx',
+    stage: (context, frameVideo, raster) => drawSurfaceLiveFrame(slot, context, frameVideo, raster),
+    // drawSurfaceMedia checks slot.liveFx.live itself; only a redraw is needed here.
+    setSourceHidden: () => slot.media.getLayer()?.batchDraw(),
+  })
+  const style = slot.style
+  slot.liveFx.update({
+    video,
+    sourceKey: stageMediaObjectUrls.get(video!) || video!.currentSrc || video!.src,
+    stageKey: [style.fit, style.zoom, style.brightness, style.blurPx, surfaceMediaFxFilterCss(slot, 1, true), box.width, box.height].join('|'),
+    rect: { x: 0, y: 0, width: box.width, height: box.height },
+    displayScale: konvaMediaFxDisplayScale(slot.media),
+    opacity: style.opacity,
+    basic,
+    advanced: mediaFxGpuAvailable.value ? spec!.advanced : null,
+    temporal: mediaFxGpuAvailable.value && !reducedMotion ? spec!.temporal : null,
+    active: slot.media.visible() || slot.liveFx.live,
+  })
+}
+
 const syncSurfaceMediaFx = (slot: SurfaceSlot, box: { width: number, height: number }) => {
   const reducedMotion = resolveTheaterReducedMotion().effectiveReducedMotion
   const hasFx = Boolean(slot.source && mediaFxHasContent(slot.style.mediaFx))
@@ -6279,6 +6374,7 @@ const syncSurfaceMediaFx = (slot: SurfaceSlot, box: { width: number, height: num
     slot.style.mediaFx?.temporal,
     Boolean(hasFx && slot.source && slot.directImage.visible() && surfaceMediaFxTemporal(slot, slot.source)),
   )
+  syncSurfaceLiveFx(slot, box, reducedMotion)
   const overscan = hasFx && slot.mediaFxController.isMotionActive()
     ? surfaceMediaFxOverscanScale(slot, slot.style, reducedMotion)
     : 1
@@ -7311,9 +7407,15 @@ const createObjectNode = (object: StageObject) => {
   return wrapper
 }
 
+const disposeObjectLiveFx = (objectId: string) => {
+  objectLiveFxControllers.get(objectId)?.dispose()
+  objectLiveFxControllers.delete(objectId)
+}
+
 const disposeObjectMediaFx = (objectId: string) => {
   objectMediaFxControllers.get(objectId)?.dispose()
   objectMediaFxControllers.delete(objectId)
+  disposeObjectLiveFx(objectId)
 }
 
 // Temporal is allowed to subscribe only while the image is actually visible in the
@@ -7329,12 +7431,71 @@ const stageObjectMediaFxVisible = (object: StageObject) => {
   return true
 }
 
+// Hides the original video node's pixels while live output is shown; its image, size,
+// hit region (hitFunc is untouched) and lifecycle stay as they are.
+const hiddenStageSourceSceneFunc = () => {}
+
+// Video-backed image objects with advanced / temporal content: a separate live output
+// node next to `.theater-object-image`, which keeps owning the video. Without such content
+// no controller (and no GPU / canvas / frame work) exists for the object.
+const syncObjectLiveFx = (wrapper: Konva.Group, object: StageObject, spec: MediaFxSpec) => {
+  const image = wrapper.findOne<Konva.Image>('.theater-object-image')
+  const basic = mediaFxFilterHasContent(spec.filter)
+  const gpuWanted = mediaFxLiveWanted(spec.advanced, spec.temporal)
+  const wanted = Boolean(image)
+    && isLiveVideoImageObject(object)
+    && (basic || (mediaFxGpuAvailable.value && gpuWanted))
+  if (!wanted || !image) {
+    disposeObjectLiveFx(object.id)
+    return
+  }
+  let controller = objectLiveFxControllers.get(object.id)
+  if (!controller) {
+    controller = createKonvaMediaFxLiveController({
+      sourceNode: image,
+      name: 'theater-object-live-fx',
+      // The source node always draws the whole video into its fitted rect. Animated
+      // objects never enter Konva cache; Basic is reproduced on this staging canvas.
+      stage: (context, video, raster) => {
+        const current = getObject(object.id)
+        const filter = current
+          ? mediaFxFilterToCss(stageObjectMediaFx(current).filter, { blurScale: raster.pixelRatio })
+          : ''
+        if (filter && !canvasFilterSupported()) return false
+        context.filter = filter || 'none'
+        context.imageSmoothingEnabled = true
+        context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, raster.width, raster.height)
+        return true
+      },
+      setSourceHidden: (hidden) => {
+        image.setAttr('sceneFunc', hidden ? hiddenStageSourceSceneFunc : undefined)
+      },
+    })
+    objectLiveFxControllers.set(object.id, controller)
+  }
+  const source = image.image() as StageMediaSource | undefined
+  const video = source && isVideoSource(source) && image.visible() ? source : null
+  const paused = mediaFxPreviewPaused.value && props.store.state.selectedObjectId === object.id
+  controller.update({
+    video,
+    sourceKey: video ? stageMediaObjectUrls.get(video) || video.currentSrc || video.src : '',
+    stageKey: `full-frame|${mediaFxFilterToCss(spec.filter)}`,
+    rect: { x: image.x(), y: image.y(), width: image.width(), height: image.height() },
+    displayScale: konvaMediaFxDisplayScale(image),
+    basic,
+    advanced: mediaFxGpuAvailable.value ? spec.advanced : null,
+    // Temporal is a dynamic effect: preview pause and reduced motion stop it like motion.
+    temporal: mediaFxGpuAvailable.value && !paused && !resolveTheaterReducedMotion().effectiveReducedMotion ? spec.temporal : null,
+    active: stageObjectMediaFxVisible(object),
+  })
+}
+
 const syncObjectMediaFx = (wrapper: Konva.Group, object: StageObject, width: number, height: number) => {
   const spec = stageObjectMediaFx(object)
   let controller = objectMediaFxControllers.get(object.id)
   if (!mediaFxHasContent(spec)) {
     // No effect: release the controller so no tween/cache survives for this object.
-    if (controller) disposeObjectMediaFx(object.id)
+    if (controller || objectLiveFxControllers.has(object.id)) disposeObjectMediaFx(object.id)
     return
   }
   const motionNode = wrapper.findOne<Konva.Group>('.theater-object-media-fx')
@@ -7356,6 +7517,7 @@ const syncObjectMediaFx = (wrapper: Konva.Group, object: StageObject, width: num
     paused: mediaFxPreviewPaused.value && props.store.state.selectedObjectId === object.id,
     reducedMotion: resolveTheaterReducedMotion().effectiveReducedMotion,
   })
+  syncObjectLiveFx(wrapper, object, spec)
 }
 
 const syncObjectImage = (wrapper: Konva.Group, object: StageObject, width: number, height: number) => {
@@ -7429,6 +7591,8 @@ const syncObjectImage = (wrapper: Konva.Group, object: StageObject, width: numbe
       )
       image.visible(true)
       objectMediaFxControllers.get(object.id)?.refreshFilter()
+      const current = getObject(object.id)
+      if (current && objectMediaFxControllers.has(object.id)) syncObjectLiveFx(wrapper, current, stageObjectMediaFx(current))
       if (!isVideoSource(loadedSource)) {
         const previewUrl = stageMediaObjectUrls.get(loadedSource) || location!.url
         if (previewUrl) setLayerPreviewUrl(object.id, previewUrl)
@@ -9099,6 +9263,11 @@ onBeforeUnmount(() => {
   pendingSceneEntrances = null
   pendingTextEntranceIds.value = []
   finishSceneMorph()
+  // Live outputs stop their frame callbacks before their video sources are released.
+  objectLiveFxControllers.forEach((controller) => controller.dispose())
+  objectLiveFxControllers.clear()
+  backgroundSlot?.liveFx?.dispose()
+  foregroundSlot?.liveFx?.dispose()
   objectNodes.forEach(releaseObjectMedia)
   releaseStageMedia(backgroundSlot?.source)
   releaseStageMedia(foregroundSlot?.source)
