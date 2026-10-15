@@ -58,7 +58,7 @@ async function run() {
     canvas.getContext = () => context
     return canvas
   } }
-  const { updateDirectSurfaceImage: update, clearDirectSurfaceImage: clear, surfaceFilterCss } = new Function(
+  const { updateDirectSurfaceImage: update, clearDirectSurfaceImage: clear, surfaceFilterCss, surfaceMediaFxFilterCss } = new Function(
     'Konva', 'document', 'mediaFxFilterToCss', 'canvasFilterSupported',
     'mediaFxAdvancedHasContent', 'mediaFxGpuSupported', 'createMediaFxGpuFilter', 'mediaFxAdvancedSignature',
     'mediaFxTemporalHasContent', 'resolveTheaterReducedMotion',
@@ -69,7 +69,7 @@ async function run() {
       const stageMediaObjectUrls = new WeakMap()
       const surfaceDrawRect = (_source, width, height) => ({ x: 0, y: 0, width, height })
       ${declarations}
-    `) + '\nreturn { updateDirectSurfaceImage, clearDirectSurfaceImage, surfaceFilterCss }',
+    `) + '\nreturn { updateDirectSurfaceImage, clearDirectSurfaceImage, surfaceFilterCss, surfaceMediaFxFilterCss }',
   )(
     Konva, document, mediaFxFilterToCss, () => supported,
     mediaFxAdvancedHasContent, () => gpuSupported, createMediaFxGpuFilter, mediaFxAdvancedSignature,
@@ -225,7 +225,9 @@ async function run() {
   assert.equal(isGpu(image.filters().at(-1)), true, 'switching back to cover restores advanced')
 
   slot.animatedMedia = true
+  assert.equal(surfaceMediaFxFilterCss(slot), mediaFxFilterToCss(slot.style.mediaFx.filter), 'animated images keep basic CSS filters on the live draw path')
   update(slot, source, box)
+  assert.equal(image.image(), undefined, 'animated images never enter the cached direct-image path')
   assert.equal(image.filters().some(isGpu), false, 'animated media never runs the GPU')
   slot.animatedMedia = false
   update(slot, { width: 10, height: 10, video: true }, box)

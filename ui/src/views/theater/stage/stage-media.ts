@@ -10,6 +10,45 @@ export interface TheaterStageMediaScope {
 export interface TheaterStageMediaLocation {
   url: string
   managed: boolean
+  sourceKind: 'image' | 'video'
+}
+
+export interface TheaterMediaPlaybackReference {
+  variant?: string
+  mimeType?: string
+  animated?: boolean
+  resourceKind?: string
+  resourceMimeType?: string
+}
+
+export interface TheaterMediaPlaybackResolution {
+  variant: string
+  mimeType: string
+  sourceKind: 'image' | 'video'
+  legacyAnimatedImageDisplay: boolean
+}
+
+export const resolveTheaterMediaPlaybackReference = (
+  reference: TheaterMediaPlaybackReference,
+): TheaterMediaPlaybackResolution => {
+  const variant = reference.variant?.trim() || 'original'
+  const mimeType = reference.mimeType?.trim().toLowerCase() || ''
+  const resourceKind = reference.resourceKind?.trim().toLowerCase() || ''
+  const resourceMimeType = reference.resourceMimeType?.trim().toLowerCase() || ''
+  const animatedImage = reference.animated === true
+    || resourceKind === 'animated_image'
+    || (!resourceKind && resourceMimeType.startsWith('image/'))
+  const legacyAnimatedImageDisplay = variant === 'display'
+    && mimeType === 'video/webm'
+    && animatedImage
+  return {
+    variant: legacyAnimatedImageDisplay ? 'original' : variant,
+    mimeType: legacyAnimatedImageDisplay
+      ? (resourceMimeType.startsWith('image/') ? resourceMimeType : '')
+      : mimeType,
+    sourceKind: legacyAnimatedImageDisplay ? 'image' : mimeType.startsWith('video/') ? 'video' : 'image',
+    legacyAnimatedImageDisplay,
+  }
 }
 
 const managedTheaterContentPath = /\/api\/v1\/worlds\/[^/]+(?:\/channels\/[^/]+)?\/theater\/resources\/[^/]+(?:\/variants\/([^/]+))?\/content\/?$/
@@ -40,17 +79,29 @@ export const resolveTheaterStageMediaLocation = (
   imageRef: StageImageRef,
   scope: TheaterStageMediaScope,
   baseHref = typeof window !== 'undefined' ? window.location.href : 'https://sealchat.invalid/',
+  resource?: { kind?: string, mimeType?: string },
 ): TheaterStageMediaLocation | null => {
   const normalized = imageRef.url.trim()
   if (!normalized) return null
 
+  const mimeType = imageRef.mimeType?.trim().toLowerCase()
   let candidate = normalized
   let managed = false
+  let sourceKind: TheaterStageMediaLocation['sourceKind'] = mimeType?.startsWith('video/') ? 'video' : 'image'
   try {
     const parsed = new URL(normalized, baseHref)
     const match = parsed.pathname.match(managedTheaterContentPath)
     if (match && imageRef.resourceId.trim()) {
-      candidate = `${scope.urlBase.replace(/\/$/, '')}${theaterResourceContentPath(scope, imageRef.resourceId, decodedPathSegment(match[1]))}`
+      const variant = decodedPathSegment(match[1])
+      const playback = resolveTheaterMediaPlaybackReference({
+        variant,
+        mimeType,
+        animated: imageRef.animated,
+        resourceKind: resource?.kind,
+        resourceMimeType: resource?.mimeType,
+      })
+      candidate = `${scope.urlBase.replace(/\/$/, '')}${theaterResourceContentPath(scope, imageRef.resourceId, playback.legacyAnimatedImageDisplay ? '' : variant)}`
+      sourceKind = playback.sourceKind
       managed = true
     } else if (normalized.startsWith('/api/')) {
       candidate = `${scope.urlBase.replace(/\/$/, '')}${normalized}`
@@ -60,5 +111,5 @@ export const resolveTheaterStageMediaLocation = (
   }
 
   const url = resolveStageImageUrl(candidate, baseHref)
-  return url ? { url, managed } : null
+  return url ? { url, managed, sourceKind } : null
 }

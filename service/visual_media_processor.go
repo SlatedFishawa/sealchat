@@ -77,28 +77,10 @@ func (processor *VisualMediaProcessor) ProcessTheaterResource(ctx context.Contex
 	case "static_image":
 		return result, nil
 	case "animated_image":
-		if canUseOriginalAnimatedWebM(mimeType, metadata) {
-			result.Outputs = append(result.Outputs, visualSourceOutput(VisualMediaOutputDisplay, sourcePath, mimeType, metadata))
-			return result, nil
-		}
-		if !processor.toolchain.FFmpegAvailable() {
-			// Browsers and the Konva renderer can play GIF, Animated WebP and APNG
-			// directly. Keep the validated source usable when optional transcoding is
-			// unavailable instead of rejecting every animated stage resource.
-			result.Outputs = append(result.Outputs, visualSourceOutput(VisualMediaOutputDisplay, sourcePath, mimeType, metadata))
-			return result, nil
-		}
-		tempDir, err := os.MkdirTemp("", "sealchat-theater-animation-*")
-		if err != nil {
-			return nil, err
-		}
-		result.cleanup = func() { _ = os.RemoveAll(tempDir) }
-		output, err := processor.transcodeTransparentWebM(ctx, sourcePath, filepath.Join(tempDir, "display.webm"), metadata, false)
-		if err != nil {
-			result.Cleanup()
-			return nil, err
-		}
-		result.Outputs = append(result.Outputs, output)
+		// Stage surfaces render GIF, Animated WebP and APNG natively. Keep image
+		// animations on their source container so alpha does not depend on browser
+		// VP9/WebM alpha support. Appearance assets keep their separate WebM path.
+		result.Outputs = append(result.Outputs, visualSourceOutput(VisualMediaOutputDisplay, sourcePath, mimeType, metadata))
 		return result, nil
 	case "video":
 		if !processor.toolchain.FFmpegAvailable() {

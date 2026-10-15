@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { resolveStageImageUrl, type StageObjectTransform } from '../shared/stage-types'
+import type { StageImageRef, StageObjectTransform } from '../shared/stage-types'
 import { resolveTheaterReducedMotion } from '../shared/theater-reduced-motion'
 import { resolveMediaFxCapabilities } from '@/features/media-fx/media-fx'
 import { vMediaFx, type MediaFxDirectiveValue } from '@/features/media-fx/media-fx-dom'
@@ -19,6 +19,7 @@ const props = defineProps<{
   selectedObject?: TheaterEffectPlayback['object'] | null
   editing: boolean
   editingTarget: 'frame' | 'media'
+  resolveMedia: (image: StageImageRef) => { url: string, sourceKind: 'image' | 'video' } | null
 }>()
 
 const emit = defineEmits<{
@@ -68,22 +69,27 @@ const mediaStyle = (playback: TheaterEffectPlayback) => {
   }
 }
 
-const mediaUrl = (playback: TheaterEffectPlayback) => {
+const mediaLocation = (playback: TheaterEffectPlayback) => {
   const image = playback.config.media || playback.object.image
-  return image ? resolveStageImageUrl(image.url) : null
+  return image ? props.resolveMedia(image) : null
 }
 
-const mediaIsVideo = (playback: TheaterEffectPlayback) => (
-  (playback.config.media || playback.object.image)?.mimeType?.startsWith('video/') === true
-)
+const mediaUrl = (playback: TheaterEffectPlayback) => mediaLocation(playback)?.url || null
+
+const mediaIsVideo = (playback: TheaterEffectPlayback) => mediaLocation(playback)?.sourceKind === 'video'
+
+const mediaIsAnimated = (playback: TheaterEffectPlayback) => {
+  const media = playback.config.media || playback.object.image
+  const mimeType = media?.mimeType?.trim().toLowerCase() || ''
+  return media?.animated === true || mimeType === 'image/apng' || mimeType === 'image/gif' || mimeType.startsWith('video/')
+}
 
 const mediaLoopCount = (playback: TheaterEffectPlayback) => playback.config.mediaLoopCount ?? null
 
 // Media FX wraps the asset in its own element, so WAAPI motion never touches the
 // asset's mediaTransform or the effect frame transform.
 const mediaFxBinding = (playback: TheaterEffectPlayback): MediaFxDirectiveValue => {
-  const media = playback.config.media || playback.object.image
-  const capabilities = resolveMediaFxCapabilities('dom', media?.animated === true || mediaIsVideo(playback))
+  const capabilities = resolveMediaFxCapabilities('dom', mediaIsAnimated(playback))
   return {
     spec: playback.object.metadata?.mediaFx,
     filters: capabilities.filters,

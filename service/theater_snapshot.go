@@ -756,10 +756,6 @@ func theaterResourcePublicFromModel(conn *gorm.DB, resource model.TheaterResourc
 	playbackMimeType := resource.MimeType
 	for _, variant := range variants {
 		publicVariants = append(publicVariants, TheaterResourceVariantPublic{Name: variant.Name, MimeType: variant.MimeType, Width: variant.Width, Height: variant.Height, SizeBytes: variant.SizeBytes})
-		if resource.Kind == "animated_image" && variant.Name == "display" && variant.MimeType == "video/webm" {
-			playbackVariant = variant.Name
-			playbackMimeType = variant.MimeType
-		}
 	}
 	return TheaterResourcePublic{
 		ID: resource.ID, Kind: resource.Kind, Status: resource.Status, MimeType: resource.MimeType, SizeBytes: resource.SizeBytes,

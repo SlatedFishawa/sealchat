@@ -1,4 +1,5 @@
 import type { StageSceneOverlayMediaRef } from '../../shared/stage-types'
+import { resolveTheaterMediaPlaybackReference } from '../../stage/stage-media'
 import type { SceneOverlayRenderer } from '../scene-overlay-types'
 
 interface MediaRendererConfig {
@@ -114,9 +115,14 @@ export const mediaSceneOverlayRenderer: SceneOverlayRenderer = {
         disposeMounted()
         return
       }
-      const variant = media?.variant?.trim() || 'original'
-      const mimeType = media?.mimeType?.trim().toLowerCase() || ''
-      const videoSource = mimeType === 'video/webm'
+      const playback = resolveTheaterMediaPlaybackReference({
+        variant: media?.variant,
+        mimeType: media?.mimeType,
+        animated: media?.animated,
+      })
+      const variant = playback.variant
+      const mimeType = playback.mimeType
+      const videoSource = playback.sourceKind === 'video'
       const sourceKey = `${resourceId}\n${variant}\n${mimeType}`
       if (mounted?.sourceKey === sourceKey) {
         applyElementStyle(mounted.element, config)

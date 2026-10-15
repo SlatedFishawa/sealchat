@@ -7,6 +7,7 @@ import type { TheaterImageAsset } from '../effects/theater-image-assets'
 import type { StageSceneOverlayBinding } from '../shared/stage-types'
 import type { TheaterStageStore } from '../stage/StageStore'
 import { cloneStageData } from '../stage/stage-editing'
+import { resolveTheaterMediaPlaybackReference } from '../stage/stage-media'
 import { registerBuiltInSceneOverlayEffects } from './effects'
 import { createSceneOverlayBinding, getSceneOverlayEffect } from './scene-overlay-registry'
 import SceneOverlayCustomMediaPicker from './SceneOverlayCustomMediaPicker.vue'
@@ -162,15 +163,24 @@ const addOverlay = (binding: StageSceneOverlayBinding) => {
   replacingMediaOverlayId.value = null
 }
 
-const mediaRefFromAsset = (asset: TheaterImageAsset) => ({
-  resourceId: asset.resourceId,
-  variant: asset.resource.playbackVariant || 'original',
-  mimeType: asset.resource.playbackMimeType || asset.resource.mimeType,
-  animated: asset.resource.animated === true,
-  ...(Number.isInteger(asset.resource.loopCount) && (asset.resource.loopCount || 0) > 0
-    ? { loopCount: asset.resource.loopCount! }
-    : {}),
-})
+const mediaRefFromAsset = (asset: TheaterImageAsset) => {
+  const playback = resolveTheaterMediaPlaybackReference({
+    variant: asset.resource.playbackVariant,
+    mimeType: asset.resource.playbackMimeType || asset.resource.mimeType,
+    animated: asset.resource.animated,
+    resourceKind: asset.resource.kind,
+    resourceMimeType: asset.resource.mimeType,
+  })
+  return {
+    resourceId: asset.resourceId,
+    variant: playback.variant,
+    mimeType: playback.mimeType || asset.resource.mimeType,
+    animated: asset.resource.animated === true || asset.resource.kind === 'animated_image',
+    ...(Number.isInteger(asset.resource.loopCount) && (asset.resource.loopCount || 0) > 0
+      ? { loopCount: asset.resource.loopCount! }
+      : {}),
+  }
+}
 
 const selectCustomMedia = (asset: TheaterImageAsset) => {
   const replacement = replacingMediaOverlayId.value

@@ -141,6 +141,7 @@ import {
 } from './stage-insert-placement'
 import {
   resolveTheaterStageMediaLocation,
+  resolveTheaterMediaPlaybackReference,
   theaterResourceContentPath,
   theaterResourcePath as buildTheaterResourcePath,
   type TheaterStageMediaLocation,
@@ -1217,9 +1218,13 @@ const updateSurfaceOverlay = (target: StageSurfaceTarget, patch: Partial<StageSu
 const surfaceMediaFx = (target: StageSurfaceTarget) => surfaceStyle(target).mediaFx ?? createDefaultMediaFxSpec()
 // Advanced and temporal GPU effects only render on the static direct-image path (not
 // tile, video or animated media). Unsupported cases keep any stored values untouched.
+const isAnimatedStageImageRef = (image: StageImageRef | null | undefined) => {
+  const mimeType = image?.mimeType?.trim().toLowerCase()
+  return Boolean(image && (image.animated === true || mimeType === 'image/apng' || mimeType === 'image/gif' || mimeType?.startsWith('video/')))
+}
 const surfaceMediaFxCapabilities = (target: StageSurfaceTarget) => {
   const image = props.store.state.liveState[target]
-  const animatedMedia = Boolean(image && (image.animated === true || image.mimeType?.startsWith('video/')))
+  const animatedMedia = isAnimatedStageImageRef(image)
   const gpuPixels = Boolean(image) && surfaceStyle(target).fit !== 'tile' && mediaFxGpuAvailable.value
   return resolveMediaFxCapabilities('konva', animatedMedia, gpuPixels, gpuPixels)
 }
@@ -1235,6 +1240,7 @@ interface TheaterResource {
   id?: string
   status?: string
   animated?: boolean
+  mimeType?: string
   playbackVariant?: string
   playbackMimeType?: string
   loopCount?: number | null
@@ -1336,6 +1342,31 @@ const sceneOverlayImageAssets = computed(() => {
       - (itemOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER)
       || left.name.localeCompare(right.name))
 })
+const theaterImageResourceById = computed(() => new Map(
+  theaterImageAssets.value.map((asset) => [asset.resourceId, asset.resource]),
+))
+const sceneOverlayRenderBindings = computed(() => props.store.state.liveState.sceneOverlays.map((binding) => {
+  const media = binding.media
+  const resource = media ? theaterImageResourceById.value.get(media.resourceId) : undefined
+  if (!media || !resource) return binding
+  const playback = resolveTheaterMediaPlaybackReference({
+    variant: media.variant,
+    mimeType: media.mimeType,
+    animated: media.animated,
+    resourceKind: resource.kind,
+    resourceMimeType: resource.mimeType,
+  })
+  if (!playback.legacyAnimatedImageDisplay) return binding
+  return {
+    ...binding,
+    media: {
+      ...media,
+      variant: playback.variant,
+      mimeType: playback.mimeType || resource.mimeType,
+      animated: true,
+    },
+  }
+}))
 const referencedTheaterAudioAssetIds = computed(() => [...new Set([
   ...Object.values(props.store.state.scenes).flatMap((scene) => [
     scene.state.switchAudio?.assetId,
@@ -4795,7 +4826,12 @@ const resolveTheaterResourceUrl = (resourceId: string, variant = 'original') => 
   return `${resourceBase.replace(/\/$/, '')}${theaterResourceContentPath(theaterMediaScope(), normalizedResourceId, variant || 'original')}`
 }
 
-const resolveTheaterStageMedia = (imageRef: StageImageRef) => resolveTheaterStageMediaLocation(imageRef, theaterMediaScope())
+const resolveTheaterStageMedia = (imageRef: StageImageRef) => resolveTheaterStageMediaLocation(
+  imageRef,
+  theaterMediaScope(),
+  undefined,
+  theaterImageResourceById.value.get(imageRef.resourceId),
+)
 
 const stageMediaDimensions = (source: StageMediaSource) => isVideoSource(source)
   ? { width: source.videoWidth, height: source.videoHeight }
@@ -4910,7 +4946,7 @@ const loadStageMedia = (
   onReady: (source: StageMediaSource) => void,
   onError: (message: string) => void,
 ) => {
-  const source: StageMediaSource = imageRef.mimeType === 'video/webm'
+  const source: StageMediaSource = location.sourceKind === 'video'
     ? document.createElement('video')
     : new Image()
   const controller = new AbortController()
@@ -5889,7 +5925,7 @@ const activateStageMedia = (source: StageMediaSource, imageRef: StageImageRef) =
     configureVideoLoop(source, imageRef, true)
     activeAnimatedMedia.add(source)
     void source.play().catch((error) => theaterMediaDebug('video play error', stageMediaErrorMessage(error)))
-  } else if (imageRef.animated) {
+  } else if (isAnimatedStageImageRef(imageRef)) {
     activeAnimatedMedia.add(source)
   }
   syncMediaAnimation()
@@ -6100,7 +6136,7 @@ const surfaceDrawRect = (
 // Every token comes from normalized numbers, never from persisted CSS text.
 const surfaceMediaFxFilterCss = (slot: SurfaceSlot) => {
   const mediaFx = slot.style.mediaFx
-  if (!mediaFx || slot.animatedMedia || (slot.source && isVideoSource(slot.source))) return ''
+  if (!mediaFx || (slot.source && isVideoSource(slot.source))) return ''
   return mediaFxFilterToCss(mediaFx.filter)
 }
 
@@ -6320,7 +6356,7 @@ const updateDirectSurfaceImage = (
     isVideo: source ? isVideoSource(source) : false,
     useDirect: useDirectSurfaceImage(slot.style),
   })
-  if (!source || !useDirectSurfaceImage(slot.style) || isVideoSource(source)) {
+  if (!source || slot.animatedMedia || !useDirectSurfaceImage(slot.style) || isVideoSource(source)) {
     clearDirectSurfaceImage(slot)
     return
   }
@@ -6423,7 +6459,7 @@ const updateSurfaceSlot = (
     })
   }
   applyStyle(style)
-  slot.animatedMedia = Boolean(imageRef && (imageRef.animated === true || imageRef.mimeType?.startsWith('video/')))
+  slot.animatedMedia = isAnimatedStageImageRef(imageRef)
 
   const location = imageRef ? resolveTheaterStageMedia(imageRef) : null
   const resolved = location?.url || null
@@ -7979,8 +8015,10 @@ const uploadTheaterImageResource = async (file: File, targetObjectId = '', scope
   const resourceId = resource?.id
   if (!resourceId) throw new Error('上传响应缺少资源 ID')
   if (resource?.status !== 'ready') resource = await waitForResource(resourceId, scope)
-  const variant = resource?.playbackVariant || 'original'
-  const mimeType = resource?.playbackMimeType || prepared.type || normalizedFileType(prepared)
+  const originalMimeType = resource?.mimeType?.trim().toLowerCase() || prepared.type || normalizedFileType(prepared)
+  const useOriginalAnimatedImage = resource?.animated === true && originalMimeType.startsWith('image/')
+  const variant = useOriginalAnimatedImage ? 'original' : resource?.playbackVariant || 'original'
+  const mimeType = useOriginalAnimatedImage ? originalMimeType : resource?.playbackMimeType || originalMimeType
   const resourceBase = urlBase.startsWith('//') ? `${window.location.protocol}${urlBase}` : urlBase
   return {
     resource,
@@ -9535,7 +9573,7 @@ onBeforeUnmount(() => {
           </template>
           <SceneOverlayStageHost
             :scene-id="store.state.activeSceneId"
-            :overlays="store.state.liveState.sceneOverlays"
+            :overlays="sceneOverlayRenderBindings"
             :resolve-resource-url="resolveTheaterResourceUrl"
           />
           <StageTextOverlay
@@ -9624,6 +9662,7 @@ onBeforeUnmount(() => {
           :selected-object="selectedEffectObject"
           :editing="effectPanelOpen && canEditAllObjects"
           :editing-target="effectEditingTarget"
+          :resolve-media="resolveTheaterStageMedia"
           @transform-start="beginEffectTransform"
           @transform-update="updateEffectTransform"
           @transform-end="endEffectTransform"

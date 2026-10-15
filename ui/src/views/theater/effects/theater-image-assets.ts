@@ -5,6 +5,7 @@ export const THEATER_IMAGE_ASSET_SCOPE_DRAG_TYPE = 'application/x-sealchat-theat
 
 export interface TheaterImageAssetResource {
   id: string
+  kind?: string
   status: string
   mimeType: string
   playbackVariant?: string
