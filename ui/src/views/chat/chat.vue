@@ -1,6 +1,8 @@
 <script setup lang="tsx">
 import { useSpeechStore } from '@/features/tts/store'
 import RoleVoiceDialog from '@/features/tts/RoleVoiceDialog.vue'
+import { speechAPI } from '@/features/tts/api'
+import type { RoleSpeechConfig } from '@/features/tts/types'
 import ChatItem from './components/chat-item.vue';
 import MultiSelectFloatingBar from './components/MultiSelectFloatingBar.vue';
 import MessageForwardDialog from './components/MessageForwardDialog.vue';
@@ -6323,8 +6325,29 @@ const submitIdentityForm = async (options: { closeDialog?: boolean; successMessa
       }
     } else if (editingIdentity.value) {
       if (editingIdentity.value.isTemporary) {
+        // The old identity may no longer be readable after replacement.
+        let previousVoice: RoleSpeechConfig | null = null;
+        let voiceReadFailed = false;
+        if (useSpeechStore().quota?.enabled) {
+          try {
+            const config = await speechAPI.role(editingIdentity.value.id);
+            if (config.revision > 0) previousVoice = config;
+          } catch (error) {
+            voiceReadFailed = true;
+            console.warn('Failed to read temporary identity voice', error);
+          }
+        }
         const replacedIdentity = await chat.channelIdentityReplaceTemporary(editingIdentity.value.id, payload);
         savedIdentity = replacedIdentity;
+        if (previousVoice && replacedIdentity?.id && replacedIdentity.id !== editingIdentity.value.id) {
+          try {
+            await speechAPI.saveRole(replacedIdentity.id, { ...previousVoice, identityId: replacedIdentity.id, revision: 0 });
+          } catch (error) {
+            voiceReadFailed = true;
+            console.warn('Failed to inherit temporary identity voice', error);
+          }
+        }
+        if (voiceReadFailed) message.warning('新身份已生效，但音色配置未能继承，请重新设置');
         if (replacedIdentity?.id && chat.curChannel?.id && effectiveBotFeatureEnabled.value) {
           if (characterCardStore.isBotCharacterDisabled(chat.curChannel.id)) {
             message.warning(characterCardStore.getCharacterApiDisabledReason(chat.curChannel.id));
