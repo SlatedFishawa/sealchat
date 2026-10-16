@@ -33,6 +33,7 @@ import {
   type StageSceneOverlayBinding,
   type SceneFolder,
   type StageSceneTransition,
+  type StageSurfaceStyle,
   type StageSurfaceStylePatch,
   type StageSurfaceTarget,
   type StageSurfaceEmbed,
@@ -252,12 +253,18 @@ const makeObject = (
   ...overrides,
 })
 
+export const DEFAULT_NEW_SCENE_COLOR = '#172033'
+
+export const createDefaultSceneBackgroundStyle = () => (
+  createDefaultStageSurfaceStyle('cover', { opacity: 0.9, blurPx: 10, brightness: 1, overlay: { enabled: false, color: '#000000', opacity: 0.4 } })
+)
+
 const createLiveState = (color: string, sceneObjects: Record<string, StageObject> = {}): StageLiveState => ({
   background: null,
   foreground: null,
   surfaceEmbeds: normalizeStageSurfaceEmbeds(null),
   surfaceStyles: {
-    background: createDefaultStageSurfaceStyle('cover', { opacity: 0.9, blurPx: 10, brightness: 1, overlay: { enabled: false, color: '#000000', opacity: 0.4 } }),
+    background: createDefaultSceneBackgroundStyle(),
     foreground: createDefaultStageSurfaceStyle(),
   },
   backgroundColor: color,
@@ -498,6 +505,16 @@ const normalizeLiveState = (input: Partial<StageLiveState> | undefined, fallback
   serverState: input?.serverState && typeof input.serverState === 'object' ? input.serverState : {},
 })
 
+// Initial values for a scene appended without switching to it. Omitted fields keep
+// the regular new-scene defaults.
+export interface StageSceneCreateOptions {
+  name: string
+  folderId?: string | null
+  backgroundColor?: string
+  background?: { image: StageImageRef, name?: string }
+  backgroundStyle?: StageSurfaceStyle
+}
+
 export interface TheaterStageStore {
   state: StageWorkspaceState
   surfaceChanges: Record<StageSurfaceTarget | 'reset', number>
@@ -517,6 +534,7 @@ export interface TheaterStageStore {
   setObjectFlag: (objectId: string, key: StageObjectQuickFlag, value: boolean) => boolean
   selectScene: (sceneId: string) => void
   addScene: () => void
+  appendScene: (options: StageSceneCreateOptions) => string | null
   duplicateScene: (sourceSceneId?: string, activateDuplicate?: boolean) => { sceneId: string, objectIdMap: ReadonlyMap<string, string> }
   removeScene: (sceneId?: string) => void
   updateSceneDetails: (sceneId: string, name: string, switchText: string) => boolean
@@ -992,13 +1010,36 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     return true
   }
 
+  const nextSceneOrder = () => scenes.value.reduce((highest, item) => Math.max(highest, item.order), -1) + 1
+
+  // Appends after the last scene and leaves activeSceneId/liveState untouched.
+  const appendScene = (options: StageSceneCreateOptions): string | null => {
+    const name = options.name.trim()
+    const folderId = options.folderId?.trim() || ''
+    const color = options.backgroundColor?.trim() || ''
+    if (!name || [...name].length > 512) return null
+    if (folderId && !state.sceneFolders.some((folder) => folder.id === folderId)) return null
+    const scene = createScene(name, nextSceneOrder(), color && color.length <= 64 ? color : DEFAULT_NEW_SCENE_COLOR)
+    if (options.backgroundStyle) {
+      scene.state.surfaceStyles.background = normalizeStageSurfaceStyle(options.backgroundStyle, 'cover', createDefaultSceneBackgroundStyle())
+    }
+    if (options.background && (!options.background.image || !operateSurfaceVariant(scene.state, 'background', {
+      type: 'add',
+      id: uid('surface'),
+      name: options.background.name?.trim() || '图片 1',
+      image: options.background.image,
+    }))) return null
+    if (folderId) scene.folderId = folderId
+    state.scenes[scene.id] = scene
+    return scene.id
+  }
+
   const addScene = () => {
     saveLiveState()
-    const order = scenes.value.reduce((highest, item) => Math.max(highest, item.order), -1) + 1
-    const scene = createScene(`场景 ${order + 1}`, order, '#172033')
-    state.scenes[scene.id] = scene
-    state.activeSceneId = scene.id
-    state.liveState = clone(scene.state)
+    const sceneId = appendScene({ name: `场景 ${nextSceneOrder() + 1}` })
+    if (!sceneId) return
+    state.activeSceneId = sceneId
+    state.liveState = clone(state.scenes[sceneId].state)
     clearSelection()
   }
 
@@ -1834,6 +1875,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     reorderScenes,
     moveScene,
     addScene,
+    appendScene,
     duplicateScene,
     removeScene,
     addObject,

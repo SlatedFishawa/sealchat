@@ -30,6 +30,7 @@ import {
   Edit,
   Eye,
   EyeOff,
+  Files,
   Filter,
   Folder,
   FolderPlus,
@@ -148,6 +149,8 @@ import {
   resolveTheaterStageMediaLocation,
   resolveTheaterStageThumbnailLocation,
   resolveTheaterMediaPlaybackReference,
+  normalizedTheaterMediaType as normalizedFileType,
+  supportedTheaterMedia,
   theaterResourceContentPath,
   theaterResourcePath as buildTheaterResourcePath,
   type TheaterStageMediaLocation,
@@ -157,6 +160,8 @@ import StageCopyToolbar from './StageCopyToolbar.vue'
 import StageGridToolbar from './StageGridToolbar.vue'
 import StageSceneFixedToolbar from './StageSceneFixedToolbar.vue'
 import StageSceneThumbnail from './StageSceneThumbnail.vue'
+import StageSceneBatchCreateModal from './StageSceneBatchCreateModal.vue'
+import type { StageSceneBatchSession } from './stage-scene-batch-create'
 import {
   buildSceneGridEntries,
   buildSceneGridFolderTabs,
@@ -2241,6 +2246,40 @@ const openSceneFolderDialog = (mode: SceneFolderDialogMode, folderId: string | n
 }
 
 const createSceneFolder = () => openSceneFolderDialog('create')
+
+const sceneBatchCreateVisible = ref(false)
+const canBatchCreateScenes = computed(() => canEditAllObjects.value && canSwitchScene.value && canUploadResources.value)
+// Every capability is bound to the scope captured when the batch starts, so a
+// world/channel switch or lost permission stops writes into the new context.
+const createSceneBatchSession = (): StageSceneBatchSession => {
+  const scope = captureTheaterRequestScope()
+  const isCurrent = () => isCurrentTheaterRequestScope(scope) && canBatchCreateScenes.value
+  return {
+    isCurrent,
+    upload: async (file) => {
+      if (!isCurrent()) throw new Error('小剧场上下文已变化')
+      try {
+        const uploaded = await uploadTheaterImageResource(file, '', scope)
+        return {
+          url: uploaded.url,
+          resourceId: uploaded.resourceId,
+          mimeType: uploaded.mimeType,
+          animated: uploaded.resource?.animated === true,
+          loopCount: uploaded.resource?.loopCount || undefined,
+        }
+      } catch (error) {
+        throw new Error(theaterAudioErrorMessage(error, '图片上传失败'))
+      }
+    },
+    createScene: (options) => isCurrent() ? props.store.appendScene(options) : null,
+    createFolder: (name) => isCurrent() ? props.store.createSceneFolder(name) : null,
+    folders: () => props.store.state.sceneFolders,
+  }
+}
+const handleSceneBatchFinished = ({ created, failed }: { created: number, failed: number }) => {
+  if (failed) stageMessage.warning(`批量创建场景：${created} 个成功，${failed} 个失败`)
+  else stageMessage.success(`已批量创建 ${created} 个场景`)
+}
 
 const closeSceneFolderDialog = () => {
   sceneFolderDialogVisible.value = false
@@ -8415,27 +8454,6 @@ const waitForResource = async (resourceId: string, scope = captureTheaterRequest
   throw new Error('图片处理超时')
 }
 
-const supportedTheaterMedia = new Set(['image/jpeg', 'image/png', 'image/apng', 'image/webp', 'image/gif', 'video/webm'])
-
-const normalizedFileType = (file: File) => {
-  const declared = file.type.trim().toLowerCase()
-  if (supportedTheaterMedia.has(declared)) return declared
-  const extension = file.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1]
-  return extension === 'jpg' || extension === 'jpeg'
-    ? 'image/jpeg'
-    : extension === 'png'
-      ? 'image/png'
-      : extension === 'apng'
-        ? 'image/apng'
-        : extension === 'webp'
-          ? 'image/webp'
-          : extension === 'gif'
-            ? 'image/gif'
-            : extension === 'webm'
-              ? 'video/webm'
-              : declared
-}
-
 const isAnimatedPNG = async (file: File) => {
   let offset = 8
   while (offset + 12 <= file.size) {
@@ -10284,6 +10302,12 @@ onBeforeUnmount(() => {
               </template>
               预加载全部场景到所有设备
             </n-tooltip>
+            <n-tooltip v-if="canBatchCreateScenes" trigger="hover">
+              <template #trigger>
+                <n-button text size="tiny" aria-label="批量创建场景" :disabled="sceneEditMode" @click="sceneBatchCreateVisible = true"><n-icon><Files /></n-icon></n-button>
+              </template>
+              批量创建场景
+            </n-tooltip>
             <n-button v-if="canEditAllObjects && canSwitchScene" text size="tiny" aria-label="新建场景" :disabled="sceneEditMode" @click="store.addScene"><n-icon><Plus /></n-icon></n-button>
             <n-button v-if="canEditAllObjects" text size="tiny" aria-label="新建场景文件夹" :disabled="sceneEditMode" @click="createSceneFolder"><n-icon><FolderPlus /></n-icon></n-button>
             <n-button class="theater-panel-close" text size="tiny" aria-label="关闭场景面板" @click="scenePanelOpen = false"><n-icon><X /></n-icon></n-button>
@@ -11552,6 +11576,14 @@ onBeforeUnmount(() => {
         </footer>
       </div>
     </n-modal>
+    <StageSceneBatchCreateModal
+      v-if="canBatchCreateScenes"
+      :key="`${worldId}:${channelId}:${scopeType || ''}`"
+      v-model:show="sceneBatchCreateVisible"
+      :folders="store.state.sceneFolders"
+      :create-session="createSceneBatchSession"
+      @finished="handleSceneBatchFinished"
+    />
     <n-modal v-model:show="packageProgressVisible" :mask-closable="false" :closable="false" preset="card" title="小剧场导入进度" class="theater-package-progress-modal">
       <div class="theater-package-progress">
         <n-progress type="line" :percentage="Math.round(packageDisplayedProgress * 100)" :status="packageProgressJob?.status === 'failed' ? 'error' : packageProgressJob?.status === 'done' ? 'success' : 'default'" />

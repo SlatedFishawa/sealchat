@@ -126,3 +126,25 @@ export const resolveTheaterStageThumbnailLocation = (
   }
   return location.sourceKind === 'video' ? null : location
 }
+
+export const supportedTheaterMedia = new Set(['image/jpeg', 'image/png', 'image/apng', 'image/webp', 'image/gif', 'video/webm'])
+
+// Browsers often leave file.type empty or generic, so fall back to the extension.
+export const normalizedTheaterMediaType = (file: Pick<File, 'name' | 'type'>) => {
+  const declared = file.type.trim().toLowerCase()
+  if (supportedTheaterMedia.has(declared)) return declared
+  const extension = file.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1]
+  return extension === 'jpg' || extension === 'jpeg'
+    ? 'image/jpeg'
+    : extension === 'png'
+      ? 'image/png'
+      : extension === 'apng'
+        ? 'image/apng'
+        : extension === 'webp'
+          ? 'image/webp'
+          : extension === 'gif'
+            ? 'image/gif'
+            : extension === 'webm'
+              ? 'video/webm'
+              : declared
+}
