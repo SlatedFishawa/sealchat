@@ -3101,28 +3101,28 @@ export const useChatStore = defineStore({
       }
     },
 
-    getIdentityIcOocMode(channelId: string, identityId: string): 'ic' | 'ooc' | null {
+    getIdentityIcOocMode(channelId: string, identityId: string, targetUserId?: string | null): 'ic' | 'ooc' | null {
       if (!channelId || !identityId) return null;
-      const identities = this.channelIdentities[channelId] || [];
-      const targetIdentity = identities.find((identity) => identity.id === identityId);
-      const temporaryMode = targetIdentity?.isTemporary
-        ? String(targetIdentity.icOocOnActivate || '').trim().toLowerCase()
-        : '';
-      if (temporaryMode === 'ic' || temporaryMode === 'ooc') {
-        return temporaryMode;
-      }
-
-      const config = this.getChannelIcOocRoleConfig(channelId);
+      const config = this.getChannelIcOocRoleConfig(channelId, targetUserId);
       const isIcRole = config.icRoleId === identityId;
       const isOocRole = config.oocRoleId === identityId;
       if (isIcRole && !isOocRole) return 'ic';
       if (isOocRole && !isIcRole) return 'ooc';
+
+      const scopeKey = this.resolveChannelIdentityScopeKey(channelId, targetUserId);
+      const identities = this.channelIdentities[scopeKey] || [];
+      const targetIdentity = identities.find((identity) => identity.id === identityId);
+      const activateMode = String(targetIdentity?.icOocOnActivate || '').trim().toLowerCase();
+      if (activateMode === 'ic' || activateMode === 'ooc') {
+        return activateMode;
+      }
+      if (targetIdentity && !targetIdentity.isTemporary) return 'ic';
       return null;
     },
 
     /**
      * 切换角色时的反向自动切换场内外
-     * 如果角色存在唯一的场内外映射（仅映射到IC或仅映射到OOC），则自动切换模式
+     * 唯一的频道场内外映射优先，否则使用角色自己的默认模式
      */
     autoSwitchIcOocOnRoleChange(channelId: string, newRoleId: string, persist = true) {
       const display = useDisplayStore();
@@ -6696,7 +6696,26 @@ export const useChatStore = defineStore({
             targetUserId: normalizeIdentityScopeUserId(targetUserId) || undefined,
           },
         );
-        return this.applyChannelIcOocRoleConfig(channelId, resp.data?.config || EMPTY_CHANNEL_IC_OOC_ROLE_CONFIG, targetUserId);
+        const applied = this.applyChannelIcOocRoleConfig(channelId, resp.data?.config || EMPTY_CHANNEL_IC_OOC_ROLE_CONFIG, targetUserId);
+        const scopeKey = this.resolveChannelIdentityScopeKey(channelId, targetUserId);
+        const identities = this.channelIdentities[scopeKey] || [];
+        let changed = false;
+        const nextIdentities = identities.map((identity) => {
+          const nextMode: 'ic' | 'ooc' | null = identity.id === applied.icRoleId ? 'ic'
+            : identity.id === applied.oocRoleId ? 'ooc' : null;
+          if (!nextMode || identity.icOocOnActivate === nextMode) {
+            return identity;
+          }
+          changed = true;
+          return { ...identity, icOocOnActivate: nextMode };
+        });
+        if (changed) {
+          this.channelIdentities = {
+            ...this.channelIdentities,
+            [scopeKey]: nextIdentities,
+          };
+        }
+        return applied;
       } catch (error) {
         this.applyChannelIcOocRoleConfig(channelId, previous, targetUserId);
         throw error;
@@ -6810,7 +6829,7 @@ export const useChatStore = defineStore({
       }
 
       // 执行角色切换
-      this.setActiveIdentity(channelId, targetRoleId);
+      this.setActiveIdentity(channelId, targetRoleId, undefined, { syncIcOocFromRole: false });
     },
 
     async ensureDefaultOocRole(channelId: string) {
@@ -6848,15 +6867,14 @@ export const useChatStore = defineStore({
         return inFlight;
       }
 
-      // 如果用户已有任意角色卡，不再自动创建
-      if (identities.length > 0) {
-        // 优先使用第一个角色作为默认 OOC 角色
-        const firstRole = identities[0];
-        await this.setChannelIcOocRoleConfig(channelId, { oocRoleId: firstRole.id });
-        return firstRole.id;
+      // 优先复用一个不同于 IC 默认角色的现有角色，避免同一角色同时映射场内和场外
+      const existingOocRole = identities.find((identity) => identity.id !== config.icRoleId);
+      if (existingOocRole) {
+        await this.setChannelIcOocRoleConfig(channelId, { oocRoleId: existingOocRole.id });
+        return existingOocRole.id;
       }
 
-      // 自动创建默认场外角色
+      // 没有可复用的独立角色时，自动创建默认场外角色
       const displayName = user.info.nick || user.info.username || '场外';
       const avatarAttachmentId = normalizeAttachmentId(user.info.avatar || '');
 

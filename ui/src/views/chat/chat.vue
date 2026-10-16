@@ -3644,7 +3644,7 @@ const identityTemporaryHint = computed(() => (
     ? '改名会生成新的频道角色 ID，历史消息保留旧身份；头像差分与已绑人物卡不会自动迁移。'
     : ''
 ));
-const temporaryIdentityActivateModeLabel = computed(() => (
+const identityActivateModeLabel = computed(() => (
   identityForm.icOocOnActivate === 'ooc' ? '场外' : '场内'
 ));
 const activeIdentityFolderId = ref<'all' | 'favorites' | 'ungrouped' | string>('all');
@@ -5468,9 +5468,12 @@ const resetIdentityForm = (identity?: ChannelIdentity | null) => {
   identityForm.variantResetMatchConfig = identity?.variantResetMatchConfig
     || (identityForm.variantResetMatchMode === 'prefix' ? '=' : identityForm.variantResetMatchMode === 'keyword' ? 'any' : 'sensitive');
   identityForm.variantResetMatchContent = identity?.variantResetMatchContent || '还原';
-  identityForm.icOocOnActivate = identity?.isTemporary
-    ? (identity.icOocOnActivate === 'ooc' ? 'ooc' : 'ic')
-    : '';
+  const savedActivateMode = identity?.icOocOnActivate === 'ooc' ? 'ooc'
+    : identity?.icOocOnActivate === 'ic' ? 'ic' : '';
+  const effectiveActivateMode = identity?.id && chat.curChannel?.id
+    ? chat.getIdentityIcOocMode(chat.curChannel.id, identity.id, currentIdentityTargetUserId.value)
+    : null;
+  identityForm.icOocOnActivate = effectiveActivateMode || savedActivateMode || 'ic';
   identityForm.folderIds = identity?.folderIds ? [...identity.folderIds] : [];
   identityForm.characterCardId = !isManagingBotIdentity.value && identity?.id
     ? characterCardStore.getBoundCardId(identity.id, identity.sharedIdentityId) || ''
@@ -5766,20 +5769,16 @@ const handleIdentityDecorationEditorShow = async (show: boolean) => {
   }
 };
 
-const setTemporaryIdentityActivateMode = (mode: 'ic' | 'ooc') => {
+const setIdentityActivateMode = (mode: 'ic' | 'ooc') => {
   identityForm.icOocOnActivate = mode;
 };
 
 watch(() => identityForm.isTemporary, (isTemporary) => {
   if (isTemporary) identityForm.avatarTextStyle = '';
-  if (!isTemporary) {
-    if (identityDialogMode.value === 'create') {
-      identityForm.icOocOnActivate = '';
-    }
-    return;
-  }
-  if (!identityForm.icOocOnActivate) {
-    identityForm.icOocOnActivate = chat.icMode === 'ooc' ? 'ooc' : 'ic';
+  if (identityDialogMode.value === 'create') {
+    identityForm.icOocOnActivate = isTemporary
+      ? (chat.icMode === 'ooc' ? 'ooc' : 'ic')
+      : 'ic';
   }
 });
 
@@ -6335,7 +6334,7 @@ const submitIdentityForm = async (options: { closeDialog?: boolean; successMessa
     variantResetMatchMode: identityForm.variantResetMatchMode,
     variantResetMatchConfig: identityForm.variantResetMatchConfig,
     variantResetMatchContent: identityForm.variantResetMatchContent,
-    icOocOnActivate: identityForm.isTemporary ? (identityForm.icOocOnActivate || (chat.icMode === 'ooc' ? 'ooc' : 'ic')) : '',
+    icOocOnActivate: isManagingBotIdentity.value ? '' : identityForm.icOocOnActivate,
     folderIds: identityForm.folderIds,
     promoteToShared: identityDialogMode.value === 'edit' && identityForm.promoteToShared,
   };
@@ -18064,23 +18063,23 @@ onBeforeUnmount(() => {
           </n-checkbox>
         </div>
       </n-form-item>
-      <n-form-item v-if="!isManagingBotIdentity && (identityForm.isTemporary || isEditingTemporaryIdentity)" label="切换到此角色时">
+      <n-form-item v-if="!isManagingBotIdentity" label="切换到此角色时">
         <div class="identity-mini-mode-switch">
           <n-button-group size="small">
             <n-button
-              :type="identityForm.icOocOnActivate !== 'ooc' ? 'primary' : 'default'"
-              @click="setTemporaryIdentityActivateMode('ic')"
+              :type="identityForm.icOocOnActivate === 'ic' ? 'primary' : 'default'"
+              @click="setIdentityActivateMode('ic')"
             >
               场内
             </n-button>
             <n-button
               :type="identityForm.icOocOnActivate === 'ooc' ? 'primary' : 'default'"
-              @click="setTemporaryIdentityActivateMode('ooc')"
+              @click="setIdentityActivateMode('ooc')"
             >
               场外
             </n-button>
           </n-button-group>
-          <span class="identity-mini-mode-switch__hint">切换到这个临时角色时，自动切到{{ temporaryIdentityActivateModeLabel }}</span>
+          <span class="identity-mini-mode-switch__hint">切换到此角色时，自动切到{{ identityActivateModeLabel }}（需开启场内场外自动切换）</span>
         </div>
       </n-form-item>
       <n-form-item v-if="identityDialogMode === 'create' && !isManagingBotIdentity" class="identity-dialog__check-item">

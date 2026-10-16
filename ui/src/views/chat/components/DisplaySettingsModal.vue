@@ -1339,7 +1339,7 @@ const handleThemeSelectionModeUpdate = (mode: ThemeSelectionMode) => {
         <header>
           <div>
             <p class="section-title">场内场外自动切换</p>
-            <p class="section-desc">切换IC/OOC模式时，自动切换到预设的频道角色</p>
+            <p class="section-desc">在频道角色与场内/场外模式之间自动联动</p>
           </div>
         </header>
         <div style="display: flex; align-items: center; gap: 0.75rem;">

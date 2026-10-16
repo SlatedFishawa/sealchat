@@ -101,6 +101,9 @@ func ChannelIdentityGet(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	if err := service.ApplyTemporaryIdentityActivateModes(ctx.TargetUserID, []*model.ChannelIdentityModel{item}); err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
 	return c.JSON(fiber.Map{"item": item})
 }
 

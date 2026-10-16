@@ -67,6 +67,10 @@ const handleSave = async () => {
     emit('update:show', false)
     return
   }
+  if (icRoleId.value && icRoleId.value === oocRoleId.value) {
+    message.warning('场内和场外默认角色不能相同')
+    return
+  }
   try {
     await chat.setChannelIcOocRoleConfig(localChannelId.value, {
       icRoleId: icRoleId.value,

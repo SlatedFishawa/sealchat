@@ -66,7 +66,15 @@ type ChannelIdentityUpdateResult struct {
 	SharedSync *SharedChannelIdentitySyncResult `json:"sharedSync,omitempty"`
 }
 
+// Keep the historical key and helper names for compatibility; these preferences
+// now apply to all user channel identities, scoped by the channel copy's ID.
 const temporaryIdentityActivateModePrefPrefix = "tmpMode:"
+
+var (
+	ErrChannelIdentityModeConfigSameRole       = errors.New("场内和场外默认角色不能相同")
+	ErrChannelIdentityModeConfigICRoleInvalid  = errors.New("场内角色不存在或不属于当前用户")
+	ErrChannelIdentityModeConfigOOCRoleInvalid = errors.New("场外角色不存在或不属于当前用户")
+)
 
 func normalizeTemporaryIdentityActivateMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -128,6 +136,22 @@ func loadTemporaryIdentityActivateModeMap(userID string) (map[string]string, err
 	return result, nil
 }
 
+func channelIdentityMappedActivateMode(config *model.ChannelIdentityModeConfigModel, identityID string) string {
+	identityID = strings.TrimSpace(identityID)
+	if config == nil || identityID == "" {
+		return ""
+	}
+	isIC := strings.TrimSpace(config.ICIdentityID) == identityID
+	isOOC := strings.TrimSpace(config.OOCIdentityID) == identityID
+	if isIC == isOOC {
+		return ""
+	}
+	if isOOC {
+		return "ooc"
+	}
+	return "ic"
+}
+
 func ApplyTemporaryIdentityActivateModes(userID string, identities []*model.ChannelIdentityModel) error {
 	if len(identities) == 0 {
 		return nil
@@ -136,13 +160,82 @@ func ApplyTemporaryIdentityActivateModes(userID string, identities []*model.Chan
 	if err != nil {
 		return err
 	}
+	configs := map[string]*model.ChannelIdentityModeConfigModel{}
+	loadedConfigs := map[string]bool{}
 	for _, identity := range identities {
-		if identity == nil || !identity.IsTemporary {
+		if identity == nil {
 			continue
 		}
 		identity.ICOOCOnActivate = modeMap[identity.ID]
+		channelID := strings.TrimSpace(identity.ChannelID)
+		if channelID == "" {
+			continue
+		}
+		if !loadedConfigs[channelID] {
+			config, err := model.ChannelIdentityModeConfigGet(userID, channelID)
+			if err != nil {
+				return err
+			}
+			configs[channelID] = config
+			loadedConfigs[channelID] = true
+		}
+		if mappedMode := channelIdentityMappedActivateMode(configs[channelID], identity.ID); mappedMode != "" {
+			identity.ICOOCOnActivate = mappedMode
+		}
 	}
 	return nil
+}
+
+func ChannelIdentityModeConfigSet(userID, channelID, icRoleID, oocRoleID string) (*model.ChannelIdentityModeConfigModel, error) {
+	userID = strings.TrimSpace(userID)
+	channelID = strings.TrimSpace(channelID)
+	icRoleID = strings.TrimSpace(icRoleID)
+	oocRoleID = strings.TrimSpace(oocRoleID)
+	if icRoleID != "" && icRoleID == oocRoleID {
+		return nil, ErrChannelIdentityModeConfigSameRole
+	}
+
+	var result *model.ChannelIdentityModeConfigModel
+	err := model.GetDB().Transaction(func(tx *gorm.DB) error {
+		validateRole := func(identityID string, invalidErr error) error {
+			if identityID == "" {
+				return nil
+			}
+			var identity model.ChannelIdentityModel
+			err := tx.Where("id = ? AND user_id = ? AND channel_id = ?", identityID, userID, channelID).Take(&identity).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return invalidErr
+			}
+			return err
+		}
+		if err := validateRole(icRoleID, ErrChannelIdentityModeConfigICRoleInvalid); err != nil {
+			return err
+		}
+		if err := validateRole(oocRoleID, ErrChannelIdentityModeConfigOOCRoleInvalid); err != nil {
+			return err
+		}
+
+		if icRoleID == "" && oocRoleID == "" {
+			return model.ChannelIdentityModeConfigDeleteTx(tx, userID, channelID)
+		}
+		record, err := model.ChannelIdentityModeConfigUpsertTx(tx, userID, channelID, icRoleID, oocRoleID)
+		if err != nil {
+			return err
+		}
+		if icRoleID != "" {
+			if err := syncTemporaryIdentityActivateModeTx(tx, userID, icRoleID, "ic"); err != nil {
+				return err
+			}
+		}
+		if oocRoleID != "" {
+			if err := syncTemporaryIdentityActivateModeTx(tx, userID, oocRoleID, "ooc"); err != nil {
+				return err
+			}
+		}
+		result = record
+		return nil
+	})
+	return result, err
 }
 
 func validateAvatarTextStyle(style, attachmentID string) error {
@@ -222,6 +315,9 @@ func ChannelIdentityCreateWithAccess(ownerUserID string, operatorUserID string, 
 	if err := validateIdentityInput(input); err != nil {
 		return nil, err
 	}
+	if !input.IsTemporary && input.ICOOCOnActivate == "" {
+		input.ICOOCOnActivate = "ic"
+	}
 	if strings.TrimSpace(operatorUserID) == "" {
 		operatorUserID = ownerUserID
 	}
@@ -285,10 +381,8 @@ func ChannelIdentityCreateWithAccess(ownerUserID string, operatorUserID string, 
 	}
 	item.FolderIDs = membership[item.ID]
 	item.ICOOCOnActivate = input.ICOOCOnActivate
-	if item.IsTemporary {
-		if err := syncTemporaryIdentityActivateMode(ownerUserID, item.ID, input.ICOOCOnActivate); err != nil {
-			return nil, err
-		}
+	if err := syncTemporaryIdentityActivateMode(ownerUserID, item.ID, input.ICOOCOnActivate); err != nil {
+		return nil, err
 	}
 
 	// 如果当前无默认身份，则自动设置为默认
@@ -431,7 +525,7 @@ func channelIdentityUpdateAndPromoteWithAccess(ownerUserID, operatorUserID strin
 				}
 			}
 		}
-		if err := syncTemporaryIdentityActivateModeTx(tx, locked.UserID, locked.ID, ""); err != nil {
+		if err := syncTemporaryIdentityActivateModeTx(tx, locked.UserID, locked.ID, input.ICOOCOnActivate); err != nil {
 			return err
 		}
 		var updated model.ChannelIdentityModel
@@ -463,7 +557,7 @@ func channelIdentityUpdateAndPromoteWithAccess(ownerUserID, operatorUserID strin
 	if err != nil {
 		return nil, err
 	}
-	result.Item.ICOOCOnActivate = ""
+	result.Item.ICOOCOnActivate = input.ICOOCOnActivate
 	for _, copy := range result.SharedSync.Copies {
 		affectedAssetIDs = append(affectedAssetIDs, theaterPresentationAssetIDs(copy.TheaterPresentation)...)
 	}
@@ -601,7 +695,10 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 	if err != nil {
 		return nil, err
 	}
-	updated.ICOOCOnActivate = ""
+	updated.ICOOCOnActivate = input.ICOOCOnActivate
+	if botManaged {
+		updated.ICOOCOnActivate = ""
+	}
 	if input.FolderIDs != nil {
 		membership, err := ChannelIdentityFolderAssignWithAccess(ownerUserID, operatorUserID, input.ChannelID, []string{identity.ID}, input.FolderIDs, "replace")
 		if err != nil {
@@ -614,15 +711,8 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 			updated.FolderIDs = membership[identity.ID]
 		}
 	}
-	if updated.IsTemporary {
-		updated.ICOOCOnActivate = input.ICOOCOnActivate
-		if err := syncTemporaryIdentityActivateMode(ownerUserID, updated.ID, input.ICOOCOnActivate); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := syncTemporaryIdentityActivateMode(ownerUserID, updated.ID, ""); err != nil {
-			return nil, err
-		}
+	if err := syncTemporaryIdentityActivateMode(ownerUserID, updated.ID, updated.ICOOCOnActivate); err != nil {
+		return nil, err
 	}
 	affectedAssetIDs = append(affectedAssetIDs, theaterPresentationAssetIDs(updated.TheaterPresentation)...)
 	if sharedSyncChanged {
