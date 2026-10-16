@@ -58,6 +58,8 @@
 
 当前场景前景/背景用 `surface_embed_set`，字段 `sceneId, target: background|foreground, url, scale(默认1), interactive(默认false)`；clear 用 sceneId/target。持久化仍为 `surfaceEmbeds.background/foreground` 的 StageSurfaceEmbed，不改变视觉层序。scale 合法范围 .25..5；关闭 interactive 时舞台接管操作，开启时内部接收输入，原开关语义不变。
 
+图片变体保存在可选的 `surfaceVariants.background/foreground`，每组为 `{ slots: [{ id, name, image: StageImageRef|null }], activeId: string|null, transition: { type, durationMs } }`。`activeId: null` 隐藏图片；`background/foreground` 继续保存活动媒体。旧场景只在编辑时写入该结构。MCP 的 surface 图片替换/清除同步更新活动槽位，保留其他槽位；隐藏状态下赋图会创建并选择新槽位。网页、样式及 Media FX 仍为表面共用配置。切换效果支持 none/fade/slide/dissolve/zoom/blur，默认 fade/350ms，时长范围 20–5000ms。只同步目标状态，各客户端本地执行动画；首次加载、恢复及重连不播放局部动画。ZIP 与资源引用递归保留所有槽位图片。
+
 ## 权限与执行
 
 平台 Theater 模块默认 off；read/write 不自动包含额外控制、截图或聊天。Key/OAuth 需分别明确授权 `theater:read/write/control/capture/chat`，并受实时业务权限限制。`theater:write` 不授予频道嵌入编辑权限；嵌入代码只能经独立的 `embed:write`（第二期）修改。scene apply 另检查原生场景切换权限；read 无法切换场景。

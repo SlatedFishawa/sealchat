@@ -53,3 +53,18 @@ export const stageSceneTransitionOptions = (phase: StageSceneTransitionPhase): K
   easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
   fill: 'both',
 })
+
+// Canvas equivalent of the surface-compatible scene presets. It animates a local
+// Group only; it never enters the scene composite/screenshot pipeline.
+export const stageSurfaceTransitionFrame = (phase: StageSceneTransitionPhase, direction: StageSceneTransitionDirection, progress: number) => {
+  const p = Math.min(1, Math.max(0, progress))
+  const hidden = direction === 'enter' ? 1 - p : p
+  return {
+    opacity: 1 - hidden,
+    offsetX: phase.type === 'slide' ? (direction === 'enter' ? 0.12 : -0.12) * hidden : 0,
+    scale: phase.type === 'zoom' ? 1 + (direction === 'enter' ? 0.08 : -0.08) * hidden : 1,
+    blurPx: phase.type === 'blur' ? 24 * hidden : phase.type === 'dissolve' ? 8 * hidden : 0,
+    contrast: phase.type === 'dissolve' ? 1 + 0.8 * hidden : 1,
+    brightness: phase.type === 'dissolve' ? 1 + 0.6 * hidden : 1,
+  }
+}

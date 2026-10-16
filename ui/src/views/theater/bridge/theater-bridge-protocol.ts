@@ -124,6 +124,7 @@ const stageImageRefSchema = z.strictObject({
   alt: z.string().max(2_048).optional(),
   mimeType: z.string().trim().min(1).max(256).optional(),
   animated: z.boolean().optional(),
+  loopCount: z.number().int().min(1).max(65_535).optional(),
 })
 
 const stageImageAnnotationSchema = z.strictObject({
@@ -536,6 +537,11 @@ const stageSceneOverlaySchema = z.strictObject({
 const stageSceneStateSchema = z.strictObject({
   background: stageImageRefSchema.nullable(),
   foreground: stageImageRefSchema.nullable(),
+  surfaceVariants: z.partialRecord(z.enum(['background', 'foreground']), z.strictObject({
+    slots: z.array(z.strictObject({ id: nonEmptyIdSchema, name: z.string().max(128), image: stageImageRefSchema.nullable() })),
+    activeId: nonEmptyIdSchema.nullable(),
+    transition: z.strictObject({ type: z.enum(['none', 'fade', 'slide', 'dissolve', 'zoom', 'blur']), durationMs: z.number().int().min(20).max(5000) }),
+  })).optional(),
   surfaceEmbeds: z.strictObject({
     background: stageSurfaceEmbedSchema.nullable(),
     foreground: stageSurfaceEmbedSchema.nullable(),

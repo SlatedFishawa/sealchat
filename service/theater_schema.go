@@ -563,6 +563,11 @@ func validateSceneState(state map[string]any) error {
 			return err
 		}
 	}
+	if variants, ok := state["surfaceVariants"]; ok {
+		if err := validateTheaterSurfaceVariants(variants); err != nil {
+			return err
+		}
+	}
 	if audio, ok := state["switchAudio"]; ok {
 		if err := validateTheaterAudioRef(audio, "scene.switchAudio"); err != nil {
 			return err

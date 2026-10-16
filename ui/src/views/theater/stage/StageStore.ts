@@ -40,6 +40,7 @@ import {
   type StageWorkspaceState,
 } from '../shared/stage-types'
 import { normalizeStageClueExecutePayload, normalizeStageRandomTablePayload, normalizeStageSequenceAction } from '../shared/stage-actions'
+import { normalizeSurfaceVariantState, operateSurfaceVariant, surfaceVariantsFor, type SurfaceVariantOperation } from '../shared/stage-surface-variants'
 import {
   applyObjectHistoryEntry,
   cloneStageData,
@@ -466,9 +467,10 @@ const normalizeObjects = (input: unknown) => {
   }, {})
 }
 
-const normalizeLiveState = (input: Partial<StageLiveState> | undefined, fallbackColor = '#111827'): StageLiveState => ({
+const normalizeLiveState = (input: Partial<StageLiveState> | undefined, fallbackColor = '#111827'): StageLiveState => normalizeSurfaceVariantState({
   background: normalizeImageRef(input?.background),
   foreground: normalizeImageRef(input?.foreground),
+  ...(input?.surfaceVariants ? { surfaceVariants: clone(input.surfaceVariants) } : {}),
   surfaceEmbeds: normalizeStageSurfaceEmbeds(input?.surfaceEmbeds),
   surfaceStyles: {
     background: normalizeStageSurfaceStyle(input?.surfaceStyles?.background, input?.fieldObjectFit || 'cover', { opacity: 0.9, blurPx: 10 }),
@@ -498,6 +500,9 @@ const normalizeLiveState = (input: Partial<StageLiveState> | undefined, fallback
 
 export interface TheaterStageStore {
   state: StageWorkspaceState
+  surfaceChanges: Record<StageSurfaceTarget | 'reset', number>
+  operateSurfaceVariant: (target: StageSurfaceTarget, operation: SurfaceVariantOperation) => boolean
+  rollbackFailedSurfaceVariant: (target: StageSurfaceTarget, image: StageImageRef | null) => boolean
   scenes: ComputedRef<StageScene[]>
   activeScene: ComputedRef<StageScene>
   activeObjects: ComputedRef<Record<string, StageObject>>
@@ -589,7 +594,7 @@ export interface TheaterStageStore {
   resetCamera: () => void
   getSnapshot: () => StageWorkspaceState
   applyScene: (sceneId: string) => boolean
-  replaceState: (next: StageWorkspaceState) => void
+  replaceState: (next: StageWorkspaceState, animateSurfaceChanges?: boolean) => void
 }
 
 // A scene target adopts that scene's folder; a folder target appends to it.
@@ -610,6 +615,29 @@ export type StageObjectQuickFlag = 'visible' | 'editable' | 'locked'
 
 export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore => {
   const state = reactive<StageWorkspaceState>(createInitialTheaterStageState())
+  const surfaceChanges = reactive({ background: 0, foreground: 0, reset: 0 })
+  const rollbackStates: Partial<Record<StageSurfaceTarget, { sceneId: string, before: ReturnType<typeof surfaceVariantsFor>, after: string }>> = {}
+  const editSurfaceVariant = (target: StageSurfaceTarget, operation: SurfaceVariantOperation) => {
+    const beforeImage = JSON.stringify(state.liveState[target])
+    const beforeGroup = clone(surfaceVariantsFor(state.liveState, target))
+    const changed = operateSurfaceVariant(state.liveState, target, operation)
+    if (changed && beforeImage !== JSON.stringify(state.liveState[target])) {
+      rollbackStates[target] = { sceneId: state.activeSceneId, before: beforeGroup, after: JSON.stringify(surfaceVariantsFor(state.liveState, target)) }
+      surfaceChanges[target]++
+    }
+    return changed
+  }
+  const rollbackFailedSurfaceVariant = (target: StageSurfaceTarget, image: StageImageRef | null) => {
+    const previous = rollbackStates[target]
+    if (!previous || previous.sceneId !== state.activeSceneId
+      || previous.after !== JSON.stringify(surfaceVariantsFor(state.liveState, target))
+      || JSON.stringify(state.liveState[target]) !== JSON.stringify(image)) return false
+    delete rollbackStates[target]
+    state.liveState.surfaceVariants = { ...state.liveState.surfaceVariants, [target]: previous.before }
+    state.liveState[target] = previous.before.slots.find(slot => slot.id === previous.before.activeId)?.image ?? null
+    surfaceChanges[target]++
+    return true
+  }
   const scenes = computed(() => Object.values(state.scenes).sort((a, b) => a.order - b.order))
   const activeScene = computed(() => state.scenes[state.activeSceneId] || scenes.value[0])
   const activeObjects = computed(() => ({ ...state.liveState.sceneObjects, ...state.persistentObjects }))
@@ -1520,14 +1548,12 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
   })
 
   const setSceneImage = (target: 'background' | 'foreground', url: string, resourceId?: string, mimeType?: string, animated?: boolean, loopCount?: number) => {
-    if (!url.trim()) {
-      state.liveState[target] = null
-      return true
-    }
-    const image = createImageRef(url, target === 'background' ? '场景背景' : '场景前景', resourceId, mimeType, animated, loopCount)
-    if (!image) return false
-    state.liveState[target] = image
-    return true
+    const image = url.trim() ? createImageRef(url, target === 'background' ? '场景背景' : '场景前景', resourceId, mimeType, animated, loopCount) : null
+    if (url.trim() && !image) return false
+    const group = surfaceVariantsFor(state.liveState, target)
+    const id = group.activeId
+    if (!id) return image ? editSurfaceVariant(target, { type: 'add', id: uid('surface'), name: '默认', image }) : true
+    return editSurfaceVariant(target, { type: 'replace', id, image })
   }
 
   const patchSceneSurfaceStyle = (target: StageSurfaceTarget, patch: StageSurfaceStylePatch) => {
@@ -1736,13 +1762,22 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     selectScene(sceneId)
     return true
   }
-  const replaceState = (next: StageWorkspaceState) => {
+  const replaceState = (next: StageWorkspaceState, animateSurfaceChanges = false) => {
+    delete rollbackStates.background
+    delete rollbackStates.foreground
     transaction = null
     const value = clone(next)
     value.liveState.surfaceEmbeds = normalizeStageSurfaceEmbeds(value.liveState.surfaceEmbeds)
+    normalizeSurfaceVariantState(value.liveState)
     Object.values(value.scenes).forEach(scene => {
       scene.state.surfaceEmbeds = normalizeStageSurfaceEmbeds(scene.state.surfaceEmbeds)
+      normalizeSurfaceVariantState(scene.state)
     })
+    if (animateSurfaceChanges && state.activeSceneId === value.activeSceneId) {
+      for (const target of ['background', 'foreground'] as const) {
+        if (JSON.stringify(state.liveState[target]) !== JSON.stringify(value.liveState[target])) surfaceChanges[target]++
+      }
+    } else surfaceChanges.reset++
     value.sceneFolders = Array.isArray(value.sceneFolders)
       ? value.sceneFolders.filter((folder) => folder && typeof folder.id === 'string' && typeof folder.name === 'string' && folder.id.trim() && folder.name.trim())
         .map((folder) => ({ id: folder.id.trim(), name: folder.name.trim() }))
@@ -1769,6 +1804,9 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
 
   return {
     state,
+    surfaceChanges,
+    operateSurfaceVariant: editSurfaceVariant,
+    rollbackFailedSurfaceVariant,
     scenes,
     activeScene,
     activeObjects,

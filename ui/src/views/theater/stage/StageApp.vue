@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import Konva from 'konva'
+import StageSurfaceVariants from './StageSurfaceVariants.vue'
+import { surfaceVariantsFor, type SurfaceVariantOperation } from '../shared/stage-surface-variants'
+import { stageSurfaceTransitionTypes, type StageSurfaceVariants as SurfaceVariants } from '../shared/stage-types'
 import { captureTheaterViewport, waitForCaptureReady } from './theater-mcp-capture'
 import type { TheaterRendererCommand, TheaterRendererView } from '../shared/theater-renderer-protocol'
 import { Howl, Howler } from 'howler'
@@ -129,7 +132,8 @@ import { compareStageLayersBottomToTop, compareStageLayersTopToBottom, planStage
 import { createStageDomVisualPreview } from './stage-dom-visual-preview'
 import { buildStageLayerRows, stageLayerSelectionExpansionIds } from './stage-layer-tree'
 import { stageSelectionRootIds } from './stage-selection'
-import { stageSceneTransitionKeyframes, stageSceneTransitionOptions } from './stage-scene-transition'
+import { stageSceneTransitionKeyframes, stageSceneTransitionOptions, stageSurfaceTransitionFrame } from './stage-scene-transition'
+import { createSurfaceTransitionController } from './stage-surface-transition'
 import { snapStageResizeBox, type StageGridResizeSession } from './stage-grid-resize'
 import {
   STAGE_INSERT_CLICK_THRESHOLD_PX,
@@ -401,6 +405,36 @@ const componentActionsExpanded = ref(false)
 const iframeInteractionDisabled = ref(false)
 // Disposable GM preview; never enters StageStore, history, or synchronization.
 const surfaceInteractionTest = ref<StageSurfaceTarget | null>(null)
+const theaterSurfaceSettingsVisibilityStorageKey = 'sealchat.theater.surface-settings-visibility.v1'
+const readTheaterSurfaceSettingsVisibility = (): Record<StageSurfaceTarget, boolean> => {
+  const defaults: Record<StageSurfaceTarget, boolean> = { background: true, foreground: true }
+  try {
+    if (typeof window === 'undefined') return defaults
+    const stored = window.localStorage.getItem(theaterSurfaceSettingsVisibilityStorageKey)
+    if (stored === null) return defaults
+    const parsed: unknown = JSON.parse(stored)
+    if (!parsed || typeof parsed !== 'object') return defaults
+    const value = parsed as Record<string, unknown>
+    return {
+      background: value.background !== false,
+      foreground: value.foreground !== false,
+    }
+  } catch {
+    return defaults
+  }
+}
+const surfaceSettingsVisible = reactive<Record<StageSurfaceTarget, boolean>>(readTheaterSurfaceSettingsVisibility())
+const toggleSurfaceSettingsVisible = (target: StageSurfaceTarget) => {
+  surfaceSettingsVisible[target] = !surfaceSettingsVisible[target]
+  try {
+    window.localStorage.setItem(theaterSurfaceSettingsVisibilityStorageKey, JSON.stringify({
+      background: surfaceSettingsVisible.background,
+      foreground: surfaceSettingsVisible.foreground,
+    }))
+  } catch {
+    // Browser storage may be unavailable; keep the current visibility in memory.
+  }
+}
 type TheaterToolbarLayout = 'horizontal' | 'vertical'
 const theaterToolbarLayoutStorageKey = 'sealchat.theater.toolbar-layout.v1'
 const readTheaterToolbarLayout = (): TheaterToolbarLayout => {
@@ -1215,7 +1249,7 @@ const handlePanelSwitchesFocusOut = (event: FocusEvent) => {
 }
 
 type ImageTarget =
-  | { kind: 'scene', target: 'background' | 'foreground' }
+  | { kind: 'scene', target: 'background' | 'foreground', sceneId?: string, slotId?: string, add?: boolean, epoch?: number }
   | { kind: 'object', objectId: string }
 
 const surfaceSettingRows: { target: StageSurfaceTarget, label: string }[] = [
@@ -1230,6 +1264,21 @@ const surfaceFitOptions: { value: StageSurfaceFit, label: string }[] = [
   { value: 'center', label: '居中' },
 ]
 const surfaceStyle = (target: StageSurfaceTarget) => props.store.state.liveState.surfaceStyles[target]
+const surfaceVariants = (target: StageSurfaceTarget) => surfaceVariantsFor(props.store.state.liveState, target)
+const surfaceTransitionOptions = stageSurfaceTransitionTypes.map(value => ({ value, label: ({ none: '无', fade: '淡入淡出', slide: '滑动', dissolve: '溶解', zoom: '缩放', blur: '模糊' })[value] }))
+const surfaceTransitionMenuProps = () => ({ class: 'theater-secondary-surface theater-surface-transition-menu' })
+const patchSurfaceTransition = (target: StageSurfaceTarget, patch: Partial<SurfaceVariants['transition']>) => props.store.operateSurfaceVariant(target, { type: 'transition', patch })
+const operateSurface = (target: StageSurfaceTarget, operation: SurfaceVariantOperation) => {
+  if (canEditAllObjects.value) props.store.operateSurfaceVariant(target, operation)
+}
+const surfaceThumbnail = (image: StageImageRef | null) => resolveTheaterStageThumbnailLocation(image, theaterMediaScope(), 160)
+let surfaceImageEpoch = 0
+const bindImageTarget = (target: ImageTarget): ImageTarget => {
+  if (target.kind !== 'scene' || target.sceneId) return target
+  const activeId = surfaceVariants(target.target).activeId
+  return { ...target, sceneId: props.store.state.activeSceneId, epoch: surfaceImageEpoch, slotId: target.slotId ?? activeId ?? undefined, add: target.add || (!target.slotId && !activeId) }
+}
+const requestSurfaceUpload = (target: StageSurfaceTarget, id: string | null) => requestImageUpload({ kind: 'scene', target, ...(id ? { slotId: id } : { add: true }) })
 const updateSurfaceFit = (target: StageSurfaceTarget, value: string | number | boolean) => {
   if (typeof value !== 'string' || !surfaceFitOptions.some((option) => option.value === value)) return
   props.store.patchSceneSurfaceStyle(target, { fit: value as StageSurfaceFit })
@@ -1296,6 +1345,7 @@ const pendingImageTarget = ref<ImageTarget | null>(null)
 const imageEditorTarget = ref<ImageTarget | null>(null)
 const imageEditorFile = ref<File | null>(null)
 const imageEditorVisible = ref(false)
+let imageEditorReadGeneration = 0
 const activeCanvasTool = ref<StageCanvasTool | null>(null)
 const copyMode = ref<StageCopyMode>('offset')
 const quickDeleteActive = ref(false)
@@ -3204,6 +3254,7 @@ const drawTopVisualLayer = (immediate = false) => {
 interface SurfaceSlot {
   target: StageSurfaceTarget
   group: Konva.Group
+  transitionGroup: Konva.Group
   base: Konva.Rect | null
   mediaFxGroup: Konva.Group
   mediaContentGroup: Konva.Group
@@ -3222,6 +3273,7 @@ interface SurfaceSlot {
   url: string
   version: number
   source: StageMediaSource | null
+  pendingSource: StageMediaSource | null
   ready: boolean
   // Animated image / video: Media FX filters are disabled (V1 capability rule).
   animatedMedia: boolean
@@ -3232,6 +3284,32 @@ interface SurfaceSlot {
 
 let backgroundSlot: SurfaceSlot | null = null
 let foregroundSlot: SurfaceSlot | null = null
+const disposeSurfaceSlot = (slot: SurfaceSlot) => {
+  slot.version++
+  slot.liveFx?.dispose()
+  slot.mediaFxController.dispose()
+  slot.mediaFxTemporal.dispose()
+  releaseStageMedia(slot.pendingSource)
+  slot.pendingSource = null
+  releaseStageMedia(slot.source)
+  slot.source = null
+  slot.group.clearCache()
+  slot.group.destroy()
+}
+const surfaceTransitions = {
+  background: createSurfaceTransitionController<SurfaceSlot>(disposeSurfaceSlot),
+  foreground: createSurfaceTransitionController<SurfaceSlot>(disposeSurfaceSlot),
+}
+const surfaceChangeVersions = { background: 0, foreground: 0 }
+const surfaceRenderSignatures = { background: '', foreground: '' }
+const cancelSurfaceTransitions = () => {
+  surfaceTransitions.background.cancel()
+  surfaceTransitions.foreground.cancel()
+  surfaceChangeVersions.background = props.store.surfaceChanges.background
+  surfaceChangeVersions.foreground = props.store.surfaceChanges.foreground
+  surfaceRenderSignatures.background = ''
+  surfaceRenderSignatures.foreground = ''
+}
 
 const selectedObject = computed(() => {
   const id = props.store.state.selectedObjectId
@@ -5612,6 +5690,7 @@ const finishSceneTransitionWhenReady = () => {
 }
 
 const prepareSceneMorph = (captureCurrent: boolean, sceneId: string, previousSceneId = '') => {
+  cancelSurfaceTransitions()
   finishSceneMorph()
   const nextTransition = normalizeStageSceneTransition(props.store.state.scenes[sceneId]?.state.transition)
   const previousTransition = normalizeStageSceneTransition(props.store.state.scenes[previousSceneId]?.state.transition)
@@ -6298,6 +6377,7 @@ const drawSurfaceMedia = (slot: SurfaceSlot, context: Konva.Context) => {
 
 const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget, withBase: boolean, style: StageSurfaceStyle): SurfaceSlot => {
   const group = new Konva.Group()
+  const transitionGroup = new Konva.Group({ listening: false })
   const base = withBase ? new Konva.Rect({ listening: false }) : null
   const directImage = new Konva.Image({ visible: false, listening: false })
   let slot: SurfaceSlot
@@ -6328,10 +6408,12 @@ const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget,
   mediaFxGroup.add(mediaContentGroup)
   cameraGroup.add(group)
   if (base) group.add(base)
-  group.add(mediaFxGroup, overlay, placeholder, label)
+  transitionGroup.add(mediaFxGroup, overlay, placeholder, label)
+  group.add(transitionGroup)
   slot = {
     target,
     group,
+    transitionGroup,
     base,
     mediaFxGroup,
     mediaContentGroup,
@@ -6354,6 +6436,7 @@ const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget,
     url: '',
     version: 0,
     source: null,
+    pendingSource: null,
     ready: false,
     animatedMedia: false,
     directImageSource: null,
@@ -6618,6 +6701,7 @@ const updateSurfaceSlot = (
   style: StageSurfaceStyle,
   loadingLabel: string,
   mediaKey: string,
+  callbacks?: { ready: () => void, error: () => void },
 ) => {
   const renderedStyle = slot.style
   const applyStyle = (nextStyle: StageSurfaceStyle) => {
@@ -6654,6 +6738,9 @@ const updateSurfaceSlot = (
     scope: theaterMediaScope(),
   })
   if (!imageRef) {
+    slot.version++
+    releaseStageMedia(slot.pendingSource)
+    slot.pendingSource = null
     releaseStageMedia(slot.source)
     slot.url = ''
     slot.source = null
@@ -6667,6 +6754,9 @@ const updateSurfaceSlot = (
     return
   }
   if (!resolved) {
+    slot.version++
+    releaseStageMedia(slot.pendingSource)
+    slot.pendingSource = null
     releaseStageMedia(slot.source)
     slot.url = imageRef.url
     slot.source = null
@@ -6677,6 +6767,7 @@ const updateSurfaceSlot = (
     slot.overlay.visible(false)
     slot.placeholder.visible(true)
     slot.label.text('图片地址被安全策略拒绝').visible(true)
+    callbacks?.error()
     return
   }
   if (slot.url === resolved && slot.source && slot.ready) {
@@ -6686,7 +6777,10 @@ const updateSurfaceSlot = (
     slot.overlay.visible(Boolean(slot.source) && style.overlay.enabled && style.overlay.opacity > 0)
     syncSurfaceMediaFx(slot, box)
     slot.group.getLayer()?.batchDraw()
-    settleSceneMedia(mediaKey, resolved, undefined, () => activateStageMedia(slot.source!, imageRef))
+    const version = slot.version
+    settleSceneMedia(mediaKey, resolved, undefined, () => {
+      if (slot.version === version && slot.url === resolved && slot.source) activateStageMedia(slot.source, imageRef)
+    })
     return
   }
   if (slot.url === resolved && !slot.ready) {
@@ -6697,6 +6791,8 @@ const updateSurfaceSlot = (
   const previousUrl = slot.url
   const previousSource = slot.source
   const previousReady = slot.ready
+  releaseStageMedia(slot.pendingSource)
+  slot.pendingSource = null
   slot.url = resolved
   slot.ready = false
   slot.version += 1
@@ -6718,6 +6814,7 @@ const updateSurfaceSlot = (
       }
       if (previousSource !== loadedSource) releaseStageMedia(previousSource)
       slot.source = loadedSource
+      slot.pendingSource = null
       slot.ready = true
       applyStyle(style)
       theaterMediaDebug('surface ready', {
@@ -6733,6 +6830,7 @@ const updateSurfaceSlot = (
       slot.placeholder.visible(false)
       slot.label.visible(false)
       syncSurfaceMediaFx(slot, box)
+      callbacks?.ready()
       theaterMediaDebug('surface visible', {
         resourceId: imageRef.resourceId,
         visible: slot.media.visible(),
@@ -6773,11 +6871,14 @@ const updateSurfaceSlot = (
           }
         })
       }
-    }, () => activateStageMedia(loadedSource, imageRef))
+    }, () => {
+      if (slot.version === version && slot.url === resolved && slot.source === loadedSource) activateStageMedia(loadedSource, imageRef)
+    })
   }, (errorMessage) => {
     if (slot.version !== version || slot.url !== resolved) return
     settleSceneMedia(mediaKey, resolved)
     releaseStageMedia(source)
+    slot.pendingSource = null
     slot.url = previousUrl
     slot.source = previousSource
     slot.ready = previousReady
@@ -6797,7 +6898,9 @@ const updateSurfaceSlot = (
     syncSurfaceMediaFx(slot, box)
     theaterMediaDebug('surface error', { resourceId: imageRef.resourceId, errorMessage, box })
     slot.group.getLayer()?.batchDraw()
+    callbacks?.error()
   })
+  if (!slot.ready) slot.pendingSource = source
 }
 
 const syncGridLayer = () => {
@@ -6914,6 +7017,123 @@ const scheduleGridSync = () => {
   })
 }
 
+const animateSurfacePair = (previous: SurfaceSlot, next: SurfaceSlot, done: () => void) => {
+  const target = next.target
+  let phase = surfaceVariants(target).transition
+  const reducedMotion = resolveTheaterReducedMotion(false, undefined, false).effectiveReducedMotion
+  // A temporary group cache can filter still pixels, but must never freeze live
+  // video, animated images or temporal Media FX. Those use the live fade path.
+  const live = previous.animatedMedia || next.animatedMedia || Boolean(previous.source && isVideoSource(previous.source)) || Boolean(next.source && isVideoSource(next.source)) || Boolean(previous.style.mediaFx || next.style.mediaFx)
+  if (live && (phase.type === 'blur' || phase.type === 'dissolve')) phase = { ...phase, type: 'fade' }
+  const origins = [previous, next].map(slot => slot.transitionGroup.position())
+  next.group.opacity(1)
+  next.base?.visible(false)
+  const filtered = phase.type === 'blur' || phase.type === 'dissolve'
+  if (filtered) {
+    try {
+      for (const slot of [previous, next]) {
+        if (!slot.source) continue
+        slot.transitionGroup.cache({ pixelRatio: 1 })
+        slot.transitionGroup.filters([Konva.Filters.Blur, Konva.Filters.Contrast, Konva.Filters.Brighten])
+      }
+    } catch {
+      phase = { ...phase, type: 'fade' }
+      for (const slot of [previous, next]) { slot.transitionGroup.filters([]); slot.transitionGroup.clearCache() }
+    }
+  }
+  const paint = (progress: number) => {
+    ;[previous, next].forEach((slot, index) => {
+      const frame = stageSurfaceTransitionFrame(phase, index === 0 ? 'exit' : 'enter', progress)
+      const width = slot.placeholder.width(), height = slot.placeholder.height()
+      slot.transitionGroup.opacity(frame.opacity)
+      slot.transitionGroup.scale({ x: frame.scale, y: frame.scale })
+      slot.transitionGroup.position({ x: origins[index].x + width * frame.offsetX + width * (1 - frame.scale) / 2, y: origins[index].y + height * (1 - frame.scale) / 2 })
+      if (filtered && phase.type !== 'fade') {
+        slot.transitionGroup.blurRadius(frame.blurPx)
+        slot.transitionGroup.contrast((frame.contrast - 1) * 100)
+        slot.transitionGroup.brightness(frame.brightness - 1)
+      }
+    })
+  }
+  let animation: Konva.Animation | null = null
+  const stop = () => {
+    animation?.stop()
+    animation = null
+    ;[previous, next].forEach((slot, index) => {
+      slot.transitionGroup.opacity(1).scale({ x: 1, y: 1 }).position(origins[index])
+      slot.transitionGroup.filters([])
+      slot.transitionGroup.clearCache()
+      slot.group.getLayer()?.batchDraw()
+    })
+    next.base?.visible(true)
+  }
+  if (reducedMotion || phase.type === 'none' || sceneCompositeTransition) {
+    done()
+    return stop
+  }
+  paint(0)
+  animation = new Konva.Animation(frame => {
+    if (resolveTheaterReducedMotion(false, undefined, false).effectiveReducedMotion) { done(); return }
+    const progress = Math.min(1, (frame?.time ?? phase.durationMs) / phase.durationMs)
+    paint(1 - Math.pow(1 - progress, 3))
+    if (progress === 1) done()
+  }, next.group.getLayer())
+  animation.start()
+  return stop
+}
+
+const syncSurface = (target: StageSurfaceTarget, image: StageImageRef | null, box: { x: number, y: number, width: number, height: number }, style: StageSurfaceStyle) => {
+  let current = target === 'background' ? backgroundSlot : foregroundSlot
+  if (!current) return
+  const controller = surfaceTransitions[target]
+  const signature = JSON.stringify([props.worldId, props.channelId, props.store.state.activeSceneId, image, box, style, props.store.state.liveState.backgroundColor, Boolean(props.store.state.liveState.surfaceEmbeds[target])])
+  const changed = surfaceChangeVersions[target] !== props.store.surfaceChanges[target]
+  surfaceChangeVersions[target] = props.store.surfaceChanges[target]
+  const awaitingScene = sceneMediaBatch && !sceneMediaBatch.released && sceneMediaBatch.expected.has(`surface:${target}`) && !sceneMediaBatch.settled.has(`surface:${target}`)
+  // Do not restart the other surface's video/Media FX on a local selection.
+  if (!changed && surfaceRenderSignatures[target] === signature && !awaitingScene) return
+  controller.cancel()
+  surfaceRenderSignatures[target] = signature
+  const location = image ? resolveTheaterStageMedia(image) : null
+  const batch = sceneMediaBatch
+  const mediaKey = `surface:${target}`
+  if (batch && !batch.released && batch.sceneId === props.store.state.activeSceneId && batch.expected.get(mediaKey) !== location?.url) {
+    // If a selection arrives during scene entry, the barrier follows the newest
+    // active media instead of waiting for an abandoned request to time out.
+    batch.settled.delete(mediaKey)
+    if (location) batch.expected.set(mediaKey, location.url)
+    else batch.expected.delete(mediaKey)
+    if (batch.settled.size >= batch.expected.size) releaseSceneMediaBatch(batch)
+  }
+  const phase = surfaceVariants(target).transition
+  const canAnimate = changed && !sceneCompositeTransition && (!sceneMediaBatch || sceneMediaBatch.ready) && phase.type !== 'none'
+    && !resolveTheaterReducedMotion(false, undefined, false).effectiveReducedMotion && !props.store.state.liveState.surfaceEmbeds[target]
+    && (!image || Boolean(location)) && (current.source || image) && current.url !== (location?.url || '')
+  const label = target === 'background' ? '背景' : '前景'
+  if (!canAnimate) {
+    updateSurfaceSlot(current, image, box, style, label, mediaKey)
+    return
+  }
+  const parent = current.group.getParent() as Konva.Group
+  const next = createSurfaceSlot(parent, target, target === 'background', style)
+  next.group.opacity(0)
+  const token = controller.begin(next)
+  const ready = () => {
+    if (sceneCompositeTransition || !controller.isCurrent(token)) { controller.failed(token); return }
+    controller.ready(token, current!, slot => {
+      if (target === 'background') backgroundSlot = slot
+      else foregroundSlot = slot
+      current = slot
+    }, animateSurfacePair)
+  }
+  updateSurfaceSlot(next, image, box, style, label, mediaKey, { ready, error: () => {
+    if (!controller.isCurrent(token)) return
+    controller.failed(token)
+    props.store.rollbackFailedSurfaceVariant(target, image)
+  } })
+  if (!image) ready()
+}
+
 const syncSurfaceSlots = () => {
   if (!backgroundSlot || !foregroundSlot) return
   const liveState = props.store.state.liveState
@@ -6930,8 +7150,8 @@ const syncSurfaceSlots = () => {
   const height = liveState.fieldHeight * WORLD_UNIT_PX
   const box = { x: -width / 2, y: -height / 2, width, height }
   const viewportBox = { x: 0, y: 0, width: viewportSize.value.width, height: viewportSize.value.height }
-  updateSurfaceSlot(backgroundSlot, liveState.background, viewportBox, liveState.surfaceStyles.background, '背景', 'surface:background')
-  updateSurfaceSlot(foregroundSlot, liveState.foreground, box, liveState.surfaceStyles.foreground, '前景', 'surface:foreground')
+  syncSurface('background', liveState.background, viewportBox, liveState.surfaceStyles.background)
+  syncSurface('foreground', liveState.foreground, box, liveState.surfaceStyles.foreground)
   backgroundLayer?.batchDraw()
   topVisualLayer?.batchDraw()
 }
@@ -8140,7 +8360,7 @@ const stopPan = (event?: Konva.KonvaEventObject<PointerEvent>) => {
 }
 
 const targetImageRef = (target: ImageTarget) => target.kind === 'scene'
-  ? props.store.state.liveState[target.target]
+  ? target.slotId ? surfaceVariants(target.target).slots.find(slot => slot.id === target.slotId)?.image ?? null : props.store.state.liveState[target.target]
   : props.store.activeObjects.value[target.objectId]?.image || null
 
 const targetImageUrl = (target: ImageTarget) => targetImageRef(target)?.url || ''
@@ -8161,7 +8381,13 @@ const applyImageUrl = (
   loopCount?: number,
   dimensions?: { width: number, height: number },
 ) => {
-  if (target.kind === 'scene') return props.store.setSceneImage(target.target, url, resourceId, mimeType, animated, loopCount)
+  if (target.kind === 'scene') {
+    if (target.sceneId && (target.sceneId !== props.store.state.activeSceneId || target.epoch !== surfaceImageEpoch)) return false
+    if (!target.sceneId) return props.store.setSceneImage(target.target, url, resourceId, mimeType, animated, loopCount)
+    const image: StageImageRef | null = url ? { url, resourceId: resourceId || '', mimeType, animated, loopCount } : null
+    if (target.add) return props.store.operateSurfaceVariant(target.target, { type: 'add', id: crypto.randomUUID(), name: `图片 ${surfaceVariants(target.target).slots.length + 1}`, image })
+    return target.slotId ? props.store.operateSurfaceVariant(target.target, { type: 'replace', id: target.slotId, image }) : false
+  }
   return props.store.setObjectImage(target.objectId, url, resourceId, mimeType, animated, loopCount, dimensions)
 }
 
@@ -8274,15 +8500,23 @@ const uploadTheaterImageResource = async (file: File, targetObjectId = '', scope
   }
 }
 
+let imageUploadGeneration = 0
+const activeImageUploads = new Map<string, number>()
 const uploadImage = async (file: File, target: ImageTarget) => {
+  target = bindImageTarget(target)
+  const scope = captureTheaterRequestScope()
+  const generation = ++imageUploadGeneration
+  const uploadKey = target.kind === 'scene' ? `${target.sceneId}:${target.target}:${target.add ? 'add' : target.slotId}` : target.objectId
   if (!canUploadImageTarget(target)) throw new Error('缺少小剧场图片编辑权限')
   if (!props.worldId || !props.channelId) throw new Error('缺少小剧场频道信息')
+  activeImageUploads.set(uploadKey, generation)
   resourceUploading.value = true
   resourceError.value = ''
   try {
     const targetObject = target.kind === 'object' ? props.store.activeObjects.value[target.objectId] : null
     const targetEffectConfig = isTheaterEffectObject(targetObject) ? theaterEffectConfigFromObject(targetObject) : null
-    const uploaded = await uploadTheaterImageResource(file, target.kind === 'object' ? target.objectId : '')
+    const uploaded = await uploadTheaterImageResource(file, target.kind === 'object' ? target.objectId : '', scope)
+    if (!isCurrentTheaterRequestScope(scope) || activeImageUploads.get(uploadKey) !== generation) throw new Error('图片目标已失效')
     const dimensions = (
       targetObject?.type === 'image' && !targetObject.image
     ) || (
@@ -8290,12 +8524,17 @@ const uploadImage = async (file: File, target: ImageTarget) => {
     )
       ? await theaterMediaDimensions(uploaded.prepared)
       : undefined
+    if (!isCurrentTheaterRequestScope(scope) || activeImageUploads.get(uploadKey) !== generation || !canUploadImageTarget(target)) throw new Error('图片目标已失效')
     if (!applyImageUrl(target, uploaded.url, uploaded.resourceId, uploaded.mimeType, uploaded.resource?.animated === true, uploaded.resource?.loopCount || undefined, dimensions)) throw new Error('图片目标已失效')
   } catch (error) {
-    resourceError.value = error instanceof Error ? error.message : '图片上传失败'
+    if (activeImageUploads.get(uploadKey) === generation && isCurrentTheaterRequestScope(scope)
+      && (target.kind !== 'scene' || (target.sceneId === props.store.state.activeSceneId && target.epoch === surfaceImageEpoch))) {
+      resourceError.value = error instanceof Error ? error.message : '图片上传失败'
+    }
     throw error
   } finally {
-    resourceUploading.value = false
+    if (activeImageUploads.get(uploadKey) === generation) activeImageUploads.delete(uploadKey)
+    resourceUploading.value = activeImageUploads.size > 0
   }
 }
 
@@ -8412,7 +8651,7 @@ const uploadSceneOverlayMedia = async (files: File[]) => {
 }
 
 const requestImageUpload = (target: ImageTarget) => {
-  pendingImageTarget.value = target
+  pendingImageTarget.value = bindImageTarget(target)
   imageInputRef.value?.click()
 }
 
@@ -8438,6 +8677,9 @@ const clearImage = (target: ImageTarget) => {
 }
 
 const openImageEditor = async (target: ImageTarget) => {
+  target = bindImageTarget(target)
+  const epoch = surfaceImageEpoch
+  const generation = ++imageEditorReadGeneration
   if (targetImageRef(target)?.animated) return
   const url = targetImageUrl(target)
   if (!url) return
@@ -8445,18 +8687,20 @@ const openImageEditor = async (target: ImageTarget) => {
   resourceError.value = ''
   try {
     const response = await api.get<Blob>(url, { responseType: 'blob' })
+    if (epoch !== surfaceImageEpoch || generation !== imageEditorReadGeneration) return
     const blob = response.data
     imageEditorFile.value = new File([blob], 'theater-image.webp', { type: blob.type || 'image/webp' })
     imageEditorTarget.value = target
     imageEditorVisible.value = true
   } catch (error) {
-    resourceError.value = error instanceof Error ? error.message : '图片读取失败'
+    if (epoch === surfaceImageEpoch && generation === imageEditorReadGeneration) resourceError.value = error instanceof Error ? error.message : '图片读取失败'
   } finally {
-    resourceUploading.value = false
+    resourceUploading.value = activeImageUploads.size > 0
   }
 }
 
 const closeImageEditor = () => {
+  imageEditorReadGeneration++
   imageEditorVisible.value = false
   imageEditorFile.value = null
   imageEditorTarget.value = null
@@ -8515,9 +8759,10 @@ const saveEditedImage = async (result: MessageImageEditorResult) => {
     await uploadImage(result.file, target)
   } catch {
     // Upload failed: Media FX was not touched; reopen the editor on the same target.
-    imageEditorVisible.value = true
+    if (imageEditorTarget.value === target) imageEditorVisible.value = true
     return
   }
+  if (imageEditorTarget.value !== target) return
   commitImageEditorMediaFx(target, result.mediaFx)
   closeImageEditor()
 }
@@ -9170,13 +9415,21 @@ watch(() => ({
   background: props.store.state.liveState.background,
   foreground: props.store.state.liveState.foreground,
   surfaceStyles: props.store.state.liveState.surfaceStyles,
+  backgroundEmbed: Boolean(props.store.state.liveState.surfaceEmbeds.background),
   foregroundEmbed: Boolean(props.store.state.liveState.surfaceEmbeds.foreground),
   backgroundColor: props.store.state.liveState.backgroundColor,
   transparentBackdrop: props.transparentBackdrop,
   fieldWidth: props.store.state.liveState.fieldWidth,
   fieldHeight: props.store.state.liveState.fieldHeight,
   fieldObjectFit: props.store.state.liveState.fieldObjectFit,
+  surfaceChanges: { ...props.store.surfaceChanges },
 }), syncSurfaceSlots, { deep: true })
+watch(() => [props.worldId, props.channelId, props.store.state.activeSceneId, props.store.surfaceChanges.reset], () => {
+  surfaceImageEpoch++
+  pendingImageTarget.value = null
+  if (imageEditorTarget.value?.kind === 'scene') closeImageEditor()
+  cancelSurfaceTransitions()
+}, { flush: 'sync' })
 watch(() => ({
   fieldWidth: props.store.state.liveState.fieldWidth,
   fieldHeight: props.store.state.liveState.fieldHeight,
@@ -9294,6 +9547,14 @@ watch([dialoguePerformanceHidden, portraitPerformanceHidden], ([dialogueHidden, 
 }, { flush: 'sync' })
 
 onBeforeUnmount(() => {
+  surfaceImageEpoch++
+  cancelSurfaceTransitions()
+  for (const slot of [backgroundSlot, foregroundSlot]) {
+    if (!slot) continue
+    slot.version++
+    releaseStageMedia(slot.pendingSource)
+    slot.pendingSource = null
+  }
   endSelectedMediaFxEdit()
   unsubscribeMediaFxGpuAvailability()
   quickToolPickerEpoch += 1
@@ -10780,9 +11041,27 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-if="canEditAllObjects" class="theater-media-settings">
-          <template v-for="surface in surfaceSettingRows" :key="surface.target">
-            <label>{{ surface.label }}</label>
-            <div class="theater-image-actions">
+          <template v-for="surface in surfaceSettingRows" :key="`${store.state.activeSceneId}:${surface.target}`">
+            <div class="theater-surface-setting-heading">
+              <label>{{ surface.label }}</label>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-button
+                    class="theater-surface-visibility-toggle"
+                    size="tiny"
+                    quaternary
+                    circle
+                    :aria-expanded="surfaceSettingsVisible[surface.target]"
+                    :aria-label="`${surfaceSettingsVisible[surface.target] ? '隐藏' : '显示'}${surface.target === 'background' ? '背景' : '前景'}设置`"
+                    @click="toggleSurfaceSettingsVisible(surface.target)"
+                  >
+                    <template #icon><n-icon><component :is="surfaceSettingsVisible[surface.target] ? Eye : EyeOff" /></n-icon></template>
+                  </n-button>
+                </template>
+                {{ surfaceSettingsVisible[surface.target] ? '隐藏设置' : '显示设置' }}
+              </n-tooltip>
+            </div>
+            <div v-if="surfaceSettingsVisible[surface.target]" class="theater-image-actions">
               <n-button size="tiny" :disabled="!canUploadResources" :loading="resourceUploading" @click="requestImageUpload({ kind: 'scene', target: surface.target })"><template #icon><n-icon><Photo /></n-icon></template>上传</n-button>
               <n-button size="tiny" quaternary :disabled="!canUploadResources || !store.state.liveState[surface.target] || store.state.liveState[surface.target]?.animated" :aria-label="`编辑${surface.label}`" @click="openImageEditor({ kind: 'scene', target: surface.target })"><template #icon><n-icon><Edit /></n-icon></template></n-button>
               <n-popover :theme-overrides="theaterPopoverThemeOverrides" class="theater-secondary-surface" trigger="click" placement="right-start" :width="300" :show-arrow="false">
@@ -10849,10 +11128,19 @@ onBeforeUnmount(() => {
                     @remove="store.removeSceneSurfaceEmbed(surface.target)"
                     @test="toggleSurfaceInteractionTest(surface.target)"
                   />
+                  <div class="theater-surface-settings__section">槽位切换</div>
+                  <n-select size="small" :value="surfaceVariants(surface.target).transition.type" :options="surfaceTransitionOptions" :menu-props="surfaceTransitionMenuProps" @update:value="patchSurfaceTransition(surface.target, { type: $event })" />
+                  <div class="theater-surface-settings__slider">
+                    <span>持续时间</span>
+                    <n-slider :value="surfaceVariants(surface.target).transition.durationMs" :min="20" :max="5000" :step="10" @update:value="patchSurfaceTransition(surface.target, { durationMs: $event })" />
+                    <output>{{ surfaceVariants(surface.target).transition.durationMs }}ms</output>
+                  </div>
                 </div>
               </n-popover>
               <n-button size="tiny" quaternary type="error" :disabled="!store.state.liveState[surface.target]" @click="clearImage({ kind: 'scene', target: surface.target })">清除</n-button>
+              <n-button v-if="surfaceVariants(surface.target).slots.length <= 1" size="tiny" quaternary :disabled="!canUploadResources || resourceUploading" @click="requestSurfaceUpload(surface.target, null)">+ 添加更多{{ surface.target === 'background' ? '背景' : '前景' }}</n-button>
             </div>
+            <StageSurfaceVariants v-if="surfaceSettingsVisible[surface.target] && surfaceVariants(surface.target).slots.length > 1" :group="surfaceVariants(surface.target)" :foreground="surface.target === 'foreground'" :uploading="resourceUploading" :can-upload="canUploadResources" :thumbnail="surfaceThumbnail" @operate="operateSurface(surface.target, $event)" @upload="requestSurfaceUpload(surface.target, $event)" />
           </template>
           <div class="theater-scene-overlay-settings-row">
             <label>场景叠加效果</label>
@@ -11800,6 +12088,10 @@ onBeforeUnmount(() => {
 .theater-batch-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .theater-media-settings { display: grid; gap: 5px; padding: 9px; border-bottom: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .08)); }
 .theater-media-settings label, .theater-inspector label { color: var(--sc-fg-muted, #71717a); font-size: 10px; }
+.theater-surface-setting-heading { min-width: 0; min-height: 22px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.theater-surface-setting-heading > label { min-width: 0; }
+.theater-surface-visibility-toggle { flex: 0 0 auto; width: 22px; min-width: 22px; height: 22px; padding: 0; color: var(--sc-fg-muted, #71717a); }
+.theater-surface-visibility-toggle :deep(.n-icon) { font-size: 14px; }
 .theater-image-actions { display: flex; align-items: center; gap: 4px; }
 .theater-scene-overlay-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 3px; border-top: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .08)); }
 .theater-scene-overlay-settings-row .theater-image-actions { min-width: 0; }

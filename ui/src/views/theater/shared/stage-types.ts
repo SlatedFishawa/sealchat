@@ -453,6 +453,20 @@ export interface StageImageRef {
   loopCount?: number
 }
 
+export const stageSurfaceTransitionTypes = ['none', 'fade', 'slide', 'dissolve', 'zoom', 'blur'] as const
+export type StageSurfaceTransitionType = typeof stageSurfaceTransitionTypes[number]
+export interface StageSurfaceVariant {
+  id: string
+  name: string
+  image: StageImageRef | null
+}
+export interface StageSurfaceVariants {
+  slots: StageSurfaceVariant[]
+  // null explicitly hides the surface without discarding configured images.
+  activeId: string | null
+  transition: { type: StageSurfaceTransitionType, durationMs: number }
+}
+
 export const stageImageAnnotationStyles = ['card', 'bubble', 'tag', 'floating', 'footer'] as const
 export type StageImageAnnotationStyle = typeof stageImageAnnotationStyles[number]
 export const stageImageAnnotationPlacements = ['auto', 'top', 'right', 'bottom', 'left'] as const
@@ -858,6 +872,7 @@ export interface StageObject {
 export interface StageLiveState {
   background: StageImageRef | null
   foreground: StageImageRef | null
+  surfaceVariants?: Partial<Record<StageSurfaceTarget, StageSurfaceVariants>>
   surfaceEmbeds: Record<StageSurfaceTarget, StageSurfaceEmbed | null>
   surfaceStyles: Record<StageSurfaceTarget, StageSurfaceStyle>
   backgroundColor: string

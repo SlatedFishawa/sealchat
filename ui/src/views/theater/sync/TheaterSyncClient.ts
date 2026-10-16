@@ -5,6 +5,7 @@ import { chatEvent } from '@/stores/chat'
 import type { SceneFolder, StageAction, StageActionTriggeredPayload, StageClueActionEntry, StageDrawing, StageImageRef, StageLiveState, StageObject, StageObjectType, StagePointerTrace, StagePointerTraceInput, StageScene, StageSurfaceFit, StageWorkspaceState } from '../shared/stage-types'
 import { isSafeStageImageUrl, normalizeStageAudioRef, normalizeStageEntranceConfig, normalizeStageImageAnnotation, normalizeStageMusicSnapshot, normalizeStageSceneOverlays, normalizeStageSceneTransition, normalizeStageSurfaceStyle, normalizeStageSurfaceEmbeds } from '../shared/stage-types'
 import { createInitialTheaterStageState, type TheaterStageStore } from '../stage/StageStore'
+import { normalizeSurfaceVariantState } from '../shared/stage-surface-variants'
 import { STAGE_ACTION_CANCELLED } from '../stage/theater-action-sequence-runtime'
 import { stageActionSchema } from '../bridge/theater-bridge-protocol'
 import { defaultDialogueController, publishDialogueController, registerDialogueControllerWriter, type DialogueController, type DialogueControllerTemplate, type DialogueControllerPatch } from '../dialogue/theater-dialogue-controller'
@@ -246,9 +247,10 @@ const stageStateFromServer = (value: unknown, objects: Record<string, StageObjec
   const grid = asObject(raw.grid)
   const surfaceStyles = asObject(raw.surfaceStyles)
   const legacyFit: StageSurfaceFit = grid.objectFit === 'fill' || grid.objectFit === 'contain' ? grid.objectFit : 'cover'
-  return {
+  const state: StageLiveState = {
     background: imageRef(raw.background),
     foreground: imageRef(raw.foreground),
+    ...(raw.surfaceVariants ? { surfaceVariants: clone(raw.surfaceVariants) as StageLiveState['surfaceVariants'] } : {}),
     surfaceEmbeds: normalizeStageSurfaceEmbeds(raw.surfaceEmbeds),
     surfaceStyles: {
       background: normalizeStageSurfaceStyle(surfaceStyles.background, legacyFit, { opacity: 0.9, blurPx: 10 }),
@@ -269,12 +271,15 @@ const stageStateFromServer = (value: unknown, objects: Record<string, StageObjec
     sceneOverlays: normalizeStageSceneOverlays(raw.sceneOverlays),
     serverState: sceneStateExtensionsFromRaw(raw),
   }
+  normalizeSurfaceVariantState(state)
+  return state
 }
 
 const serverStateFromStage = (state: StageLiveState): JsonObject => ({
   ...sceneStateExtensionsFromRaw(asObject(state.serverState)),
   background: state.background,
   foreground: state.foreground,
+  ...(state.surfaceVariants ? { surfaceVariants: clone(state.surfaceVariants) } : {}),
   surfaceEmbeds: normalizeStageSurfaceEmbeds(state.surfaceEmbeds),
   surfaceStyles: clone(state.surfaceStyles),
   fieldWidth: state.fieldWidth,
@@ -803,11 +808,15 @@ export class TheaterSyncClient {
     return `api/v1/worlds/${encodeURIComponent(this.options.worldId)}/channels/${encodeURIComponent(this.options.channelId)}/theater`
   }
 
-  private readonly onGatewayEvent = (event: any) => {
+  private pendingSurfaceRevision = 0
+  private surfaceAnimationEpoch = 0
+  private readonly onGatewayMutation = (event: any) => this.onGatewayEvent(event, true)
+  private readonly onGatewayEvent = (event: any, animateSurfaceChanges = false) => {
     const theater = event?.theater
     if (!theater || theater.worldId !== this.options.worldId || theater.channelId !== (this.options.scopeType === 'world' ? '' : this.options.channelId)) return
     const revision = finite(theater.revision, 0)
     if (revision <= this.revision) return
+    if (animateSurfaceChanges) this.pendingSurfaceRevision = Math.max(this.pendingSurfaceRevision, revision)
     if (this.saving) {
       this.pendingRemoteRevision = Math.max(this.pendingRemoteRevision, revision)
       return
@@ -817,7 +826,7 @@ export class TheaterSyncClient {
       void this.flushNow()
       return
     }
-    void this.reload()
+    void this.reload(false, undefined, false, true, animateSurfaceChanges)
   }
 
   private readonly onPreloadRequested = (event: any) => {
@@ -925,6 +934,8 @@ export class TheaterSyncClient {
   }
 
   private readonly onGatewayConnected = () => {
+    this.pendingSurfaceRevision = 0
+    this.surfaceAnimationEpoch++
     void this.subscribe()
   }
 
@@ -969,7 +980,7 @@ export class TheaterSyncClient {
     this.started = true
     this.unregisterDialogueWriter = registerDialogueControllerWriter(this.options.worldId, patch => this.patchDialogueController(patch))
     chatEvent.on('theater.snapshot' as any, this.onGatewayEvent)
-    chatEvent.on('theater.mutation.applied' as any, this.onGatewayEvent)
+    chatEvent.on('theater.mutation.applied' as any, this.onGatewayMutation)
     chatEvent.on('theater.mutation.rejected' as any, this.onGatewayEvent)
     chatEvent.on('theater.preload.requested' as any, this.onPreloadRequested)
     chatEvent.on('theater.pointer.trace' as any, this.onPointerTrace)
@@ -995,6 +1006,8 @@ export class TheaterSyncClient {
   async stop() {
     if (!this.started) return
     this.started = false
+    this.pendingSurfaceRevision = 0
+    this.surfaceAnimationEpoch++
     this.unregisterDialogueWriter?.()
     this.unregisterDialogueWriter = null
     this.stopWatch?.()
@@ -1007,7 +1020,7 @@ export class TheaterSyncClient {
     this.pendingSceneAudioTriggers.clear()
     this.runningClueExecutions.clear()
     chatEvent.off('theater.snapshot' as any, this.onGatewayEvent)
-    chatEvent.off('theater.mutation.applied' as any, this.onGatewayEvent)
+    chatEvent.off('theater.mutation.applied' as any, this.onGatewayMutation)
     chatEvent.off('theater.mutation.rejected' as any, this.onGatewayEvent)
     chatEvent.off('theater.preload.requested' as any, this.onPreloadRequested)
     chatEvent.off('theater.pointer.trace' as any, this.onPointerTrace)
@@ -1274,8 +1287,10 @@ export class TheaterSyncClient {
     localChange?: { base: TheaterDocument, desired: TheaterDocument },
     silent = false,
     preserveLocalChanges = true,
+    animateSurfaceChanges = false,
   ) {
     if (!this.started) return
+    const surfaceAnimationEpoch = this.surfaceAnimationEpoch
     try {
       const response = await api.get<TheaterSnapshotResponse>(this.theaterBase())
       if (!this.started) return
@@ -1314,7 +1329,10 @@ export class TheaterSyncClient {
         : hasPendingLocalChanges && preserveLocalChanges
           ? rebaseDocument(this.baseDocument, currentDocument!, remoteDocument)
           : remoteDocument
+      const shouldAnimateSurfaces = !force && this.hasLoaded && surfaceAnimationEpoch === this.surfaceAnimationEpoch
+        && (animateSurfaceChanges || this.pendingSurfaceRevision > this.revision)
       this.revision = nextRevision
+      if (this.pendingSurfaceRevision <= nextRevision) this.pendingSurfaceRevision = 0
       this.baseDocument = remoteDocument
       this.applyingRemote = true
       try {
@@ -1329,7 +1347,7 @@ export class TheaterSyncClient {
             || workspace.liveState.sceneObjects[current.selectedObjectId]
           ) ? current.selectedObjectId : null
         }
-        this.options.store.replaceState(workspace)
+        this.options.store.replaceState(workspace, shouldAnimateSurfaces)
         if (this.options.store.selection.bulkMode) {
           const validIds = selectedIds.filter((id) => (
             workspace.persistentObjects[id] || workspace.liveState.sceneObjects[id]

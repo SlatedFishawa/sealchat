@@ -216,6 +216,9 @@ func mergeTheaterMCPObjectMetadata(ctx context.Context, actorID string, command 
 
 func mergeTheaterMCPState(state, patch map[string]any) {
 	for k, v := range patch {
+		if k == "background" || k == "foreground" {
+			updateTheaterSurfaceVariantImage(state, k, v)
+		}
 		if k == "surfaceEmbeds" || k == "surfaceStyles" || k == "grid" {
 			target, _ := state[k].(map[string]any)
 			if target == nil {
