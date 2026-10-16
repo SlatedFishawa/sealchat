@@ -264,6 +264,7 @@ func apiMessageForwardBatch(ctx *ChatContext, data *messageForwardBatchRequest) 
 							m.SenderIdentityName = target.appearance.DisplayName
 							m.SenderIdentityColor = target.appearance.Color
 							m.SenderIdentityAvatarID = target.appearance.AvatarAttachmentID
+							m.SenderIdentityAvatarTextStyle = target.appearance.AvatarTextStyle
 							m.SenderIdentityDecorations = target.appearance.AvatarDecorations
 							m.SenderTheaterPresentation = target.appearance.TheaterPresentation
 							if target.appearance.DisplayName != "" {

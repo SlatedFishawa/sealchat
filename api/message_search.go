@@ -72,10 +72,11 @@ type messageSearchUser struct {
 }
 
 type messageSearchIdentity struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	Color       string `json:"color"`
-	AvatarID    string `json:"avatar_attachment"`
+	ID              string `json:"id"`
+	DisplayName     string `json:"display_name"`
+	Color           string `json:"color"`
+	AvatarID        string `json:"avatar_attachment"`
+	AvatarTextStyle string `json:"avatarTextStyle,omitempty"`
 }
 
 type messageSearchStep struct {
@@ -1188,12 +1189,13 @@ func buildMessageSearchItem(msg *model.MessageModel) messageSearchItem {
 			IsBot:  msg.User.IsBot,
 		}
 	}
-	if msg.SenderIdentityID != "" {
+	if msg.SenderIdentityID != "" || msg.SenderIdentityAvatarTextStyle != "" {
 		item.Identity = &messageSearchIdentity{
-			ID:          msg.SenderIdentityID,
-			DisplayName: msg.SenderIdentityName,
-			Color:       msg.SenderIdentityColor,
-			AvatarID:    msg.SenderIdentityAvatarID,
+			ID:              msg.SenderIdentityID,
+			DisplayName:     msg.SenderIdentityName,
+			Color:           msg.SenderIdentityColor,
+			AvatarID:        msg.SenderIdentityAvatarID,
+			AvatarTextStyle: msg.SenderIdentityAvatarTextStyle,
 		}
 	}
 	if msg.Member != nil && item.SenderName == "" {

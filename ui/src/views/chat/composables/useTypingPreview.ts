@@ -1,6 +1,8 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { throttle } from 'lodash-es';
 import type { AvatarDecoration } from '@/types';
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar';
+import type { GeneratedAvatarStyle } from '@/utils/generatedAvatarImage';
 import { chatEvent, useChatStore } from '@/stores/chat';
 import { useUserStore } from '@/stores/user';
 import { useDisplayStore } from '@/stores/display';
@@ -29,6 +31,7 @@ export interface TypingPreviewOptions {
 }
 
 export interface TypingPreviewItem {
+  avatarTextStyle?: '' | GeneratedAvatarStyle;
   userId: string;
   displayName: string;
   avatar?: string;
@@ -44,6 +47,7 @@ export interface TypingPreviewItem {
 }
 
 export interface EditingPreviewInfo {
+  avatarTextStyle?: '' | GeneratedAvatarStyle;
   userId: string;
   displayName: string;
   color?: string;
@@ -517,6 +521,7 @@ const activeIdentityAppearancePreviewSignature = computed(() => {
     appearance?.displayName || '',
     appearance?.color || '',
     appearance?.avatarAttachmentId || '',
+    appearance?.avatarTextStyle || '',
     JSON.stringify(appearance?.avatarDecorations || []),
     appearance?.isTemporary ? '1' : '0',
   ].join('__');
@@ -757,6 +762,7 @@ const resolveSelfPreviewAvatar = () => {
   if (appearance?.avatarAttachmentId) {
     return resolveAttachmentUrl(appearance.avatarAttachmentId);
   }
+  if (normalizeAvatarTextStyle(appearance?.avatarTextStyle)) return '';
   return chat.curMember?.avatar || user.info?.avatar || '';
 };
 const removeSelfTypingPreview = () => {
@@ -802,6 +808,7 @@ const syncSelfTypingPreview = () => {
     tone,
     messageId: undefined,
     isTemporary: Boolean(activeIdentityAppearanceForPreview.value?.isTemporary),
+    avatarTextStyle: normalizeAvatarTextStyle(activeIdentityAppearanceForPreview.value?.avatarTextStyle),
     orderKey: 0,
   };
   upsertTypingPreview(payload);
@@ -1145,7 +1152,8 @@ const typingToggleClass = computed(() => ({
       e.member?.nick ||
       e.user?.nick ||
       '未知成员';
-    const avatar = identityAvatar || e.member?.avatar || e.user?.avatar || '';
+    const avatarTextStyle = normalizeAvatarTextStyle(identity?.avatarTextStyle);
+    const avatar = identityAvatar || (avatarTextStyle ? '' : (e.member?.avatar || e.user?.avatar || ''));
     upsertTypingPreview({
       userId: typingUserId,
       displayName,
@@ -1157,6 +1165,7 @@ const typingToggleClass = computed(() => ({
       mode,
       messageId: e.typing?.messageId,
       isTemporary: Boolean(identity?.isTemporary),
+      avatarTextStyle,
       tone: resolveTypingTone(e.typing),
       orderKey: typeof e.typing?.orderKey === 'number' ? e.typing.orderKey : Number.NaN,
     });

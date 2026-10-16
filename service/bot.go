@@ -461,7 +461,7 @@ func SyncBotChannelAppearance(token *model.BotTokenModel) (*BotAppearanceSyncRes
 		if err != nil {
 			return nil, err
 		}
-		if identity.DisplayName != displayName || identity.Color != color || identity.AvatarAttachmentID != avatar {
+		if identity.DisplayName != displayName || identity.Color != color || identity.AvatarAttachmentID != avatar || identity.AvatarTextStyle != "" {
 			syncResult, syncErr := sharedChannelIdentitySyncFromCopy(token.ID, token.ID, identity.ID, &SharedChannelIdentitySyncInput{
 				DisplayName: displayName, Color: color, AvatarAttachmentID: avatar,
 				AvatarDecorations: identity.AvatarDecorations,
@@ -483,8 +483,10 @@ func SyncBotChannelAppearance(token *model.BotTokenModel) (*BotAppearanceSyncRes
 			identity.DisplayName = displayName
 			identity.Color = color
 			identity.AvatarAttachmentID = avatar
+			identity.AvatarTextStyle = ""
 			if err := tx.Model(&model.ChannelIdentityModel{}).Where("id = ?", identity.ID).Updates(map[string]any{
 				"display_name": displayName, "color": color, "avatar_attachment_id": avatar,
+				"avatar_text_style": "",
 			}).Error; err != nil {
 				return err
 			}
@@ -493,6 +495,7 @@ func SyncBotChannelAppearance(token *model.BotTokenModel) (*BotAppearanceSyncRes
 		for _, identity := range result.UpdatedIdentities {
 			if err := tx.Model(&model.MessageModel{}).
 				Where("channel_id = ? AND sender_identity_id = ?", identity.ChannelID, identity.ID).
+				Where("sender_identity_avatar_text_style = ''").
 				Updates(map[string]any{
 					"sender_member_name":        displayName,
 					"sender_identity_name":      displayName,

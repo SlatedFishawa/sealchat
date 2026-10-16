@@ -1059,7 +1059,7 @@ func resolveSenderAvatar(msg *model.MessageModel) string {
 	if id := strings.TrimSpace(msg.SenderIdentityAvatarID); id != "" {
 		return "id:" + id
 	}
-	if msg.SenderIdentityIsTemporary {
+	if msg.SenderIdentityIsTemporary || msg.SenderIdentityAvatarTextStyle != "" {
 		return ""
 	}
 	if msg.User != nil {

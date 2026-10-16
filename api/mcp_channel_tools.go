@@ -23,6 +23,7 @@ type mcpIdentityWriteInput struct {
 	DisplayName        *string `json:"displayName,omitempty"`
 	Color              *string `json:"color,omitempty"`
 	AvatarAttachmentID *string `json:"avatarAttachmentId,omitempty"`
+	AvatarTextStyle    *string `json:"avatarTextStyle,omitempty"`
 }
 type mcpIdentityDTO struct {
 	ID                 string `json:"id"`
@@ -31,12 +32,13 @@ type mcpIdentityDTO struct {
 	DisplayName        string `json:"displayName"`
 	Color              string `json:"color"`
 	AvatarAttachmentID string `json:"avatarAttachmentId"`
+	AvatarTextStyle    string `json:"avatarTextStyle"`
 	IsDefault          bool   `json:"isDefault"`
 	IsTemporary        bool   `json:"isTemporary"`
 }
 
 func mcpIdentityDTOFrom(v *model.ChannelIdentityModel) mcpIdentityDTO {
-	return mcpIdentityDTO{v.ID, v.ChannelID, v.UserID, v.DisplayName, v.Color, v.AvatarAttachmentID, v.IsDefault, v.IsTemporary}
+	return mcpIdentityDTO{v.ID, v.ChannelID, v.UserID, v.DisplayName, v.Color, v.AvatarAttachmentID, v.AvatarTextStyle, v.IsDefault, v.IsTemporary}
 }
 func mcpIdentityActor(a *service.MCPActor, in mcpIdentityInput) (*service.ChannelIdentityActorContext, error) {
 	if _, err := mcpChannel(a, in.WorldID, in.ChannelID); err != nil {
@@ -54,6 +56,19 @@ func mcpIdentityResource(actor *service.ChannelIdentityActorContext, channelID, 
 	}
 	return identity, nil
 }
+func applyMCPIdentityAvatarInput(input *service.ChannelIdentityInput, in mcpIdentityWriteInput) {
+	if in.AvatarAttachmentID != nil {
+		input.AvatarAttachmentID = *in.AvatarAttachmentID
+		input.AvatarTextStyle = ""
+	}
+	if in.AvatarTextStyle != nil {
+		input.AvatarTextStyle = *in.AvatarTextStyle
+		if input.AvatarTextStyle != "" && in.AvatarAttachmentID == nil {
+			input.AvatarAttachmentID = ""
+		}
+	}
+}
+
 func mcpIdentityTools() []mcpToolSpec {
 	return []mcpToolSpec{
 		mcpSpec("identity_read", "无 resourceId 分页读取可管理目标的可见频道角色；有 resourceId 读取详情。沿用原生委托规则。", []string{"identity:read"}, false, false, true, func(_ context.Context, a *service.MCPActor, in mcpIdentityListInput) (any, error) {
@@ -141,6 +156,7 @@ func mcpIdentityTools() []mcpToolSpec {
 				input.DisplayName = old.DisplayName
 				input.Color = old.Color
 				input.AvatarAttachmentID = old.AvatarAttachmentID
+				input.AvatarTextStyle = old.AvatarTextStyle
 				input.AvatarDecorations = old.AvatarDecorations
 				input.IsDefault = old.IsDefault
 				input.IsTemporary = old.IsTemporary
@@ -152,9 +168,7 @@ func mcpIdentityTools() []mcpToolSpec {
 			if in.Color != nil {
 				input.Color = *in.Color
 			}
-			if in.AvatarAttachmentID != nil {
-				input.AvatarAttachmentID = *in.AvatarAttachmentID
-			}
+			applyMCPIdentityAvatarInput(input, in)
 			var v *model.ChannelIdentityModel
 			if operation == "create" {
 				v, err = service.ChannelIdentityCreateWithAccess(actor.TargetUserID, a.User.ID, input)

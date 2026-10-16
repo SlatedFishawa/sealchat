@@ -12,16 +12,18 @@ import (
 
 // channelImageItem represents a single image from channel messages
 type channelImageItem struct {
-	ID                        string  `json:"id"`
-	MessageID                 string  `json:"message_id"`
-	AttachmentID              string  `json:"attachment_id"`
-	ThumbURL                  string  `json:"thumb_url"`
-	SenderID                  string  `json:"sender_id"`
-	SenderName                string  `json:"sender_name"`
-	SenderAvatar              string  `json:"sender_avatar"`
-	SenderIdentityIsTemporary bool    `json:"sender_identity_is_temporary"`
-	CreatedAt                 int64   `json:"created_at"`
-	DisplayOrder              float64 `json:"display_order"`
+	ID                            string  `json:"id"`
+	MessageID                     string  `json:"message_id"`
+	AttachmentID                  string  `json:"attachment_id"`
+	ThumbURL                      string  `json:"thumb_url"`
+	SenderID                      string  `json:"sender_id"`
+	SenderName                    string  `json:"sender_name"`
+	SenderAvatar                  string  `json:"sender_avatar"`
+	SenderIdentityAvatarTextStyle string  `json:"sender_identity_avatar_text_style"`
+	SenderIdentityColor           string  `json:"sender_identity_color"`
+	SenderIdentityIsTemporary     bool    `json:"sender_identity_is_temporary"`
+	CreatedAt                     int64   `json:"created_at"`
+	DisplayOrder                  float64 `json:"display_order"`
 }
 
 type channelImagesResponse struct {
@@ -167,6 +169,9 @@ func queryChannelImages(db *gorm.DB, userID, channelID, icModeFilter, sortOrder 
 		}
 
 		senderName := resolveSenderName(msg)
+		if msg.SenderIdentityAvatarTextStyle != "" && msg.SenderIdentityName != "" {
+			senderName = msg.SenderIdentityName
+		}
 		senderAvatar := ""
 		senderID := ""
 		senderIdentityIsTemporary := msg.SenderIdentityIsTemporary
@@ -175,7 +180,7 @@ func queryChannelImages(db *gorm.DB, userID, channelID, icModeFilter, sortOrder 
 		}
 		if msg.User != nil {
 			senderID = msg.User.ID
-			if senderAvatar == "" && !senderIdentityIsTemporary {
+			if senderAvatar == "" && !senderIdentityIsTemporary && msg.SenderIdentityAvatarTextStyle == "" {
 				senderAvatar = msg.User.Avatar
 			}
 		}
@@ -191,16 +196,18 @@ func queryChannelImages(db *gorm.DB, userID, channelID, icModeFilter, sortOrder 
 			}
 
 			items = append(items, channelImageItem{
-				ID:                        msg.ID + "_" + attID,
-				MessageID:                 msg.ID,
-				AttachmentID:              attID,
-				ThumbURL:                  "/api/v1/attachment/" + attID + "/thumb?size=150",
-				SenderID:                  senderID,
-				SenderName:                senderName,
-				SenderAvatar:              senderAvatar,
-				SenderIdentityIsTemporary: senderIdentityIsTemporary,
-				CreatedAt:                 msg.CreatedAt.UnixMilli(),
-				DisplayOrder:              msg.DisplayOrder,
+				ID:                            msg.ID + "_" + attID,
+				MessageID:                     msg.ID,
+				AttachmentID:                  attID,
+				ThumbURL:                      "/api/v1/attachment/" + attID + "/thumb?size=150",
+				SenderID:                      senderID,
+				SenderName:                    senderName,
+				SenderAvatar:                  senderAvatar,
+				SenderIdentityAvatarTextStyle: msg.SenderIdentityAvatarTextStyle,
+				SenderIdentityColor:           msg.SenderIdentityColor,
+				SenderIdentityIsTemporary:     senderIdentityIsTemporary,
+				CreatedAt:                     msg.CreatedAt.UnixMilli(),
+				DisplayOrder:                  msg.DisplayOrder,
 			})
 		}
 	}

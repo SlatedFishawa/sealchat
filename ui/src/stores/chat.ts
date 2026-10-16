@@ -323,6 +323,7 @@ interface EditingIdentitySnapshot {
   displayName?: string;
   color?: string;
   avatarAttachmentId?: string;
+  avatarTextStyle?: ChannelIdentity['avatarTextStyle'];
   avatarDecorations?: AvatarDecoration[] | null;
   isTemporary?: boolean;
 }
@@ -3488,7 +3489,7 @@ export const useChatStore = defineStore({
       return current[identityId];
     },
 
-    async channelIdentityCreate(payload: { channelId: string; targetUserId?: string; displayName: string; color: string; avatarAttachmentId: string; avatarDecorations?: AvatarDecoration[] | null; theaterPresentation?: TheaterPresentation | null; skipTheaterAssetValidation?: boolean; isDefault: boolean; isTemporary?: boolean; botAppearanceMode?: 'inherit' | 'custom' | ''; variantResetMatchMode?: 'prefix' | 'keyword' | 'regex' | ''; variantResetMatchConfig?: string; variantResetMatchContent?: string; icOocOnActivate?: '' | 'ic' | 'ooc'; folderIds?: string[]; }) {
+    async channelIdentityCreate(payload: { channelId: string; targetUserId?: string; displayName: string; color: string; avatarAttachmentId: string; avatarTextStyle?: ChannelIdentity['avatarTextStyle']; avatarDecorations?: AvatarDecoration[] | null; theaterPresentation?: TheaterPresentation | null; skipTheaterAssetValidation?: boolean; isDefault: boolean; isTemporary?: boolean; botAppearanceMode?: 'inherit' | 'custom' | ''; variantResetMatchMode?: 'prefix' | 'keyword' | 'regex' | ''; variantResetMatchConfig?: string; variantResetMatchContent?: string; icOocOnActivate?: '' | 'ic' | 'ooc'; folderIds?: string[]; }) {
       const resp = await api.post<{ item: ChannelIdentity }>('api/v1/channel-identities', payload);
       const identity = resp.data.item;
       this.upsertChannelIdentity(identity, payload.targetUserId);
@@ -3496,7 +3497,7 @@ export const useChatStore = defineStore({
       return identity;
     },
 
-    async channelIdentityUpdate(identityId: string, payload: { channelId: string; targetUserId?: string; displayName: string; color: string; avatarAttachmentId: string; avatarDecorations?: AvatarDecoration[] | null; theaterPresentation?: TheaterPresentation | null; skipTheaterAssetValidation?: boolean; isDefault: boolean; isTemporary?: boolean; botAppearanceMode?: 'inherit' | 'custom' | ''; variantResetMatchMode?: 'prefix' | 'keyword' | 'regex' | ''; variantResetMatchConfig?: string; variantResetMatchContent?: string; icOocOnActivate?: '' | 'ic' | 'ooc'; folderIds?: string[]; promoteToShared?: boolean; }) {
+    async channelIdentityUpdate(identityId: string, payload: { channelId: string; targetUserId?: string; displayName: string; color: string; avatarAttachmentId: string; avatarTextStyle?: ChannelIdentity['avatarTextStyle']; avatarDecorations?: AvatarDecoration[] | null; theaterPresentation?: TheaterPresentation | null; skipTheaterAssetValidation?: boolean; isDefault: boolean; isTemporary?: boolean; botAppearanceMode?: 'inherit' | 'custom' | ''; variantResetMatchMode?: 'prefix' | 'keyword' | 'regex' | ''; variantResetMatchConfig?: string; variantResetMatchContent?: string; icOocOnActivate?: '' | 'ic' | 'ooc'; folderIds?: string[]; promoteToShared?: boolean; }) {
       const resp = await api.put<{ item: ChannelIdentity }>(`api/v1/channel-identities/${identityId}`, payload);
       const identity = resp.data.item;
       this.upsertChannelIdentity(identity, payload.targetUserId);

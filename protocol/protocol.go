@@ -114,6 +114,7 @@ type ChannelIdentity struct {
 	DisplayName              string               `json:"displayName"`
 	Color                    string               `json:"color"`
 	AvatarAttachmentID       string               `json:"avatarAttachmentId"`
+	AvatarTextStyle          string               `json:"avatarTextStyle,omitempty"`
 	AvatarDecoration         *AvatarDecoration    `json:"avatarDecoration,omitempty"`
 	AvatarDecorations        AvatarDecorationList `json:"avatarDecorations,omitempty"`
 	TheaterPresentation      *TheaterPresentation `json:"theaterPresentation,omitempty"`
@@ -213,6 +214,7 @@ type MessageTTS struct {
 }
 
 type MessageIdentity struct {
+	AvatarTextStyle     string               `json:"avatarTextStyle,omitempty"`
 	SharedIdentityID    string               `json:"sharedIdentityId,omitempty"`
 	ID                  string               `json:"id"`
 	VariantID           string               `json:"variantId,omitempty"`

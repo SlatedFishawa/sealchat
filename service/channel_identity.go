@@ -39,6 +39,7 @@ type ChannelIdentityInput struct {
 	DisplayName                string
 	Color                      string
 	AvatarAttachmentID         string
+	AvatarTextStyle            string
 	AvatarDecorations          protocol.AvatarDecorationList
 	IsDefault                  bool
 	IsTemporary                bool
@@ -144,9 +145,27 @@ func ApplyTemporaryIdentityActivateModes(userID string, identities []*model.Chan
 	return nil
 }
 
+func validateAvatarTextStyle(style, attachmentID string) error {
+	switch style {
+	case "", "a", "b", "c":
+	default:
+		return errors.New("文字头像样式无效，仅支持 a、b、c 或空字符串")
+	}
+	if style != "" && attachmentID != "" {
+		return errors.New("文字头像与头像附件不能同时设置")
+	}
+	return nil
+}
+
 func validateIdentityInput(input *ChannelIdentityInput) error {
 	if input == nil {
 		return errors.New("参数不能为空")
+	}
+	if err := validateAvatarTextStyle(input.AvatarTextStyle, input.AvatarAttachmentID); err != nil {
+		return err
+	}
+	if input.IsTemporary && input.AvatarTextStyle != "" {
+		return errors.New("临时身份需使用上传的头像附件")
 	}
 	if strings.TrimSpace(input.DisplayName) == "" {
 		return errors.New("频道昵称不能为空")
@@ -234,6 +253,7 @@ func ChannelIdentityCreateWithAccess(ownerUserID string, operatorUserID string, 
 		DisplayName:              strings.TrimSpace(input.DisplayName),
 		Color:                    input.Color,
 		AvatarAttachmentID:       input.AvatarAttachmentID,
+		AvatarTextStyle:          input.AvatarTextStyle,
 		AvatarDecorations:        avatarDecorations,
 		SortOrder:                sortMax + 1,
 		IsDefault:                input.IsDefault,
@@ -358,6 +378,7 @@ func channelIdentityUpdateAndPromoteWithAccess(ownerUserID, operatorUserID strin
 		values := map[string]any{
 			"display_name": strings.TrimSpace(input.DisplayName), "color": input.Color,
 			"avatar_attachment_id": strings.TrimSpace(input.AvatarAttachmentID),
+			"avatar_text_style":    input.AvatarTextStyle,
 			"avatar_decoration":    avatarDecorations, "is_default": input.IsDefault,
 		}
 		if input.BotAppearanceMode != "" {
@@ -475,6 +496,7 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 			}
 			input.Color = model.ChannelIdentityNormalizeColor(owner.NickColor)
 			input.AvatarAttachmentID = strings.TrimSpace(owner.Avatar)
+			input.AvatarTextStyle = ""
 		}
 	}
 	if err := validateIdentityInput(input); err != nil {
@@ -483,6 +505,9 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 	identity, err := model.ChannelIdentityValidateOwnership(identityID, ownerUserID, input.ChannelID)
 	if err != nil {
 		return nil, err
+	}
+	if identity.IsTemporary && input.AvatarTextStyle != "" {
+		return nil, errors.New("临时身份需使用上传的头像附件")
 	}
 	affectedAssetIDs := theaterPresentationAssetIDs(identity.TheaterPresentation)
 	if strings.TrimSpace(operatorUserID) == "" {
@@ -517,6 +542,7 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 	sharedSyncChanged := sharedOwnerUpdate && (strings.TrimSpace(input.DisplayName) != identity.DisplayName ||
 		input.Color != identity.Color ||
 		strings.TrimSpace(input.AvatarAttachmentID) != identity.AvatarAttachmentID ||
+		input.AvatarTextStyle != identity.AvatarTextStyle ||
 		!sharedAvatarDecorationsEqual(avatarDecorations, identity.AvatarDecorations) ||
 		botManaged && input.TheaterPresentationSet && !reflect.DeepEqual(input.TheaterPresentation, identity.TheaterPresentation) ||
 		botManaged && input.BotAppearanceMode != "" && input.BotAppearanceMode != identity.BotAppearanceMode ||
@@ -537,6 +563,7 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 		values["display_name"] = strings.TrimSpace(input.DisplayName)
 		values["color"] = input.Color
 		values["avatar_attachment_id"] = input.AvatarAttachmentID
+		values["avatar_text_style"] = input.AvatarTextStyle
 		values["avatar_decoration"] = avatarDecorations
 	}
 	if input.BotAppearanceMode != "" && !(botManaged && sharedOwnerUpdate) {
@@ -605,6 +632,7 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 			DisplayName:            strings.TrimSpace(input.DisplayName),
 			Color:                  input.Color,
 			AvatarAttachmentID:     input.AvatarAttachmentID,
+			AvatarTextStyle:        input.AvatarTextStyle,
 			AvatarDecorations:      avatarDecorations,
 			TheaterPresentation:    input.TheaterPresentation,
 			TheaterPresentationSet: botManaged && input.TheaterPresentationSet,
@@ -670,6 +698,9 @@ func ChannelIdentityReplaceTemporaryWithAccess(ownerUserID string, operatorUserI
 	}
 	if !identity.IsTemporary {
 		return nil, errors.New("仅临时身份支持替换式编辑")
+	}
+	if input.AvatarTextStyle != "" {
+		return nil, errors.New("临时身份需使用上传的头像附件")
 	}
 	affectedAssetIDs, err := channelIdentityReferencedTheaterAssetIDs(identity)
 	if err != nil {
@@ -977,6 +1008,7 @@ func ChannelIdentitySerialize(item *model.ChannelIdentityModel) map[string]any {
 		"displayName":              item.DisplayName,
 		"color":                    item.Color,
 		"avatarAttachmentId":       item.AvatarAttachmentID,
+		"avatarTextStyle":          item.AvatarTextStyle,
 		"avatarDecorations":        item.AvatarDecorations,
 		"theaterPresentation":      item.TheaterPresentation,
 		"isDefault":                item.IsDefault,

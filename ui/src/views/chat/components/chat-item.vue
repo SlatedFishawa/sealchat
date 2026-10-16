@@ -1,4 +1,5 @@
 <script setup lang="tsx">
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar';
 import MessageSpeechButton from '@/features/tts/MessageSpeechButton.vue'
 import { speechPlayer } from '@/features/tts/player'
 import dayjs from 'dayjs';
@@ -80,6 +81,8 @@ type EditingPreviewInfo = {
   indicatorOnly: boolean;
   isSelf: boolean;
   isTemporary?: boolean;
+  avatarTextStyle?: '' | 'a' | 'b' | 'c';
+  color?: string;
   summary: string;
   previewHtml: string;
   tone: 'ic' | 'ooc';
@@ -3368,7 +3371,7 @@ const doAvatarDblClick = (e: MouseEvent) => {
   e.preventDefault();
   e.stopPropagation();
   chat.avatarMenu.show = false;
-  const avatarUrl = displayAvatar.value || props.item?.member?.avatar || props.item?.user?.avatar;
+  const avatarUrl = displayAvatar.value || (useTextAvatarFallback.value ? '' : (props.item?.member?.avatar || props.item?.user?.avatar));
   if (!avatarUrl) return;
 
   const resolvedUrl = resolveAttachmentUrl(avatarUrl) || avatarUrl;
@@ -3654,9 +3657,10 @@ const displayAvatar = computed(() => {
   if (shouldUseSelfPreviewIdentity.value) {
     return selfEditingPreview.value?.avatar || '';
   }
-  if (otherEditingPreview.value?.avatar) {
+  if (otherEditingPreview.value && (otherEditingPreview.value.avatar || otherEditingPreview.value.avatarTextStyle)) {
     return otherEditingPreview.value.avatar;
   }
+  if (avatarTextStyle.value) return '';
   return props.avatar;
 });
 
@@ -3690,7 +3694,22 @@ const displayAvatarDecorations = computed(() => {
   return normalizeAvatarDecorations(liveIdentity?.avatarDecorations, liveIdentity?.avatarDecoration || null);
 });
 
+const avatarTextStyle = computed(() => {
+  if (shouldUseSelfPreviewIdentity.value) return normalizeAvatarTextStyle(selfEditingPreview.value?.avatarTextStyle);
+  if (otherEditingPreview.value) return normalizeAvatarTextStyle(otherEditingPreview.value.avatarTextStyle);
+  const item = props.item as any;
+  return normalizeAvatarTextStyle(item?.identity?.avatarTextStyle ?? item?.sender_identity_avatar_text_style ?? item?.senderIdentityAvatarTextStyle);
+});
+
+const avatarTextAccentColor = computed(() => {
+  if (!avatarTextStyle.value) return undefined;
+  if (shouldUseSelfPreviewIdentity.value) return selfEditingPreview.value?.color || '';
+  if (otherEditingPreview.value) return otherEditingPreview.value.color || '';
+  return props.item?.identity?.color || props.item?.sender_identity_color || '';
+});
+
 const useTextAvatarFallback = computed(() => {
+  if (avatarTextStyle.value) return true;
   if (shouldUseSelfPreviewIdentity.value) {
     return Boolean(selfEditingPreview.value?.isTemporary);
   }
@@ -3704,10 +3723,11 @@ const useTextAvatarFallback = computed(() => {
 });
 
 const avatarFallbackText = computed(() => (
-  selfEditingPreview.value?.displayName
-  || props.username
+  (shouldUseSelfPreviewIdentity.value ? selfEditingPreview.value?.displayName : otherEditingPreview.value?.displayName)
+  || (!avatarTextStyle.value ? props.username : '')
   || (props.item as any)?.identity?.displayName
   || (props.item as any)?.sender_identity_name
+  || props.username
   || props.item?.sender_member_name
   || props.item?.member?.nick
   || props.item?.user?.nick
@@ -3900,6 +3920,8 @@ const handleRetrySend = () => {
         :border="false"
         :decorations="displayAvatarDecorations"
         :use-text-fallback="useTextAvatarFallback"
+        :text-fallback-style="avatarTextStyle"
+        :text-fallback-accent-color="avatarTextAccentColor"
         :fallback-text="avatarFallbackText"
         @longpress="handleAvatarLongpress"
         @click="doAvatarClick"

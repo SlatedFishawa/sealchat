@@ -19,6 +19,7 @@ type ChannelIdentityModel struct {
 	DisplayName              string                        `json:"displayName"`
 	Color                    string                        `json:"color"`
 	AvatarAttachmentID       string                        `json:"avatarAttachmentId"`
+	AvatarTextStyle          string                        `json:"avatarTextStyle" gorm:"size:8;not null;default:''"`
 	AvatarDecorations        protocol.AvatarDecorationList `json:"avatarDecorations,omitempty" gorm:"serializer:json;column:avatar_decoration"`
 	TheaterPresentation      *protocol.TheaterPresentation `json:"theaterPresentation,omitempty" gorm:"serializer:json;column:theater_presentation"`
 	CharacterCardID          string                        `json:"characterCardId,omitempty" gorm:"size:100;index"`
@@ -51,6 +52,7 @@ func (m *ChannelIdentityModel) ToProtocolType() *protocol.ChannelIdentity {
 		DisplayName:              m.DisplayName,
 		Color:                    m.Color,
 		AvatarAttachmentID:       m.AvatarAttachmentID,
+		AvatarTextStyle:          m.AvatarTextStyle,
 		AvatarDecoration:         legacyDecoration,
 		AvatarDecorations:        m.AvatarDecorations,
 		TheaterPresentation:      m.TheaterPresentation,

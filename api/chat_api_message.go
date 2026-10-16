@@ -2449,6 +2449,7 @@ func apiMessageCreate(ctx *ChatContext, data *struct {
 			m.SenderIdentityName = appearance.DisplayName
 			m.SenderIdentityColor = appearance.Color
 			m.SenderIdentityAvatarID = appearance.AvatarAttachmentID
+			m.SenderIdentityAvatarTextStyle = appearance.AvatarTextStyle
 			m.SenderIdentityDecorations = appearance.AvatarDecorations
 			m.SenderTheaterPresentation = appearance.TheaterPresentation
 			if appearance.DisplayName != "" {
@@ -2898,7 +2899,7 @@ func apiMessageList(ctx *ChatContext, data *struct {
 		return []string{i.QuoteID}
 	}, func(i *model.MessageModel, x []*model.MessageModel) {
 		i.Quote = x[0]
-	}, "id, content, created_at, user_id, is_revoked, is_deleted, whisper_to, channel_id, sender_member_name, sender_identity_id, sender_identity_variant_id, sender_identity_name, sender_identity_color, sender_identity_avatar_id, sender_identity_is_temporary, sender_theater_presentation, whisper_sender_member_id, whisper_sender_member_name, whisper_sender_user_name, whisper_sender_user_nick, whisper_target_member_id, whisper_target_member_name, whisper_target_user_name, whisper_target_user_nick")
+	}, "id, content, created_at, user_id, is_revoked, is_deleted, whisper_to, channel_id, sender_member_name, sender_identity_id, sender_identity_variant_id, sender_identity_name, sender_identity_color, sender_identity_avatar_id, sender_identity_avatar_text_style, sender_identity_is_temporary, sender_theater_presentation, whisper_sender_member_id, whisper_sender_member_name, whisper_sender_user_name, whisper_sender_user_nick, whisper_target_member_id, whisper_target_member_name, whisper_target_user_name, whisper_target_user_nick")
 
 	if !ctx.IsReadOnly() && !hasCursor && data.Type != "time" {
 		_ = model.ChannelReadSet(data.ChannelID, ctx.User.ID)
@@ -3176,6 +3177,7 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 					msg.SenderIdentityName = appearance.DisplayName
 					msg.SenderIdentityColor = appearance.Color
 					msg.SenderIdentityAvatarID = appearance.AvatarAttachmentID
+					msg.SenderIdentityAvatarTextStyle = appearance.AvatarTextStyle
 					msg.SenderIdentityDecorations = appearance.AvatarDecorations
 					msg.SenderTheaterPresentation = appearance.TheaterPresentation
 				}
@@ -3184,6 +3186,7 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 					resolvedIdentityProto.DisplayName = appearance.DisplayName
 					resolvedIdentityProto.Color = appearance.Color
 					resolvedIdentityProto.AvatarAttachmentID = appearance.AvatarAttachmentID
+					resolvedIdentityProto.AvatarTextStyle = appearance.AvatarTextStyle
 					resolvedIdentityProto.AvatarDecorations = appearance.AvatarDecorations
 					if len(appearance.AvatarDecorations) > 0 {
 						first := appearance.AvatarDecorations[0]
@@ -3205,6 +3208,7 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 				msg.SenderIdentityName = ""
 				msg.SenderIdentityColor = ""
 				msg.SenderIdentityAvatarID = ""
+				msg.SenderIdentityAvatarTextStyle = ""
 				msg.SenderIdentityDecorations = nil
 				msg.SenderTheaterPresentation = nil
 				msg.SenderIdentityIsTemporary = false
@@ -3423,6 +3427,7 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 		updates["sender_identity_name"] = msg.SenderIdentityName
 		updates["sender_identity_color"] = msg.SenderIdentityColor
 		updates["sender_identity_avatar_id"] = msg.SenderIdentityAvatarID
+		updates["sender_identity_avatar_text_style"] = msg.SenderIdentityAvatarTextStyle
 		updates["sender_identity_decoration"] = msg.SenderIdentityDecorations
 		updates["sender_theater_presentation"] = msg.SenderTheaterPresentation
 		updates["sender_identity_is_temporary"] = msg.SenderIdentityIsTemporary
@@ -4243,6 +4248,7 @@ func apiMessageTyping(ctx *ChatContext, data *struct {
 				resolvedIdentityProto.DisplayName = appearance.DisplayName
 				resolvedIdentityProto.Color = appearance.Color
 				resolvedIdentityProto.AvatarAttachmentID = appearance.AvatarAttachmentID
+				resolvedIdentityProto.AvatarTextStyle = appearance.AvatarTextStyle
 			}
 			event.Member.Identity = resolvedIdentityProto
 		}

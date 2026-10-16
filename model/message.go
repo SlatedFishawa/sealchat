@@ -61,18 +61,19 @@ type MessageModel struct {
 	IsImported    bool       `json:"isImported" gorm:"default:false;index:idx_msg_imported"`
 	ImportJobID   string     `json:"importJobId" gorm:"size:100;index:idx_msg_import_job_id"`
 
-	SenderMemberName          string                        `json:"sender_member_name"` // 用户在当时的名字
-	SenderIdentityID          string                        `json:"sender_identity_id" gorm:"size:100"`
-	SenderSharedIdentityID    string                        `json:"sender_shared_identity_id,omitempty" gorm:"size:100"`
-	SenderIdentityVariantID   string                        `json:"sender_identity_variant_id" gorm:"size:100"`
-	SenderIdentityName        string                        `json:"sender_identity_name"`
-	SenderIdentityColor       string                        `json:"sender_identity_color"`
-	SenderIdentityAvatarID    string                        `json:"sender_identity_avatar_id"`
-	SenderIdentityDecorations protocol.AvatarDecorationList `json:"sender_identity_decoration,omitempty" gorm:"serializer:json;column:sender_identity_decoration"`
-	SenderTheaterPresentation *protocol.TheaterPresentation `json:"sender_theater_presentation,omitempty" gorm:"serializer:json;column:sender_theater_presentation"`
-	SenderIdentityIsTemporary bool                          `json:"sender_identity_is_temporary" gorm:"default:false"`
-	SenderRoleID              string                        `json:"sender_role_id" gorm:"size:100"`
-	MergedMessages            int                           `json:"-" gorm:"-"`
+	SenderMemberName              string                        `json:"sender_member_name"` // 用户在当时的名字
+	SenderIdentityID              string                        `json:"sender_identity_id" gorm:"size:100"`
+	SenderSharedIdentityID        string                        `json:"sender_shared_identity_id,omitempty" gorm:"size:100"`
+	SenderIdentityVariantID       string                        `json:"sender_identity_variant_id" gorm:"size:100"`
+	SenderIdentityName            string                        `json:"sender_identity_name"`
+	SenderIdentityColor           string                        `json:"sender_identity_color"`
+	SenderIdentityAvatarID        string                        `json:"sender_identity_avatar_id"`
+	SenderIdentityAvatarTextStyle string                        `json:"sender_identity_avatar_text_style" gorm:"size:8;not null;default:''"`
+	SenderIdentityDecorations     protocol.AvatarDecorationList `json:"sender_identity_decoration,omitempty" gorm:"serializer:json;column:sender_identity_decoration"`
+	SenderTheaterPresentation     *protocol.TheaterPresentation `json:"sender_theater_presentation,omitempty" gorm:"serializer:json;column:sender_theater_presentation"`
+	SenderIdentityIsTemporary     bool                          `json:"sender_identity_is_temporary" gorm:"default:false"`
+	SenderRoleID                  string                        `json:"sender_role_id" gorm:"size:100"`
+	MergedMessages                int                           `json:"-" gorm:"-"`
 
 	User   *UserModel    `json:"user"`           // 嵌套 User 结构体
 	Member *MemberModel  `json:"member"`         // 嵌套 Member 结构体
@@ -257,7 +258,7 @@ func (m *MessageModel) ToProtocolType2(channelData *protocol.Channel) *protocol.
 		first := m.SenderIdentityDecorations[0]
 		legacyDecoration = &first
 	}
-	if m.SenderIdentityID != "" || m.SenderIdentityColor != "" || m.SenderIdentityAvatarID != "" || m.SenderIdentityName != "" || m.SenderIdentityIsTemporary || len(m.SenderIdentityDecorations) > 0 {
+	if m.SenderIdentityID != "" || m.SenderIdentityColor != "" || m.SenderIdentityAvatarID != "" || m.SenderIdentityAvatarTextStyle != "" || m.SenderIdentityName != "" || m.SenderIdentityIsTemporary || len(m.SenderIdentityDecorations) > 0 {
 		msg.Identity = &protocol.MessageIdentity{
 			ID:                  m.SenderIdentityID,
 			SharedIdentityID:    m.SenderSharedIdentityID,
@@ -265,6 +266,7 @@ func (m *MessageModel) ToProtocolType2(channelData *protocol.Channel) *protocol.
 			DisplayName:         m.SenderIdentityName,
 			Color:               m.SenderIdentityColor,
 			AvatarAttachment:    m.SenderIdentityAvatarID,
+			AvatarTextStyle:     m.SenderIdentityAvatarTextStyle,
 			AvatarDecoration:    legacyDecoration,
 			AvatarDecorations:   m.SenderIdentityDecorations,
 			TheaterPresentation: m.SenderTheaterPresentation,

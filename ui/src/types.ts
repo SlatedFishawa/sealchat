@@ -212,6 +212,7 @@ export interface SatoriMessage {
   sender_role_id?: string;
   sender_identity_variant_id?: string;
   sender_identity_is_temporary?: boolean;
+  sender_identity_avatar_text_style?: '' | 'a' | 'b' | 'c';
   isPinned?: boolean;
   pinnedAt?: number;
   pinnedBy?: string;
@@ -1116,6 +1117,7 @@ export interface PaginationListResponse<T> {
 }
 
 export interface ChannelIdentity {
+  avatarTextStyle?: '' | 'a' | 'b' | 'c';
   id: string;
   channelId: string;
   userId: string;
@@ -1207,6 +1209,7 @@ export interface ChannelIdentityFolder {
 }
 
 export interface MessageIdentity {
+  avatarTextStyle?: '' | 'a' | 'b' | 'c';
   id?: string;
   sharedIdentityId?: string;
   variantId?: string;

@@ -230,6 +230,7 @@ import { useMentionSuggestions } from './composables/useMentionSuggestions';
 import { useChatAIPolish } from './composables/useChatAIPolish';
 import { useMessageSelection } from './composables/useMessageSelection';
 import { useTypingPreview, type EditingPreviewInfo, type TypingPreviewItem } from './composables/useTypingPreview';
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar';
 import { useChatEmoji } from './composables/useChatEmoji';
 import {
   hasTheaterComposerDraft,
@@ -2044,6 +2045,7 @@ const editingIdentityPreviewContext = computed(() => {
       displayName: snapshot.displayName || '',
       color: snapshot.color || '',
       avatarAttachmentId: snapshot.avatarAttachmentId || '',
+      avatarTextStyle: normalizeAvatarTextStyle(snapshot.avatarTextStyle),
       avatarDecorations: cloneAvatarDecorations(snapshot.avatarDecorations),
       isTemporary: Boolean(snapshot.isTemporary),
     };
@@ -3215,6 +3217,7 @@ type IdentityVariantShortcutMatchResult = {
 type IdentityVariantMatchMode = 'prefix' | 'keyword' | 'regex';
 
 type IdentityAppearancePreview = {
+  avatarTextStyle: '' | GeneratedAvatarStyle;
   identityId: string;
   variantId: string;
   displayName: string;
@@ -3433,6 +3436,7 @@ const resolveIdentityAppearancePreview = (identity?: ChannelIdentity | null, var
     displayName: variant?.displayName || identity.displayName || '',
     color: variant?.color || identity.color || '',
     avatarAttachmentId: variant?.avatarAttachmentId || identity.avatarAttachmentId || '',
+    avatarTextStyle: variant?.avatarAttachmentId ? '' : normalizeAvatarTextStyle(identity.avatarTextStyle),
     avatarDecorations: cloneAvatarDecorations(identity.avatarDecorations, identity.avatarDecoration),
     theaterPresentation: hasTheaterPresentation
       ? resolveTheaterPresentation(
@@ -3470,6 +3474,7 @@ const canSetWorldTheaterTemplate = computed(() => {
   return role === 'owner' || role === 'admin' || Boolean(user.checkPerm?.('mod_admin'));
 });
 const identityForm = reactive({
+  avatarTextStyle: '' as '' | GeneratedAvatarStyle,
   displayName: '',
   color: '',
   avatarAttachmentId: '',
@@ -3991,7 +3996,7 @@ const identityGeneratedAvatarStyleLabels: Record<GeneratedAvatarStyle, string> =
   c: '图案叠字',
 };
 // 临时角色保存时总会重新生成头像，未选择上传文件时预览生成结果。
-const showIdentityGeneratedAvatarStyles = computed(() => identityForm.isTemporary && !identityAvatarFilePending.value);
+const showIdentityGeneratedAvatarStyles = computed(() => (identityForm.isTemporary || Boolean(identityForm.avatarTextStyle)) && !identityAvatarFilePending.value);
 const buildIdentityGeneratedAvatarPreview = (style: GeneratedAvatarStyle, size: number) => buildGeneratedAvatarDataUrl({
   displayName: identityForm.displayName,
   accentColor: identityForm.color,
@@ -4614,10 +4619,11 @@ const buildIdentityExportSnapshot = async (options: {
 
   for (const identity of options.identities) {
     const displayName = identity.displayName || '';
+    const avatarTextStyle = normalizeAvatarTextStyle(identity.avatarTextStyle);
     const folderIds = identity.folderIds?.length ? identity.folderIds : (options.membershipMap[identity.id] || []);
     const avatarAssetKey = await registerIdentityAsset(
       assetMap,
-      identity.avatarAttachmentId,
+      avatarTextStyle ? '' : identity.avatarAttachmentId,
       `${safeFilename(displayName || 'identity')}.png`,
       issueState,
     );
@@ -4644,6 +4650,7 @@ const buildIdentityExportSnapshot = async (options: {
       sortOrder: identity.sortOrder,
       folderIds: folderIds.length ? [...folderIds] : undefined,
       avatarAssetKey: avatarAssetKey || undefined,
+      avatarTextStyle: avatarTextStyle || undefined,
       avatarDecorations,
       theaterPresentation,
     });
@@ -4920,6 +4927,7 @@ const importIdentityMigrationSnapshot = async (
           displayName,
           color: item.color || '',
           avatarAttachmentId: avatarId,
+          avatarTextStyle: item.avatarTextStyle || '',
           avatarDecorations,
           theaterPresentation: theaterPresentation as any,
           skipTheaterAssetValidation: true,
@@ -4942,6 +4950,7 @@ const importIdentityMigrationSnapshot = async (
         displayName,
         color: item.color || '',
         avatarAttachmentId: avatarId,
+        avatarTextStyle: item.avatarTextStyle || '',
         avatarDecorations,
         isDefault: !!item.isDefault,
         folderIds: mappedFolderIds,
@@ -4960,6 +4969,7 @@ const importIdentityMigrationSnapshot = async (
           displayName,
           color: item.color || '',
           avatarAttachmentId: avatarId,
+          avatarTextStyle: item.avatarTextStyle || '',
           avatarDecorations,
           theaterPresentation: theaterPresentation as any,
           skipTheaterAssetValidation: true,
@@ -5093,6 +5103,7 @@ const importIdentityMigrationSnapshot = async (
               displayName: snapshot.displayName,
               color: snapshot.color || '',
               avatarAttachmentId: snapshot.avatarAttachmentId || '',
+              avatarTextStyle: normalizeAvatarTextStyle(snapshot.avatarTextStyle),
               avatarDecorations: cloneAvatarDecorations(snapshot.avatarDecorations, snapshot.avatarDecoration),
               theaterPresentation: snapshot.theaterPresentation,
               isDefault: !!snapshot.isDefault,
@@ -5371,9 +5382,10 @@ const applyIdentityAppearanceToMessages = (identity: ChannelIdentity) => {
         color: appearance?.color || item.color,
         avatar: appearance?.avatarAttachmentId
           ? resolveAttachmentUrl(appearance.avatarAttachmentId)
-          : (appearance?.isTemporary ? '' : (chat.curMember?.avatar || user.info.avatar || item.avatar)),
+          : (appearance?.isTemporary || appearance?.avatarTextStyle ? '' : (chat.curMember?.avatar || user.info.avatar || item.avatar)),
         avatarDecorations: cloneAvatarDecorations(appearance?.avatarDecorations),
         isTemporary: Boolean(appearance?.isTemporary),
+        avatarTextStyle: normalizeAvatarTextStyle(appearance?.avatarTextStyle),
       };
     }
     return item;
@@ -5439,6 +5451,8 @@ const resetIdentityForm = (identity?: ChannelIdentity | null) => {
   identityAvatarFile = null;
   identityAvatarFilePending.value = false;
   identityGeneratedAvatarStyle.value = DEFAULT_GENERATED_AVATAR_STYLE;
+  identityForm.avatarTextStyle = identity?.isTemporary ? '' : normalizeAvatarTextStyle(identity?.avatarTextStyle);
+  if (identityForm.avatarTextStyle) identityGeneratedAvatarStyle.value = identityForm.avatarTextStyle;
   identityForm.displayName = identity?.displayName || '';
   identityForm.color = normalizeHexColor(identity?.color || '') || '';
   identityColorDraft.value = identityForm.color;
@@ -5757,6 +5771,7 @@ const setTemporaryIdentityActivateMode = (mode: 'ic' | 'ooc') => {
 };
 
 watch(() => identityForm.isTemporary, (isTemporary) => {
+  if (isTemporary) identityForm.avatarTextStyle = '';
   if (!isTemporary) {
     if (identityDialogMode.value === 'create') {
       identityForm.icOocOnActivate = '';
@@ -5868,6 +5883,7 @@ const handleIdentityAvatarChange = async (event: Event) => {
 };
 
 const handleIdentityAvatarEditorSave = async (file: File) => {
+  identityForm.avatarTextStyle = '';
   identityForm.avatarAttachmentId = '';
   identityAvatarFile = file;
   identityAvatarFilePending.value = true;
@@ -5884,11 +5900,22 @@ const handleIdentityAvatarEditorCancel = () => {
 };
 
 const removeIdentityAvatar = () => {
+  identityForm.avatarTextStyle = '';
   identityForm.avatarAttachmentId = '';
   identityAvatarFile = null;
   identityAvatarFilePending.value = false;
   revokeIdentityObjectURL();
   identityAvatarPreview.value = '';
+};
+
+const enableIdentityTextAvatar = () => {
+  removeIdentityAvatar();
+  if (!identityForm.isTemporary) identityForm.avatarTextStyle = identityGeneratedAvatarStyle.value;
+};
+
+const selectIdentityAvatarStyle = (style: GeneratedAvatarStyle) => {
+  identityGeneratedAvatarStyle.value = style;
+  if (!identityForm.isTemporary && identityForm.avatarTextStyle) identityForm.avatarTextStyle = style;
 };
 
 const revokeIdentityVariantObjectURL = () => {
@@ -6294,6 +6321,7 @@ const submitIdentityForm = async (options: { closeDialog?: boolean; successMessa
     displayName: identityForm.displayName.trim(),
     color: normalizedColor,
     avatarAttachmentId: identityForm.avatarAttachmentId,
+    avatarTextStyle: identityForm.isTemporary || botBaseAppearanceInherited.value ? '' : identityForm.avatarTextStyle,
     avatarDecorations: cloneAvatarDecorations(identityForm.avatarDecorations)
       .filter(item => item.resourceAttachmentId),
     theaterPresentation: editingIdentity.value?.sharedIdentityId && !isManagingBotIdentity.value
@@ -6313,7 +6341,10 @@ const submitIdentityForm = async (options: { closeDialog?: boolean; successMessa
   };
   const wasCreating = identityDialogMode.value === 'create';
   try {
-    if (identityAvatarFile) {
+    if (payload.avatarTextStyle) {
+      identityAvatarFile = null;
+      payload.avatarAttachmentId = '';
+    } else if (identityAvatarFile) {
       const uploadResult = await uploadImageAttachment(identityAvatarFile, { channelId: chat.curChannel.id });
       const fileToken = uploadResult.attachmentId;
       if (!fileToken) {
@@ -6548,7 +6579,7 @@ const resolveMessageAvatarSource = (message: any) => {
       return resolveAttachmentUrl(id) || String(id);
     }
   }
-  if (identitySnapshot?.isTemporary) {
+  if (identitySnapshot?.isTemporary || identitySnapshot?.avatarTextStyle) {
     return '';
   }
   return message?.member?.avatar || message?.user?.avatar || '';
@@ -6576,7 +6607,8 @@ const getMessageAvatarMergeKey = (message: any) => {
       avatarDecorations = cloneAvatarDecorations(liveIdentity?.avatarDecorations, liveIdentity?.avatarDecoration || null);
     }
   }
-  return `${avatarSrc}__${JSON.stringify(avatarDecorations)}`;
+  const snapshot = resolveMessageIdentitySnapshot(message);
+  return `${avatarSrc}__${snapshot?.avatarTextStyle || ''}__${snapshot?.avatarTextStyle ? `${snapshot.displayName}__${snapshot.color}` : ''}__${JSON.stringify(avatarDecorations)}`;
 };
 
 const getMessageIdentityColor = (message: any) => {
@@ -7006,6 +7038,11 @@ const toArchivedPanelEntryFromSearch = (item: ChannelSearchResult): ArchivedPane
     is_archived: true,
     ic_mode: item.icMode,
     sender_member_name: item.senderName,
+    sender_identity_id: item.identity?.id || '',
+    sender_identity_name: item.identity?.displayName || '',
+    sender_identity_color: item.identity?.color || '',
+    sender_identity_avatar_id: item.identity?.avatarAttachmentId || '',
+    sender_identity_avatar_text_style: item.identity?.avatarTextStyle || '',
     user: item.senderId || item.senderAvatar
       ? { id: item.senderId || '', nickname: item.senderName, avatar: item.senderAvatar || '' }
       : undefined,
@@ -10883,6 +10920,8 @@ const editingPreviewMap = computed<Record<string, EditingPreviewInfo>>(() => {
         indicatorOnly,
         isSelf: item.userId === user.info.id,
         isTemporary: item.isTemporary,
+        avatarTextStyle: item.avatarTextStyle,
+        color: item.color,
         summary,
         previewHtml,
         tone: item.tone ?? 'ic',
@@ -10897,6 +10936,7 @@ const editingPreviewMap = computed<Record<string, EditingPreviewInfo>>(() => {
     let previewAvatar = chat.curMember?.avatar || user.info.avatar || '';
     let previewColor = '';
     let previewIsTemporary = false;
+    let previewAvatarTextStyle: '' | GeneratedAvatarStyle = '';
     let previewAvatarDecorations: AvatarDecoration[] = [];
     const identityPreview = resolveIdentityPreviewInfo(
       chat.editing.channelId,
@@ -10911,7 +10951,8 @@ const editingPreviewMap = computed<Record<string, EditingPreviewInfo>>(() => {
       previewColor = identityPreview.color || '';
       previewAvatarDecorations = cloneAvatarDecorations(identityPreview.avatarDecorations);
       previewIsTemporary = Boolean(identityPreview.isTemporary);
-      if (identityPreview.avatar || previewIsTemporary) {
+      previewAvatarTextStyle = identityPreview.avatarTextStyle;
+      if (identityPreview.avatar || previewIsTemporary || previewAvatarTextStyle) {
         previewAvatar = identityPreview.avatar || '';
       }
     }
@@ -10925,6 +10966,7 @@ const editingPreviewMap = computed<Record<string, EditingPreviewInfo>>(() => {
       indicatorOnly,
       isSelf: true,
       isTemporary: previewIsTemporary,
+      avatarTextStyle: previewAvatarTextStyle,
       summary,
       previewHtml,
       tone: chat.editing.icMode === 'ooc' ? 'ooc' : 'ic',
@@ -11562,6 +11604,7 @@ const handleAvatarCharacterCardOpen = async (payload: AvatarCharacterCardOpenPay
 };
 
 type MessageIdentitySnapshot = {
+  avatarTextStyle: '' | GeneratedAvatarStyle;
   identityId: string | null;
   displayName: string;
   color: string;
@@ -11575,6 +11618,7 @@ const resolveMessageIdentitySnapshot = (msg?: any): MessageIdentitySnapshot | nu
     return null;
   }
   const directIdentity = msg.identity || msg.identity_info || msg.identityData;
+  const avatarTextStyle = normalizeAvatarTextStyle(directIdentity?.avatarTextStyle ?? msg.sender_identity_avatar_text_style ?? msg.senderIdentityAvatarTextStyle);
   const identityId = resolveMessageIdentityId(msg);
   const displayName = String(
     directIdentity?.displayName
@@ -11606,7 +11650,7 @@ const resolveMessageIdentitySnapshot = (msg?: any): MessageIdentitySnapshot | nu
     ?? msg?.sender_identity_is_temporary
     ?? msg?.senderIdentityIsTemporary,
   );
-  if (!identityId && !displayName && !color && !avatarAttachmentId && avatarDecorations.length === 0 && !isTemporary) {
+  if (!identityId && !displayName && !color && !avatarAttachmentId && !avatarTextStyle && avatarDecorations.length === 0 && !isTemporary) {
     return null;
   }
   return {
@@ -11614,6 +11658,7 @@ const resolveMessageIdentitySnapshot = (msg?: any): MessageIdentitySnapshot | nu
     displayName,
     color,
     avatarAttachmentId,
+    avatarTextStyle,
     avatarDecorations,
     isTemporary,
   };
@@ -11627,9 +11672,10 @@ const createInterjectIdentitySnapshot = (
   const displayName = String(appearance?.displayName || identity?.displayName || '').trim();
   const color = normalizeHexColor(appearance?.color || identity?.color || '') || '';
   const avatarAttachmentId = String(appearance?.avatarAttachmentId || identity?.avatarAttachmentId || '').trim();
+  const avatarTextStyle = normalizeAvatarTextStyle(appearance?.avatarTextStyle ?? identity?.avatarTextStyle);
   const avatarDecorations = cloneAvatarDecorations(appearance?.avatarDecorations);
   const isTemporary = Boolean(appearance?.isTemporary ?? identity?.isTemporary);
-  if (!identityId && !displayName && !color && !avatarAttachmentId && avatarDecorations.length === 0 && !isTemporary) {
+  if (!identityId && !displayName && !color && !avatarAttachmentId && !avatarTextStyle && avatarDecorations.length === 0 && !isTemporary) {
     return null;
   }
   return {
@@ -11637,6 +11683,7 @@ const createInterjectIdentitySnapshot = (
     displayName,
     color,
     avatarAttachmentId,
+    avatarTextStyle,
     avatarDecorations,
     isTemporary,
   };
@@ -11782,6 +11829,7 @@ const resolveIdentityPreviewInfo = (
       color: appearance?.color || '',
       avatarDecorations: cloneAvatarDecorations(appearance?.avatarDecorations),
       isTemporary: Boolean(appearance?.isTemporary),
+      avatarTextStyle: normalizeAvatarTextStyle(appearance?.avatarTextStyle),
     };
   }
   if (!snapshot || snapshot.identityId !== identityId) {
@@ -11793,6 +11841,7 @@ const resolveIdentityPreviewInfo = (
     color: snapshot.color || '',
     avatarDecorations: cloneAvatarDecorations(snapshot.avatarDecorations),
     isTemporary: Boolean(snapshot.isTemporary),
+    avatarTextStyle: normalizeAvatarTextStyle(snapshot.avatarTextStyle),
   };
 };
 
@@ -13206,6 +13255,7 @@ const performSend = async (options?: {
         displayName: activeAppearance?.displayName || activeIdentity.displayName,
         color: normalizedIdentityColor,
         avatarAttachment: activeAppearance?.avatarAttachmentId || activeIdentity.avatarAttachmentId,
+        avatarTextStyle: activeAppearance?.avatarTextStyle || '',
         avatarDecorations: cloneAvatarDecorations(activeAppearance?.avatarDecorations),
         avatarDecoration: firstAvatarDecoration(activeAppearance?.avatarDecorations),
         isTemporary: Boolean(activeAppearance?.isTemporary),
@@ -14229,10 +14279,7 @@ const handleMessageCreated = (e?: Event) => {
           const preview = plainText.length > 50 ? plainText.slice(0, 50) + '...' : plainText;
           
           // 获取发送者头像（优先角色头像，其次用户/成员头像）
-          const avatarUrl = resolveAttachmentUrl((incoming.identity as any)?.avatarAttachmentId)
-            || incoming.member?.avatar
-            || incoming.user?.avatar
-            || undefined;
+          const avatarUrl = getMessageAvatar(incoming) || undefined;
           const notificationTitle = `${isMentioned ? '[有人@我]' : ''}${chat.curChannel?.name || 'SealChat'}`;
           
           pushStore.showNotification(
@@ -15652,10 +15699,17 @@ const composerEmojiHintViews = computed<ComposerEmojiHintView[]>(() => composerH
 const composerVariantHintViews = computed<ComposerVariantHintView[]>(() => {
   const identity = activeIdentityForEmojiPanel.value;
   if (!identity) return [];
-  const fallbackAvatar = identity.isTemporary ? '' : (user.info.avatar || '');
+  const textStyle = normalizeAvatarTextStyle(identity.avatarTextStyle);
+  const fallbackAvatar = identity.isTemporary || textStyle ? '' : (user.info.avatar || '');
   return composerHintMatches.value.variants.map((variant) => ({
     id: variant.id,
-    src: resolveAttachmentUrl(variant.avatarAttachmentId || identity.avatarAttachmentId) || fallbackAvatar,
+    src: resolveAttachmentUrl(variant.avatarAttachmentId || identity.avatarAttachmentId)
+      || (textStyle ? buildGeneratedAvatarDataUrl({
+        displayName: variant.displayName || identity.displayName,
+        accentColor: variant.color || identity.color,
+        style: textStyle,
+        themeSeed: { palette: display.palette, customThemeEnabled: display.settings.customThemeEnabled, activeCustomThemeId: display.settings.activeCustomThemeId },
+      }) : fallbackAvatar),
     label: String(variant.keyword || '').trim() || resolveVariantNote(variant),
     title: describeIdentityVariantCard(variant),
   }));
@@ -16031,8 +16085,10 @@ onBeforeUnmount(() => {
                               <AvatarVue
                                 :size="40"
                                 :border="false"
-                                :src="resolveAttachmentUrl(activeIdentityForEmojiPanel.avatarAttachmentId) || (activeIdentityForEmojiPanel.isTemporary ? '' : user.info.avatar)"
-                                :use-text-fallback="activeIdentityForEmojiPanel.isTemporary"
+                                :src="resolveAttachmentUrl(activeIdentityForEmojiPanel.avatarAttachmentId) || (activeIdentityForEmojiPanel.isTemporary || normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle) ? '' : user.info.avatar)"
+                                :use-text-fallback="activeIdentityForEmojiPanel.isTemporary || Boolean(normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle))"
+                                :text-fallback-style="normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle)"
+                                :text-fallback-accent-color="activeIdentityForEmojiPanel.avatarTextStyle ? activeIdentityForEmojiPanel.color : undefined"
                                 :fallback-text="activeIdentityForEmojiPanel.displayName"
                               />
                               <div class="identity-variant-picker__title">默认头像</div>
@@ -16064,8 +16120,10 @@ onBeforeUnmount(() => {
                               <AvatarVue
                                 :size="40"
                                 :border="false"
-                                :src="resolveAttachmentUrl(variant.avatarAttachmentId || activeIdentityForEmojiPanel.avatarAttachmentId) || (activeIdentityForEmojiPanel.isTemporary ? '' : user.info.avatar)"
-                                :use-text-fallback="activeIdentityForEmojiPanel.isTemporary"
+                                :src="resolveAttachmentUrl(variant.avatarAttachmentId || activeIdentityForEmojiPanel.avatarAttachmentId) || (activeIdentityForEmojiPanel.isTemporary || normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle) ? '' : user.info.avatar)"
+                                :use-text-fallback="activeIdentityForEmojiPanel.isTemporary || Boolean(normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle))"
+                                :text-fallback-style="normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle)"
+                                :text-fallback-accent-color="activeIdentityForEmojiPanel.avatarTextStyle ? (variant.color || activeIdentityForEmojiPanel.color) : undefined"
                                 :fallback-text="variant.displayName || activeIdentityForEmojiPanel.displayName"
                               />
                               <div class="identity-variant-picker__title">{{ resolveVariantNote(variant) }}</div>
@@ -16721,7 +16779,9 @@ onBeforeUnmount(() => {
                     :border="false"
                     :src="preview.avatar"
                     :decorations="preview.avatarDecorations"
-                    :use-text-fallback="Boolean(preview.isTemporary)"
+                    :use-text-fallback="Boolean(preview.isTemporary || preview.avatarTextStyle)"
+                    :text-fallback-style="preview.avatarTextStyle"
+                    :text-fallback-accent-color="preview.avatarTextStyle ? preview.color : undefined"
                     :fallback-text="preview.displayName"
                   />
                 </div>
@@ -17171,8 +17231,10 @@ onBeforeUnmount(() => {
                                     <AvatarVue
                                       :size="40"
                                       :border="false"
-                                      :src="resolveAttachmentUrl(activeIdentityForEmojiPanel.avatarAttachmentId) || (activeIdentityForEmojiPanel.isTemporary ? '' : user.info.avatar)"
-                                      :use-text-fallback="activeIdentityForEmojiPanel.isTemporary"
+                                      :src="resolveAttachmentUrl(activeIdentityForEmojiPanel.avatarAttachmentId) || (activeIdentityForEmojiPanel.isTemporary || normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle) ? '' : user.info.avatar)"
+                                      :use-text-fallback="activeIdentityForEmojiPanel.isTemporary || Boolean(normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle))"
+                                      :text-fallback-style="normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle)"
+                                      :text-fallback-accent-color="activeIdentityForEmojiPanel.avatarTextStyle ? activeIdentityForEmojiPanel.color : undefined"
                                       :fallback-text="activeIdentityForEmojiPanel.displayName"
                                     />
                                     <div class="identity-variant-picker__title">默认头像</div>
@@ -17204,8 +17266,10 @@ onBeforeUnmount(() => {
                                     <AvatarVue
                                       :size="40"
                                       :border="false"
-                                      :src="resolveAttachmentUrl(variant.avatarAttachmentId || activeIdentityForEmojiPanel.avatarAttachmentId) || (activeIdentityForEmojiPanel.isTemporary ? '' : user.info.avatar)"
-                                      :use-text-fallback="activeIdentityForEmojiPanel.isTemporary"
+                                      :src="resolveAttachmentUrl(variant.avatarAttachmentId || activeIdentityForEmojiPanel.avatarAttachmentId) || (activeIdentityForEmojiPanel.isTemporary || normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle) ? '' : user.info.avatar)"
+                                      :use-text-fallback="activeIdentityForEmojiPanel.isTemporary || Boolean(normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle))"
+                                      :text-fallback-style="normalizeAvatarTextStyle(activeIdentityForEmojiPanel.avatarTextStyle)"
+                                      :text-fallback-accent-color="activeIdentityForEmojiPanel.avatarTextStyle ? (variant.color || activeIdentityForEmojiPanel.color) : undefined"
                                       :fallback-text="variant.displayName || activeIdentityForEmojiPanel.displayName"
                                     />
                                     <div class="identity-variant-picker__title">{{ resolveVariantNote(variant) }}</div>
@@ -17904,20 +17968,23 @@ onBeforeUnmount(() => {
             <AvatarVue
               :size="48"
               :border="false"
-              :src="identityGeneratedAvatarPreview || identityAvatarDisplay || (identityForm.isTemporary ? '' : managedIdentityFallbackAvatar)"
-              :use-text-fallback="identityForm.isTemporary"
+              :src="identityGeneratedAvatarPreview || identityAvatarDisplay || (identityForm.isTemporary || identityForm.avatarTextStyle ? '' : managedIdentityFallbackAvatar)"
+              :use-text-fallback="identityForm.isTemporary || Boolean(identityForm.avatarTextStyle)"
+              :text-fallback-style="identityForm.avatarTextStyle"
+              :text-fallback-accent-color="identityForm.avatarTextStyle ? identityForm.color : undefined"
               :fallback-text="identityForm.displayName"
             />
             <n-space>
               <n-button size="small" type="primary" :disabled="sharedSynchronizedFieldsDisabled" @click="handleIdentityAvatarTrigger">上传头像</n-button>
-              <n-button v-if="identityForm.avatarAttachmentId" size="small" tertiary :disabled="sharedSynchronizedFieldsDisabled" @click="removeIdentityAvatar">移除</n-button>
+              <n-button size="small" :type="identityForm.avatarTextStyle ? 'primary' : 'default'" secondary :disabled="sharedSynchronizedFieldsDisabled" @click="enableIdentityTextAvatar">文字头像</n-button>
+              <n-button v-if="identityForm.avatarAttachmentId || identityAvatarFilePending || identityForm.avatarTextStyle" size="small" tertiary :disabled="sharedSynchronizedFieldsDisabled" @click="removeIdentityAvatar">移除</n-button>
             </n-space>
           </div>
           <div
             v-if="showIdentityGeneratedAvatarStyles"
             class="identity-avatar-style-picker"
             role="radiogroup"
-            aria-label="临时头像样式"
+            aria-label="文字头像样式"
           >
             <n-tooltip v-for="option in identityGeneratedAvatarStyleOptions" :key="option.style">
               <template #trigger>
@@ -17929,7 +17996,7 @@ onBeforeUnmount(() => {
                   :aria-checked="identityGeneratedAvatarStyle === option.style"
                   :aria-label="option.label"
                   :disabled="sharedSynchronizedFieldsDisabled"
-                  @click="identityGeneratedAvatarStyle = option.style"
+                  @click="selectIdentityAvatarStyle(option.style)"
                 >
                   <img :src="option.src" alt="" draggable="false" />
                 </button>
@@ -18057,8 +18124,10 @@ onBeforeUnmount(() => {
               <AvatarVue
                 :size="40"
                 :border="false"
-                :src="resolveAttachmentUrl(variant.avatarAttachmentId || identityForm.avatarAttachmentId) || (identityForm.isTemporary ? '' : managedIdentityFallbackAvatar)"
-                :use-text-fallback="identityForm.isTemporary"
+                :src="resolveAttachmentUrl(variant.avatarAttachmentId || identityForm.avatarAttachmentId) || (identityForm.isTemporary || identityForm.avatarTextStyle ? '' : managedIdentityFallbackAvatar)"
+                :use-text-fallback="identityForm.isTemporary || Boolean(identityForm.avatarTextStyle)"
+                :text-fallback-style="identityForm.avatarTextStyle"
+                :text-fallback-accent-color="identityForm.avatarTextStyle ? (variant.color || identityForm.color) : undefined"
                 :fallback-text="variant.displayName || identityForm.displayName"
               />
               <div class="identity-variant-list__meta">
@@ -18107,7 +18176,7 @@ onBeforeUnmount(() => {
   >
     <AvatarDecorationEditor
       v-model="identityForm.avatarDecorations"
-      :avatar-src="identityAvatarDisplay || (identityForm.isTemporary ? '' : managedIdentityFallbackAvatar)"
+      :avatar-src="identityGeneratedAvatarPreview || identityAvatarDisplay || (identityForm.isTemporary || identityForm.avatarTextStyle ? '' : managedIdentityFallbackAvatar)"
       :fallback-text="identityForm.displayName"
       :preview-name="identityForm.displayName || '频道角色预览'"
       :upload-channel-id="chat.curChannel?.id"
@@ -18279,8 +18348,10 @@ onBeforeUnmount(() => {
           <AvatarVue
             :size="48"
             :border="false"
-            :src="identityVariantAvatarPreview || resolveAttachmentUrl(identityVariantForm.avatarAttachmentId) || identityAvatarDisplay || (identityForm.isTemporary ? '' : managedIdentityFallbackAvatar)"
-            :use-text-fallback="identityForm.isTemporary"
+            :src="identityVariantAvatarPreview || resolveAttachmentUrl(identityVariantForm.avatarAttachmentId) || identityAvatarDisplay || (identityForm.isTemporary || identityForm.avatarTextStyle ? '' : managedIdentityFallbackAvatar)"
+            :use-text-fallback="identityForm.isTemporary || Boolean(identityForm.avatarTextStyle)"
+            :text-fallback-style="identityForm.avatarTextStyle"
+            :text-fallback-accent-color="identityForm.avatarTextStyle ? (identityVariantForm.color || identityForm.color) : undefined"
             :fallback-text="identityVariantForm.displayName || identityForm.displayName"
           />
           <n-space>
@@ -18609,8 +18680,10 @@ onBeforeUnmount(() => {
               <AvatarVue
                 :size="40"
                 :border="false"
-                :src="resolveAttachmentUrl(identity.avatarAttachmentId) || (identity.isTemporary ? '' : managedIdentityFallbackAvatar)"
-                :use-text-fallback="identity.isTemporary"
+                :src="resolveAttachmentUrl(identity.avatarAttachmentId) || (identity.isTemporary || normalizeAvatarTextStyle(identity.avatarTextStyle) ? '' : managedIdentityFallbackAvatar)"
+                :use-text-fallback="Boolean(identity.isTemporary || normalizeAvatarTextStyle(identity.avatarTextStyle))"
+                :text-fallback-style="normalizeAvatarTextStyle(identity.avatarTextStyle)"
+                :text-fallback-accent-color="identity.avatarTextStyle ? identity.color : undefined"
                 :fallback-text="identity.displayName"
               />
               <div class="identity-list__meta">

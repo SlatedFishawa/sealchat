@@ -1,4 +1,5 @@
 <script setup lang="tsx">
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar';
 import { useSpeechStore } from '@/features/tts/store'
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useChatStore } from '@/stores/chat';
@@ -35,6 +36,7 @@ const props = withDefaults(defineProps<{
     displayName?: string;
     color?: string;
     avatarAttachmentId?: string;
+    avatarTextStyle?: ChannelIdentity['avatarTextStyle'];
     variantId?: string;
     isTemporary?: boolean;
   } | null;
@@ -222,6 +224,10 @@ const displayColor = computed(() => (
 const displayIsTemporary = computed(() => (
   Boolean(props.previewAppearance?.isTemporary ?? activeIdentity.value?.isTemporary)
 ));
+const displayAvatarTextStyle = computed(() => normalizeAvatarTextStyle(
+  props.previewAppearance ? props.previewAppearance.avatarTextStyle
+    : activeIdentityVariant.value?.avatarAttachmentId ? '' : activeIdentity.value?.avatarTextStyle,
+));
 const displayAvatarText = computed(() => (
   props.previewAppearance?.displayName
   || activeIdentityVariant.value?.displayName
@@ -297,7 +303,7 @@ const avatarSrc = computed(() => {
   if (resolved) {
     return resolved;
   }
-  if (displayIsTemporary.value) {
+  if (displayIsTemporary.value || displayAvatarTextStyle.value) {
     return '';
   }
   return fallbackAvatar.value;
@@ -415,8 +421,10 @@ const options = computed<DropdownMixedOption[]>(() => {
       <AvatarVue
         size={24}
         border={false}
-        src={buildAttachmentUrl(resolveIdentityAvatarToken(item)) || (item.isTemporary ? '' : fallbackAvatar.value)}
-        useTextFallback={Boolean(item.isTemporary)}
+        src={buildAttachmentUrl(resolveIdentityAvatarToken(item)) || (item.isTemporary || normalizeAvatarTextStyle(item.avatarTextStyle) ? '' : fallbackAvatar.value)}
+        useTextFallback={Boolean(item.isTemporary || normalizeAvatarTextStyle(item.avatarTextStyle))}
+        textFallbackStyle={normalizeAvatarTextStyle(item.avatarTextStyle)}
+        textFallbackAccentColor={item.avatarTextStyle ? item.color : undefined}
         fallbackText={item.displayName || fallbackName.value}
       />
     ),
@@ -714,7 +722,7 @@ const showAvatarSetupBadge = computed(() => {
   if (!canManageIdentities.value) return false;
   // Show badge when user has no avatar AND there's no active channel identity avatar
   if (!user.hasDefaultAvatar) return false;
-  if (activeIdentity.value?.isTemporary) return false;
+  if (activeIdentity.value?.isTemporary || normalizeAvatarTextStyle(activeIdentity.value?.avatarTextStyle)) return false;
   // If using a channel identity with a custom avatar, don't show
   if (activeIdentity.value?.avatarAttachmentId) return false;
   return true;
@@ -935,7 +943,9 @@ watch([dropdownVisible, sortedIdentitySignature, () => canManageIdentities.value
           :size="avatarSize"
           :border="false"
           :src="avatarSrc"
-          :use-text-fallback="displayIsTemporary"
+          :use-text-fallback="displayIsTemporary || Boolean(displayAvatarTextStyle)"
+          :text-fallback-style="displayAvatarTextStyle"
+          :text-fallback-accent-color="displayAvatarTextStyle ? displayColor : undefined"
           :fallback-text="displayAvatarText"
           class="identity-switcher__avatar"
         />

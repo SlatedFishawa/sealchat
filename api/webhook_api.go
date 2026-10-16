@@ -474,6 +474,7 @@ func webhookMessageCreate(c *fiber.Ctx, integration *model.ChannelWebhookIntegra
 			msg.SenderIdentityName = appearance.DisplayName
 			msg.SenderIdentityColor = appearance.Color
 			msg.SenderIdentityAvatarID = appearance.AvatarAttachmentID
+			msg.SenderIdentityAvatarTextStyle = appearance.AvatarTextStyle
 			msg.SenderIdentityDecorations = appearance.AvatarDecorations
 			msg.SenderTheaterPresentation = appearance.TheaterPresentation
 			if appearance.DisplayName != "" {
