@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { NBadge, NButton, NButtonGroup, NEmpty, NIcon, NInput, NPopover, NSpace, useDialog, useMessage } from 'naive-ui'
-import { Check, ChevronLeft, Columns, Copy, Edit, ExternalLink, EyeOff, FileText, Folder, GridDots, GripVertical, LayoutBoard, List, MessagePlus, Photo, Pin, Pinned, PictureInPicture, Plus, Presentation, Search, Star, Trash, World, X } from '@vicons/tabler'
+import { Check, ChevronLeft, Columns, Copy, Edit, ExternalLink, EyeOff, FileText, Folder, GridDots, GripVertical, LayoutBoard, List, MessagePlus, Photo, Pin, Pinned, PictureInPicture, PlaylistAdd, Plus, Presentation, Search, Star, Trash, World, X } from '@vicons/tabler'
 import { api, urlBase } from '@/stores/_config'
 import { chatEvent } from '@/stores/chat'
 import { useUserStore } from '@/stores/user'
@@ -14,6 +14,7 @@ import {
 import { isTheaterChatFrame, requestTheaterFloatingOpen } from '@/utils/theaterFloatingBridge'
 import { copyTextWithFallback } from '@/utils/clipboard'
 import WorldClueEditorModal from './WorldClueEditorModal.vue'
+import WorldClueBatchCreateModal from './WorldClueBatchCreateModal.vue'
 import WorldClueRosterPopover from './WorldClueRosterPopover.vue'
 import WorldClueBoardEmbedLayer from './WorldClueBoardEmbedLayer.vue'
 import { openWorldClueBoardLink } from '@/utils/worldClueBoardLink'
@@ -28,6 +29,7 @@ const viewScope = ref<'shared' | 'personal'>('shared')
 const selectedFolderId = ref('')
 const editorVisible = ref(false)
 const editingClue = ref<WorldClueDetail | null>(null)
+const batchCreateVisible = ref(false)
 const dragging = ref<{ type: 'clue' | 'folder'; id: string } | null>(null)
 const dragOverTarget = ref('')
 const dragOverClueTarget = ref('')
@@ -341,6 +343,12 @@ function deleteClue(summary: WorldClueSummary) {
       }
     },
   })
+}
+function openBatchCreate() {
+  if (props.canManage) batchCreateVisible.value = true
+}
+function handleBatchCreated(result: { worldId: string }) {
+  if (result.worldId === props.worldId) void store.loadWorld(props.worldId, keyword.value)
 }
 function handleEditorSaved(saved: WorldClueDetail) {
   if (!editingClue.value || editingClue.value.id === saved.id) editingClue.value = saved
@@ -779,7 +787,7 @@ defineExpose({ toggleVisibility, openBoard })
     <div class="clue-box__resize clue-box__resize--bottom" @pointerdown="startResize($event, 'bottom')" />
     <header class="clue-box__header" @pointerdown="startMove">
       <div><strong>线索箱</strong><small>{{ store.unreadCount ? `${store.unreadCount} 条未读` : '世界资料' }}</small></div>
-      <NSpace @pointerdown.stop><WorldClueRosterPopover v-if="canManage" :world-id="worldId" /><NButton quaternary size="small" :disabled="!worldId || !channelId" :title="worldId && channelId ? '打开线索板' : '没有可用的同世界频道上下文'" @pointerdown.stop @click.stop="openBoard"><template #icon><NIcon><LayoutBoard /></NIcon></template>线索板</NButton><NButton quaternary size="small" :disabled="!worldId || !channelId" title="独立打开线索板" @pointerdown.stop @click.stop="openBoardStandalone"><template #icon><NIcon><ExternalLink /></NIcon></template></NButton><NButton circle quaternary size="small" :title="preference.pinned ? '取消固定' : '固定面板'" @click.stop="preference.pinned = !preference.pinned"><template #icon><NIcon><component :is="preference.pinned ? Pinned : Pin" /></NIcon></template></NButton><NButton v-if="canManage" circle quaternary size="small" title="新建线索" @click.stop="editClue()"><template #icon><NIcon><Plus /></NIcon></template></NButton><NButton circle quaternary size="small" title="关闭" @click.stop="close"><template #icon><NIcon><X /></NIcon></template></NButton></NSpace>
+      <NSpace @pointerdown.stop><WorldClueRosterPopover v-if="canManage" :world-id="worldId" /><NButton quaternary size="small" :disabled="!worldId || !channelId" :title="worldId && channelId ? '打开线索板' : '没有可用的同世界频道上下文'" @pointerdown.stop @click.stop="openBoard"><template #icon><NIcon><LayoutBoard /></NIcon></template>线索板</NButton><NButton quaternary size="small" :disabled="!worldId || !channelId" title="独立打开线索板" @pointerdown.stop @click.stop="openBoardStandalone"><template #icon><NIcon><ExternalLink /></NIcon></template></NButton><NButton circle quaternary size="small" :title="preference.pinned ? '取消固定' : '固定面板'" @click.stop="preference.pinned = !preference.pinned"><template #icon><NIcon><component :is="preference.pinned ? Pinned : Pin" /></NIcon></template></NButton><NButton v-if="canManage" circle quaternary size="small" title="新建线索" @click.stop="editClue()"><template #icon><NIcon><Plus /></NIcon></template></NButton><NButton v-if="canManage" circle quaternary size="small" title="批量创建线索" aria-label="批量创建线索" @click.stop="openBatchCreate"><template #icon><NIcon><PlaylistAdd /></NIcon></template></NButton><NButton circle quaternary size="small" title="关闭" @click.stop="close"><template #icon><NIcon><X /></NIcon></template></NButton></NSpace>
     </header>
     <div class="clue-box__tools">
       <NInput v-model:value="keyword" clearable placeholder="搜索线索"><template #prefix><NIcon><Search /></NIcon></template></NInput>
@@ -911,6 +919,7 @@ defineExpose({ toggleVisibility, openBoard })
     </div>
   </aside>
   <WorldClueEditorModal v-model:show="editorVisible" :world-id="worldId" :channel-id="channelId" :clue="editingClue" :can-manage="!!canManage" @saved="handleEditorSaved" />
+  <WorldClueBatchCreateModal v-model:show="batchCreateVisible" :world-id="worldId" :channel-id="channelId" :can-manage="!!canManage" :initial-folder-id="viewScope === 'shared' ? selectedFolderId : ''" @finished="handleBatchCreated" />
   <WorldClueBoardEmbedLayer ref="boardEmbedRef" v-model:show="boardEmbedVisible" :world-id="worldId" :channel-id="channelId" />
 </template>
 

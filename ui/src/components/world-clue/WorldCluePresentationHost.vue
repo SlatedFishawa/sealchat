@@ -158,6 +158,7 @@ onMounted(() => {
   window.addEventListener('message', handleMessage)
 })
 onBeforeUnmount(() => {
+  store.cancelChangedRefresh(currentWorldId.value)
   chatEvent.off('world-clue-published' as any, handlePublished as any)
   chatEvent.off('world-clue-changed' as any, handleChanged as any)
   chatEvent.off('world-clue-open' as any, handleOpen as any)
