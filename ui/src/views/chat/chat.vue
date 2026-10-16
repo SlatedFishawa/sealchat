@@ -119,7 +119,13 @@ import { isBotCommandLikeContent, renderBotCommandTextAsHtml } from '@/utils/bot
 import { shouldAttemptCharacterApiReconnectBeforeBotCommand } from '@/utils/characterApiReconnectGuard';
 import { buildOptimisticMessageIcModeFields } from '@/utils/optimisticMessageIcMode';
 import { normalizePunctuationForMessageSend } from '@/utils/punctuationNormalizer';
-import { buildGeneratedAvatarFile } from '@/utils/generatedAvatarImage';
+import {
+  buildGeneratedAvatarDataUrl,
+  buildGeneratedAvatarFile,
+  DEFAULT_GENERATED_AVATAR_STYLE,
+  GENERATED_AVATAR_STYLES,
+  type GeneratedAvatarStyle,
+} from '@/utils/generatedAvatarImage';
 import { extractPushNotificationPreviewText } from '@/utils/pushNotificationPreview';
 import { navigateToMessageTarget } from '@/utils/messageJump';
 import {
@@ -3976,7 +3982,41 @@ watch(identityVariantDialogVisible, (visible) => {
 });
 let identityAvatarObjectURL: string | null = null;
 let identityAvatarFile: File | null = null;
+const identityAvatarFilePending = ref(false);
 const identityAvatarDisplay = computed(() => identityAvatarPreview.value || resolveAttachmentUrl(identityForm.avatarAttachmentId));
+const identityGeneratedAvatarStyle = ref<GeneratedAvatarStyle>(DEFAULT_GENERATED_AVATAR_STYLE);
+const identityGeneratedAvatarStyleLabels: Record<GeneratedAvatarStyle, string> = {
+  a: '实色块',
+  b: '柔和色调',
+  c: '图案叠字',
+};
+// 临时角色保存时总会重新生成头像，未选择上传文件时预览生成结果。
+const showIdentityGeneratedAvatarStyles = computed(() => identityForm.isTemporary && !identityAvatarFilePending.value);
+const buildIdentityGeneratedAvatarPreview = (style: GeneratedAvatarStyle, size: number) => buildGeneratedAvatarDataUrl({
+  displayName: identityForm.displayName,
+  accentColor: identityForm.color,
+  style,
+  size,
+  themeSeed: {
+    palette: display.palette,
+    customThemeEnabled: display.settings.customThemeEnabled,
+    activeCustomThemeId: display.settings.activeCustomThemeId,
+  },
+});
+const identityGeneratedAvatarPreview = computed(() => (
+  showIdentityGeneratedAvatarStyles.value
+    ? buildIdentityGeneratedAvatarPreview(identityGeneratedAvatarStyle.value, 96)
+    : ''
+));
+const identityGeneratedAvatarStyleOptions = computed(() => (
+  showIdentityGeneratedAvatarStyles.value
+    ? GENERATED_AVATAR_STYLES.map(style => ({
+      style,
+      label: identityGeneratedAvatarStyleLabels[style],
+      src: buildIdentityGeneratedAvatarPreview(style, 64),
+    }))
+    : []
+));
 
 const identityImportInputRef = ref<HTMLInputElement | null>(null);
 const identityExporting = ref(false);
@@ -5397,6 +5437,8 @@ const revokeIdentityObjectURL = () => {
 const resetIdentityForm = (identity?: ChannelIdentity | null) => {
   revokeIdentityObjectURL();
   identityAvatarFile = null;
+  identityAvatarFilePending.value = false;
+  identityGeneratedAvatarStyle.value = DEFAULT_GENERATED_AVATAR_STYLE;
   identityForm.displayName = identity?.displayName || '';
   identityForm.color = normalizeHexColor(identity?.color || '') || '';
   identityColorDraft.value = identityForm.color;
@@ -5828,6 +5870,7 @@ const handleIdentityAvatarChange = async (event: Event) => {
 const handleIdentityAvatarEditorSave = async (file: File) => {
   identityForm.avatarAttachmentId = '';
   identityAvatarFile = file;
+  identityAvatarFilePending.value = true;
   revokeIdentityObjectURL();
   identityAvatarObjectURL = URL.createObjectURL(file);
   identityAvatarPreview.value = identityAvatarObjectURL;
@@ -5843,6 +5886,7 @@ const handleIdentityAvatarEditorCancel = () => {
 const removeIdentityAvatar = () => {
   identityForm.avatarAttachmentId = '';
   identityAvatarFile = null;
+  identityAvatarFilePending.value = false;
   revokeIdentityObjectURL();
   identityAvatarPreview.value = '';
 };
@@ -6280,10 +6324,12 @@ const submitIdentityForm = async (options: { closeDialog?: boolean; successMessa
       payload.avatarAttachmentId = identityForm.avatarAttachmentId;
       identityAvatarPreview.value = resolveAttachmentUrl(fileToken);
       identityAvatarFile = null;
+      identityAvatarFilePending.value = false;
     } else if (payload.isTemporary) {
       const generatedAvatarFile = await buildGeneratedAvatarFile({
         displayName: payload.displayName,
         accentColor: payload.color,
+        style: identityGeneratedAvatarStyle.value,
         size: 256,
         themeSeed: {
           palette: display.palette,
@@ -17853,18 +17899,44 @@ onBeforeUnmount(() => {
         </div>
       </n-form-item>
       <n-form-item label="频道头像">
-        <div class="identity-avatar-field">
-          <AvatarVue
-            :size="48"
-            :border="false"
-            :src="identityAvatarDisplay || (identityForm.isTemporary ? '' : managedIdentityFallbackAvatar)"
-            :use-text-fallback="identityForm.isTemporary"
-            :fallback-text="identityForm.displayName"
-          />
-          <n-space>
-            <n-button size="small" type="primary" :disabled="sharedSynchronizedFieldsDisabled" @click="handleIdentityAvatarTrigger">上传头像</n-button>
-            <n-button v-if="identityForm.avatarAttachmentId" size="small" tertiary :disabled="sharedSynchronizedFieldsDisabled" @click="removeIdentityAvatar">移除</n-button>
-          </n-space>
+        <div class="identity-avatar-section">
+          <div class="identity-avatar-field">
+            <AvatarVue
+              :size="48"
+              :border="false"
+              :src="identityGeneratedAvatarPreview || identityAvatarDisplay || (identityForm.isTemporary ? '' : managedIdentityFallbackAvatar)"
+              :use-text-fallback="identityForm.isTemporary"
+              :fallback-text="identityForm.displayName"
+            />
+            <n-space>
+              <n-button size="small" type="primary" :disabled="sharedSynchronizedFieldsDisabled" @click="handleIdentityAvatarTrigger">上传头像</n-button>
+              <n-button v-if="identityForm.avatarAttachmentId" size="small" tertiary :disabled="sharedSynchronizedFieldsDisabled" @click="removeIdentityAvatar">移除</n-button>
+            </n-space>
+          </div>
+          <div
+            v-if="showIdentityGeneratedAvatarStyles"
+            class="identity-avatar-style-picker"
+            role="radiogroup"
+            aria-label="临时头像样式"
+          >
+            <n-tooltip v-for="option in identityGeneratedAvatarStyleOptions" :key="option.style">
+              <template #trigger>
+                <button
+                  type="button"
+                  role="radio"
+                  class="identity-avatar-style-picker__item"
+                  :class="{ 'is-active': identityGeneratedAvatarStyle === option.style }"
+                  :aria-checked="identityGeneratedAvatarStyle === option.style"
+                  :aria-label="option.label"
+                  :disabled="sharedSynchronizedFieldsDisabled"
+                  @click="identityGeneratedAvatarStyle = option.style"
+                >
+                  <img :src="option.src" alt="" draggable="false" />
+                </button>
+              </template>
+              {{ option.label }}
+            </n-tooltip>
+          </div>
         </div>
       </n-form-item>
       <n-form-item label="头像装饰">

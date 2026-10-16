@@ -4,33 +4,49 @@ export interface GeneratedAvatarThemeSeed {
   activeCustomThemeId?: string | null;
 }
 
+// a: 实色块；b: 柔和色调；c: 对称图案叠字
+export type GeneratedAvatarStyle = 'a' | 'b' | 'c';
+export type GeneratedAvatarTone = 'day' | 'night';
+
+export const GENERATED_AVATAR_STYLES: GeneratedAvatarStyle[] = ['a', 'b', 'c'];
+export const DEFAULT_GENERATED_AVATAR_STYLE: GeneratedAvatarStyle = 'a';
+
 export interface GeneratedAvatarImageOptions {
   displayName?: string;
   accentColor?: string;
   size?: number;
+  style?: GeneratedAvatarStyle;
   themeSeed?: GeneratedAvatarThemeSeed;
 }
 
-const DAY_DEFAULTS = {
-  background: 'rgba(226, 232, 240, 0.96)',
-  border: 'rgba(148, 163, 184, 0.35)',
-  text: '#334155',
-  accent: '#3388de',
+export const normalizeGeneratedAvatarStyle = (value?: string | null): GeneratedAvatarStyle => {
+  return GENERATED_AVATAR_STYLES.includes(value as GeneratedAvatarStyle)
+    ? value as GeneratedAvatarStyle
+    : DEFAULT_GENERATED_AVATAR_STYLE;
 };
 
-const NIGHT_DEFAULTS = {
-  background: 'rgba(51, 65, 85, 0.92)',
-  border: 'rgba(148, 163, 184, 0.28)',
-  text: 'rgba(241, 245, 249, 0.95)',
-  accent: '#60a5fa',
-};
-
+// 拉丁名取首字母大写（多词取前两个词的首字母），其他文字取首字。
 const normalizeDisplayText = (value?: string) => {
-  const collapsed = String(value || '').replace(/\s+/g, '').trim();
-  if (!collapsed) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
     return '匿';
   }
-  return Array.from(collapsed).slice(0, 2).join('');
+  const first = Array.from(trimmed)[0];
+  if (/^[A-Za-z0-9]$/.test(first)) {
+    const words = trimmed.split(/[\s_\-.·]+/).filter(Boolean);
+    const second = words.length > 1 ? Array.from(words[1])[0] : '';
+    return (/^[A-Za-z0-9]$/.test(second) ? first + second : first).toUpperCase();
+  }
+  return first;
+};
+
+const hashText = (value: string) => {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 };
 
 const readCssVar = (name: string) => {
@@ -40,13 +56,75 @@ const readCssVar = (name: string) => {
   return window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 };
 
-const resolvePaletteColors = (themeSeed?: GeneratedAvatarThemeSeed) => {
-  const defaults = themeSeed?.palette === 'night' ? NIGHT_DEFAULTS : DAY_DEFAULTS;
-  const background = readCssVar('--sc-bg-layer') || readCssVar('--sc-bg-elevated') || defaults.background;
-  const border = readCssVar('--sc-border-mute') || defaults.border;
-  const text = readCssVar('--sc-text-primary') || readCssVar('--sc-text-secondary') || defaults.text;
-  const accent = readCssVar('--sc-primary-color') || defaults.accent;
-  return { background, border, text, accent };
+const parseCssColor = (value: string): [number, number, number] | null => {
+  const text = value.trim();
+  const hex = text.match(/^#([0-9a-f]{3}|[0-9a-f]{6})(?:[0-9a-f]{2})?$/i);
+  if (hex) {
+    const raw = hex[1].length === 3 ? hex[1].split('').map(ch => ch + ch).join('') : hex[1];
+    return [0, 2, 4].map(offset => parseInt(raw.slice(offset, offset + 2), 16)) as [number, number, number];
+  }
+  const rgb = text.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
+  if (rgb) {
+    return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+  }
+  return null;
+};
+
+const hueFromRgb = ([r, g, b]: [number, number, number]) => {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  if (!delta) {
+    return null;
+  }
+  let hue = max === r ? ((g - b) / delta) % 6 : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4;
+  hue *= 60;
+  return Math.round(hue + 360) % 360;
+};
+
+// 以页面实际背景色的亮度判断深浅，兼容自定义主题；读不到时回退到日夜设置。
+export const resolveGeneratedAvatarTone = (themeSeed?: GeneratedAvatarThemeSeed): GeneratedAvatarTone => {
+  const background = parseCssColor(readCssVar('--sc-bg-surface'))
+    || parseCssColor(readCssVar('--sc-bg-elevated'));
+  if (background) {
+    const [r, g, b] = background.map(channel => channel / 255);
+    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luminance < 0.5 ? 'night' : 'day';
+  }
+  return themeSeed?.palette === 'day' ? 'day' : 'night';
+};
+
+const resolveHue = (displayName: string, accentColor?: string) => {
+  const parsed = accentColor ? parseCssColor(accentColor) : null;
+  const hue = parsed ? hueFromRgb(parsed) : null;
+  return hue ?? hashText(displayName) % 360;
+};
+
+// 黄绿色区间感知亮度高，压低明度以保证白字可读。
+const isBrightHue = (hue: number) => hue >= 40 && hue <= 190;
+
+interface StyleColors {
+  background: string;
+  text: string;
+  pattern?: string;
+  textShadow?: string;
+}
+
+const resolveStyleColors = (style: GeneratedAvatarStyle, tone: GeneratedAvatarTone, hue: number): StyleColors => {
+  const bright = isBrightHue(hue);
+  if (style === 'b') {
+    return tone === 'night'
+      ? { background: `hsl(${hue} 38% 22%)`, text: `hsl(${hue} 75% 78%)` }
+      : { background: `hsl(${hue} 70% 91%)`, text: `hsl(${hue} 55% ${bright ? 26 : 34}%)` };
+  }
+  if (style === 'c') {
+    return tone === 'night'
+      ? { background: `hsl(${hue} 35% 20%)`, pattern: `hsla(${hue}, 55%, 52%, 0.38)`, text: '#ffffff', textShadow: 'rgba(0, 0, 0, 0.5)' }
+      : { background: `hsl(${hue} 60% 90%)`, pattern: `hsla(${hue}, 55%, 55%, 0.32)`, text: `hsl(${hue} 50% ${bright ? 20 : 26}%)` };
+  }
+  return tone === 'night'
+    ? { background: `hsl(${hue} 42% ${bright ? 34 : 40}%)`, text: `hsl(${hue} 60% 96%)` }
+    : { background: `hsl(${hue} 55% ${bright ? 40 : 50}%)`, text: '#ffffff' };
 };
 
 const createCanvas = (size: number) => {
@@ -59,15 +137,21 @@ const createCanvas = (size: number) => {
   return canvas;
 };
 
-const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) => {
-  const nextRadius = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + nextRadius, y);
-  ctx.arcTo(x + width, y, x + width, y + height, nextRadius);
-  ctx.arcTo(x + width, y + height, x, y + height, nextRadius);
-  ctx.arcTo(x, y + height, x, y, nextRadius);
-  ctx.arcTo(x, y, x + width, y, nextRadius);
-  ctx.closePath();
+// 5x5 左右对称格子图案，由名字决定。
+const drawPattern = (ctx: CanvasRenderingContext2D, size: number, seed: number, color: string) => {
+  const cell = size / 5;
+  ctx.fillStyle = color;
+  for (let row = 0; row < 5; row += 1) {
+    for (let col = 0; col < 3; col += 1) {
+      if (!((seed >>> (row * 3 + col)) & 1)) {
+        continue;
+      }
+      ctx.fillRect(col * cell, row * cell, cell, cell);
+      if (col < 2) {
+        ctx.fillRect((4 - col) * cell, row * cell, cell, cell);
+      }
+    }
+  }
 };
 
 const renderAvatarCanvas = (options: GeneratedAvatarImageOptions) => {
@@ -80,41 +164,32 @@ const renderAvatarCanvas = (options: GeneratedAvatarImageOptions) => {
   if (!ctx) {
     return null;
   }
-  const colors = resolvePaletteColors(options.themeSeed);
-  const accentColor = String(options.accentColor || '').trim() || colors.accent;
-  const text = normalizeDisplayText(options.displayName);
-  const radius = size * 0.24;
+  const displayName = String(options.displayName || '').trim();
+  const style = normalizeGeneratedAvatarStyle(options.style);
+  const tone = resolveGeneratedAvatarTone(options.themeSeed);
+  const hue = resolveHue(displayName, String(options.accentColor || '').trim());
+  const colors = resolveStyleColors(style, tone, hue);
+  const text = normalizeDisplayText(displayName);
 
-  ctx.clearRect(0, 0, size, size);
-
-  drawRoundedRect(ctx, 0, 0, size, size, radius);
+  // 铺满方形，圆角交给头像容器（用户可设置头像圆角）。
   ctx.fillStyle = colors.background;
-  ctx.fill();
+  ctx.fillRect(0, 0, size, size);
+  if (colors.pattern) {
+    drawPattern(ctx, size, hashText(`${displayName}#pattern`), colors.pattern);
+  }
 
-  ctx.save();
-  ctx.beginPath();
-  drawRoundedRect(ctx, 0, 0, size, size, radius);
-  ctx.clip();
-  ctx.globalAlpha = 0.18;
-  ctx.fillStyle = accentColor;
-  ctx.beginPath();
-  ctx.arc(size * 0.82, size * 0.16, size * 0.36, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 0.12;
-  ctx.fillRect(0, size * 0.72, size, size * 0.28);
-  ctx.restore();
-
-  drawRoundedRect(ctx, 1, 1, size - 2, size - 2, radius);
-  ctx.strokeStyle = colors.border;
-  ctx.lineWidth = Math.max(2, size * 0.03);
-  ctx.stroke();
-
-  const fontSize = text.length > 1 ? size * 0.34 : size * 0.5;
-  ctx.fillStyle = colors.text;
-  ctx.font = `700 ${fontSize}px sans-serif`;
+  const fontFamily = readCssVar('--sc-font-family') || 'sans-serif';
+  const fontSize = text.length > 1 ? size * 0.38 : size * 0.46;
+  ctx.font = `600 ${fontSize}px ${fontFamily}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, size / 2, size / 2 + size * 0.015);
+  if (colors.textShadow) {
+    ctx.shadowColor = colors.textShadow;
+    ctx.shadowBlur = size * 0.04;
+    ctx.shadowOffsetY = size * 0.015;
+  }
+  ctx.fillStyle = colors.text;
+  ctx.fillText(text, size / 2, size / 2 + size * 0.02);
 
   return canvas;
 };
