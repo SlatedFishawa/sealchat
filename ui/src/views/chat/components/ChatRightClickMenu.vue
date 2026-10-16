@@ -19,6 +19,7 @@ import { navigateToMessageTarget } from '@/utils/messageJump';
 import { copyTextWithFallback } from '@/utils/clipboard';
 const ReactionQuickPicker = defineAsyncComponent(() => import('./ReactionQuickPicker.vue'));
 const EmojiPickerModal = defineAsyncComponent(() => import('./EmojiPickerModal.vue'));
+const MultiNpcRepeatMessageModal = defineAsyncComponent(() => import('./MultiNpcRepeatMessageModal.vue'));
 
 const chat = useChatStore()
 const utils = useUtilsStore()
@@ -32,6 +33,12 @@ const gallery = useGalleryStore()
 
 const showEmojiPicker = ref(false);
 const jumpingToChannelStart = ref(false);
+const showMultiNpcRepeat = ref(false);
+const multiNpcRepeatTarget = ref<{
+  channelId: string;
+  content: string;
+  icMode: 'ic' | 'ooc';
+} | null>(null);
 
 const contextMenuClass = computed(() => (display.palette === 'night' ? 'chat-menu--night' : 'chat-menu--day'))
 const contextMenuTheme = computed(() => (display.palette === 'night' ? 'default dark' : 'default'))
@@ -817,6 +824,29 @@ const clickToggleMessageInsertTarget = () => {
   chat.messageMenu.show = false;
 };
 
+const canMultiNpcRepeat = computed(() => (
+  !chat.isObserver
+  && Boolean(chat.curChannel?.id)
+  && typeof menuMessage.value.raw?.content === 'string'
+  && menuMessage.value.raw.content.length > 0
+));
+
+const clickMultiNpcRepeat = () => {
+  if (!canMultiNpcRepeat.value) {
+    return;
+  }
+  const raw = menuMessage.value.raw;
+  const channelId = String(chat.curChannel?.id || '').trim();
+  const rawIcMode = String(raw?.icMode ?? raw?.ic_mode ?? 'ic').toLowerCase();
+  multiNpcRepeatTarget.value = {
+    channelId,
+    content: String(raw.content),
+    icMode: rawIcMode === 'ooc' ? 'ooc' : 'ic',
+  };
+  chat.messageMenu.show = false;
+  showMultiNpcRepeat.value = true;
+};
+
 const clickArchiveMessagesBefore = () => {
   if (!canArchiveMessagesBefore.value) {
     return;
@@ -882,6 +912,11 @@ const clickArchiveMessagesBefore = () => {
     <context-menu-item label="删除" @click="clickRemove" v-if="canRemoveMessage" />
     <context-menu-group label="更多">
       <context-menu-item
+        v-if="canMultiNpcRepeat"
+        label="多NPC复读消息"
+        @click="clickMultiNpcRepeat"
+      />
+      <context-menu-item
         label="跳转到频道首条消息"
         @click="clickJumpToChannelStart"
       />
@@ -892,6 +927,14 @@ const clickArchiveMessagesBefore = () => {
       />
     </context-menu-group>
   </context-menu>
+
+  <MultiNpcRepeatMessageModal
+    v-if="multiNpcRepeatTarget"
+    v-model:show="showMultiNpcRepeat"
+    :channel-id="multiNpcRepeatTarget.channelId"
+    :content="multiNpcRepeatTarget.content"
+    :ic-mode="multiNpcRepeatTarget.icMode"
+  />
 
   <EmojiPickerModal
     v-if="showEmojiPicker"
