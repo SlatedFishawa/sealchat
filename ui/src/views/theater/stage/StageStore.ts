@@ -526,6 +526,7 @@ export interface TheaterStageStore {
   moveSceneToFolder: (sceneId: string, folderId: string | null) => boolean
   setScenePublished: (sceneId: string, published: boolean) => boolean
   reorderScenes: (sceneId: string, targetId: string, placement: 'before' | 'after') => boolean
+  moveScene: (sceneId: string, target: StageSceneMoveTarget) => boolean
   addObject: (type: StageInsertableObjectType, scope?: StageObjectScope, placement?: StageObjectPlacement) => StageObject
   addDrawing: (
     drawing: StageDrawing,
@@ -590,6 +591,11 @@ export interface TheaterStageStore {
   applyScene: (sceneId: string) => boolean
   replaceState: (next: StageWorkspaceState) => void
 }
+
+// A scene target adopts that scene's folder; a folder target appends to it.
+export type StageSceneMoveTarget =
+  | { kind: 'scene', sceneId: string, placement: 'before' | 'after' }
+  | { kind: 'folder', folderId: string | null }
 
 export interface TheaterStageSelectionState {
   bulkMode: boolean
@@ -914,6 +920,47 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     ordered.splice(insertionIndex, 0, scene)
     if (ordered.every((item, index) => item.order === index)) return false
     ordered.forEach((item, index) => { item.order = index })
+    return true
+  }
+
+  const effectiveSceneFolderId = (scene: StageScene) => (
+    scene.folderId && state.sceneFolders.some((folder) => folder.id === scene.folderId) ? scene.folderId : ''
+  )
+
+  // Folder and order change together so one sync flush carries the whole move.
+  const moveScene = (sceneId: string, target: StageSceneMoveTarget) => {
+    const scene = state.scenes[sceneId]
+    if (!scene) return false
+    let folderId = ''
+    let anchorId: string | null = null
+    let placement: 'before' | 'after' = 'after'
+    if (target.kind === 'scene') {
+      const anchor = state.scenes[target.sceneId]
+      if (!anchor || anchor.id === sceneId) return false
+      folderId = effectiveSceneFolderId(anchor)
+      anchorId = anchor.id
+      placement = target.placement
+    } else {
+      folderId = target.folderId?.trim() || ''
+      if (folderId && !state.sceneFolders.some((folder) => folder.id === folderId)) return false
+      const folderScenes = scenes.value.filter((item) => item.id !== sceneId && effectiveSceneFolderId(item) === folderId)
+      anchorId = folderScenes.length ? folderScenes[folderScenes.length - 1].id : null
+    }
+    const current = scenes.value
+    const ordered = current.filter((item) => item.id !== sceneId)
+    const insertionIndex = anchorId
+      ? ordered.findIndex((item) => item.id === anchorId) + (placement === 'after' ? 1 : 0)
+      : current.findIndex((item) => item.id === sceneId)
+    if (insertionIndex < 0) return false
+    ordered.splice(insertionIndex, 0, scene)
+    const folderChanged = (scene.folderId || '') !== folderId
+    const orderChanged = ordered.some((item, index) => item.order !== index)
+    if (!folderChanged && !orderChanged) return false
+    if (folderChanged) {
+      if (folderId) scene.folderId = folderId
+      else delete scene.folderId
+    }
+    if (orderChanged) ordered.forEach((item, index) => { item.order = index })
     return true
   }
 
@@ -1747,6 +1794,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     moveSceneToFolder,
     setScenePublished,
     reorderScenes,
+    moveScene,
     addScene,
     duplicateScene,
     removeScene,

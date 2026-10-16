@@ -32,6 +32,8 @@ import {
   FolderPlus,
   Focus,
   GripVertical,
+  LayoutGrid,
+  LayoutList,
   LayoutSidebarLeftExpand,
   LayoutSidebar,
   LayoutNavbar,
@@ -113,7 +115,6 @@ import {
   type StageObjectFit,
   type StagePointerTrace,
   type StagePointerTraceInput,
-  type SceneFolder,
   type StageScene,
   type StageSceneTransition,
   type StageSceneTransitionPhase,
@@ -141,6 +142,7 @@ import {
 } from './stage-insert-placement'
 import {
   resolveTheaterStageMediaLocation,
+  resolveTheaterStageThumbnailLocation,
   resolveTheaterMediaPlaybackReference,
   theaterResourceContentPath,
   theaterResourcePath as buildTheaterResourcePath,
@@ -150,6 +152,26 @@ import StageDrawingToolbar, { type StageCanvasTool } from './StageDrawingToolbar
 import StageCopyToolbar from './StageCopyToolbar.vue'
 import StageGridToolbar from './StageGridToolbar.vue'
 import StageSceneFixedToolbar from './StageSceneFixedToolbar.vue'
+import StageSceneThumbnail from './StageSceneThumbnail.vue'
+import {
+  buildSceneGridEntries,
+  buildSceneGridFolderTabs,
+  buildSceneListEntries,
+  effectiveSceneFolderId,
+  normalizeSceneSearchQuery,
+  readSceneBrowserThumbSize,
+  readSceneBrowserViewMode,
+  resolveSceneBrowserDropTarget,
+  resolveSceneGridFolderId,
+  sceneBrowserThumbRequestSize,
+  sceneBrowserThumbSizes,
+  writeSceneBrowserThumbSize,
+  writeSceneBrowserViewMode,
+  type SceneBrowserDropTarget,
+  type SceneBrowserThumbSize,
+  type SceneBrowserViewMode,
+  type SceneListEntry,
+} from './stage-scene-browser'
 import { cloneStageData, type StageCopyMode } from './stage-editing'
 import StageTextEditor, { type StageTextEditorMode } from './StageTextEditor.vue'
 import StageTextOverlay from './StageTextOverlay.vue'
@@ -1838,42 +1860,85 @@ const sceneFolderDialogVisible = ref(false)
 const sceneFolderDialogMode = ref<SceneFolderDialogMode>('create')
 const sceneFolderDialogFolderId = ref<string | null>(null)
 const sceneFolderNameDraft = ref('')
-type SceneListEntry =
-  | { kind: 'scene', key: string, scene: StageScene, nested: boolean }
-  | { kind: 'folder', key: string, folder: SceneFolder, scenes: StageScene[], collapsed: boolean }
-  | { kind: 'uncategorized', key: string, scenes: StageScene[], collapsed: boolean }
-const sceneListEntries = computed<SceneListEntry[]>(() => {
-  const folders = props.store.state.sceneFolders || []
-  const scenes = props.store.scenes.value
-  const folderIDs = new Set(folders.map((folder) => folder.id))
-  const grouped = new Map<string, StageScene[]>()
-  const uncategorized: StageScene[] = []
-  scenes.forEach((scene) => {
-    const folderId = scene.folderId && folderIDs.has(scene.folderId) ? scene.folderId : ''
-    if (!folderId) uncategorized.push(scene)
-    else {
-      const bucket = grouped.get(folderId)
-      if (bucket) bucket.push(scene)
-      else grouped.set(folderId, [scene])
-    }
-  })
-  const entries: SceneListEntry[] = []
-  folders.forEach((folder) => {
-    const scenesInFolder = grouped.get(folder.id) || []
-    const collapsed = collapsedSceneFolders.value.has(sceneFolderCollapseKey(folder.id))
-    entries.push({ kind: 'folder', key: `folder:${folder.id}`, folder, scenes: scenesInFolder, collapsed })
-    if (!collapsed) scenesInFolder.forEach((scene) => entries.push({ kind: 'scene', key: scene.id, scene, nested: true }))
-  })
-  const uncategorizedCollapsed = collapsedSceneFolders.value.has(uncategorizedSceneFolderCollapseKey)
-  entries.push({ kind: 'uncategorized', key: 'virtual-folder:uncategorized', scenes: uncategorized, collapsed: uncategorizedCollapsed })
-  if (!uncategorizedCollapsed) uncategorized.forEach((scene) => entries.push({ kind: 'scene', key: scene.id, scene, nested: true }))
+// Scene Browser presentation state is per-browser: view preferences live in
+// localStorage, the search query and grid folder tab stay in memory.
+const sceneBrowserViewMode = ref<SceneBrowserViewMode>(readSceneBrowserViewMode())
+const sceneBrowserThumbSize = ref<SceneBrowserThumbSize>(readSceneBrowserThumbSize())
+const sceneBrowserThumbSizeLabels: Record<SceneBrowserThumbSize, string> = { small: '小', medium: '中', large: '大' }
+const sceneBrowserRef = ref<HTMLElement | null>(null)
+const sceneSearchQuery = ref('')
+const normalizedSceneSearch = computed(() => normalizeSceneSearchQuery(sceneSearchQuery.value))
+const sceneSearchActive = computed(() => Boolean(normalizedSceneSearch.value))
+const sceneGridSelectedFolderId = ref<string | null>(null)
+const sceneGridFolderId = computed(() => resolveSceneGridFolderId(sceneGridSelectedFolderId.value, props.store.state.sceneFolders || []))
+const sceneGridFolderTabs = computed(() => {
+  const tabs = buildSceneGridFolderTabs(props.store.state.sceneFolders || [], props.store.scenes.value)
   return canEditAllObjects.value || canSwitchScene.value
-    ? entries
-    : entries.filter((entry) => entry.kind === 'scene' || entry.scenes.length > 0)
+    ? tabs
+    : tabs.filter((tab) => tab.count > 0 || tab.id === sceneGridFolderId.value)
 })
+const activeSceneFolderId = computed(() => {
+  const scene = props.store.activeScene.value
+  return scene ? effectiveSceneFolderId(scene, new Set((props.store.state.sceneFolders || []).map((folder) => folder.id))) : ''
+})
+// Follow the active scene only when the grid becomes visible; later scene
+// switches must not move a tab the user picked.
+watch(() => scenePanelOpen.value && sceneBrowserViewMode.value === 'grid', (visible) => {
+  if (visible) sceneGridSelectedFolderId.value = activeSceneFolderId.value
+}, { immediate: true })
+
+const setSceneBrowserViewMode = (mode: SceneBrowserViewMode) => {
+  if (sceneBrowserViewMode.value === mode) return
+  // The editor popover is anchored to the old card; edit/batch modes survive.
+  closeSceneEditor()
+  sceneBrowserViewMode.value = mode
+  writeSceneBrowserViewMode(mode)
+}
+
+const setSceneBrowserThumbSize = (size: SceneBrowserThumbSize) => {
+  sceneBrowserThumbSize.value = size
+  writeSceneBrowserThumbSize(size)
+}
+
+const selectSceneGridFolder = (folderId: string) => {
+  sceneGridSelectedFolderId.value = folderId
+}
+
+const sceneThumbnailState = (scene: StageScene) => (
+  scene.id === props.store.state.activeSceneId ? props.store.state.liveState : scene.state
+)
+
+const sceneThumbnailLocation = (scene: StageScene) => resolveTheaterStageThumbnailLocation(
+  sceneThumbnailState(scene).background,
+  theaterMediaScope(),
+  sceneBrowserThumbRequestSize[sceneBrowserThumbSize.value],
+)
+
+const sceneListEntries = computed(() => buildSceneListEntries({
+  scenes: props.store.scenes.value,
+  folders: props.store.state.sceneFolders || [],
+  normalizedQuery: normalizedSceneSearch.value,
+  isCollapsed: (folderId) => collapsedSceneFolders.value.has(folderId ? sceneFolderCollapseKey(folderId) : uncategorizedSceneFolderCollapseKey),
+  includeEmptyFolders: canEditAllObjects.value || canSwitchScene.value,
+}))
+const sceneBrowserEntries = computed<SceneListEntry[]>(() => (
+  sceneBrowserViewMode.value === 'grid'
+    ? buildSceneGridEntries(props.store.scenes.value, props.store.state.sceneFolders || [], sceneGridFolderId.value, normalizedSceneSearch.value)
+      .map(({ scene, folderName }) => ({ kind: 'scene' as const, key: scene.id, scene, nested: false, folderName }))
+    : sceneListEntries.value
+))
+const sceneBrowserHasScenes = computed(() => sceneBrowserEntries.value.some((entry) => entry.kind === 'scene'))
 const draggedSceneId = ref<string | null>(null)
-type SceneDropPlacement = 'before' | 'after'
-const sceneDropTarget = ref<{ id: string, placement: SceneDropPlacement } | null>(null)
+const sceneDropTarget = ref<SceneBrowserDropTarget | null>(null)
+const sceneDropTargetKey = (target: SceneBrowserDropTarget | null) => (
+  !target ? '' : target.kind === 'folder' ? `folder:${target.folderId}` : `scene:${target.id}:${target.placement}`
+)
+const isSceneDropTarget = (sceneId: string, placement: 'before' | 'after') => (
+  sceneDropTarget.value?.kind === 'scene' && sceneDropTarget.value.id === sceneId && sceneDropTarget.value.placement === placement
+)
+const isSceneFolderDropTarget = (folderId: string) => (
+  sceneDropTarget.value?.kind === 'folder' && sceneDropTarget.value.folderId === folderId
+)
 let sceneDragSession: {
   sceneId: string
   pointerId: number
@@ -1960,6 +2025,7 @@ watch(scenePanelOpen, (open) => {
   exitSceneBatchMode()
   sceneEditMode.value = false
   closeSceneEditor()
+  sceneSearchQuery.value = ''
 })
 
 const handleSceneClick = (scene: StageScene) => {
@@ -1996,24 +2062,34 @@ const saveSceneDetails = () => {
   closeSceneEditor()
 }
 
-const setSceneDropTarget = (target: typeof sceneDropTarget.value) => {
-  if (sceneDropTarget.value?.id === target?.id && sceneDropTarget.value?.placement === target?.placement) return
+const setSceneDropTarget = (target: SceneBrowserDropTarget | null) => {
+  if (sceneDropTargetKey(sceneDropTarget.value) === sceneDropTargetKey(target)) return
   sceneDropTarget.value = target
 }
 
+// Folder headers (list) and folder tabs (grid) carry data-scene-folder-drop;
+// '' is the virtual uncategorized folder.
 const updateSceneDropTarget = (clientX: number, clientY: number) => {
   const session = sceneDragSession
-  const list = sceneListRef.value
-  if (!session || !list) return
+  const browser = sceneBrowserRef.value
+  if (!session || !browser) return
   const element = document.elementFromPoint(clientX, clientY) as HTMLElement | null
-  const row = element?.closest<HTMLElement>('.theater-scene-row')
-  const targetId = row?.dataset.sceneId
-  if (!row || !targetId || !list.contains(row) || targetId === session.sceneId) {
-    setSceneDropTarget(null)
-    return
+  const folderElement = element?.closest<HTMLElement>('[data-scene-folder-drop]')
+  const row = folderElement ? null : element?.closest<HTMLElement>('.theater-scene-row')
+  let placement: 'before' | 'after' = 'after'
+  if (row && browser.contains(row)) {
+    const rect = row.getBoundingClientRect()
+    placement = sceneBrowserViewMode.value === 'grid'
+      ? clientX < rect.left + rect.width / 2 ? 'before' : 'after'
+      : clientY < rect.top + rect.height / 2 ? 'before' : 'after'
   }
-  const rect = row.getBoundingClientRect()
-  setSceneDropTarget({ id: targetId, placement: clientY < rect.top + rect.height / 2 ? 'before' : 'after' })
+  setSceneDropTarget(resolveSceneBrowserDropTarget({
+    sourceSceneId: session.sceneId,
+    searching: sceneSearchActive.value,
+    folderId: folderElement && browser.contains(folderElement) ? folderElement.dataset.sceneFolderDrop ?? '' : undefined,
+    sceneId: row && browser.contains(row) ? row.dataset.sceneId : null,
+    placement,
+  }))
 }
 
 const runSceneDragFrame = () => {
@@ -2082,7 +2158,11 @@ const finishScenePointerDrag = (event: PointerEvent, cancelled = false) => {
   session.ghost.remove()
   draggedSceneId.value = null
   setSceneDropTarget(null)
-  if (!cancelled && dropTarget) props.store.reorderScenes(session.sceneId, dropTarget.id, dropTarget.placement)
+  if (!cancelled && dropTarget) {
+    props.store.moveScene(session.sceneId, dropTarget.kind === 'scene'
+      ? { kind: 'scene', sceneId: dropTarget.id, placement: dropTarget.placement }
+      : { kind: 'folder', folderId: dropTarget.folderId || null })
+  }
 }
 
 const toggleSceneFolder = (folderId: string) => {
@@ -9923,6 +10003,14 @@ onBeforeUnmount(() => {
         <div class="theater-panel-heading" @pointerdown="startPanelDrag('scene', $event)">
           <span>场景</span>
           <div class="theater-panel-heading__actions">
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button text size="tiny" :aria-label="sceneBrowserViewMode === 'grid' ? '切换为列表视图' : '切换为缩略图视图'" @click="setSceneBrowserViewMode(sceneBrowserViewMode === 'grid' ? 'list' : 'grid')">
+                  <n-icon><LayoutList v-if="sceneBrowserViewMode === 'grid'" /><LayoutGrid v-else /></n-icon>
+                </n-button>
+              </template>
+              {{ sceneBrowserViewMode === 'grid' ? '切换为列表视图' : '切换为缩略图视图' }}
+            </n-tooltip>
             <n-tooltip v-if="canSwitchScene" trigger="hover">
               <template #trigger>
                 <n-button text size="tiny" aria-label="预加载全部场景" :loading="store.scenes.value.some((scene) => scenePreloadStatus[scene.id] === 'loading')" @click="requestScenePreload(store.scenes.value.map((scene) => scene.id))"><n-icon><CloudDownload /></n-icon></n-button>
@@ -9934,14 +10022,49 @@ onBeforeUnmount(() => {
             <n-button class="theater-panel-close" text size="tiny" aria-label="关闭场景面板" @click="scenePanelOpen = false"><n-icon><X /></n-icon></n-button>
           </div>
         </div>
-        <div ref="sceneListRef" class="theater-scene-list">
-          <template v-for="entry in sceneListEntries" :key="entry.key">
+        <div ref="sceneBrowserRef" class="theater-scene-browser">
+        <div class="theater-scene-browser__toolbar">
+          <n-input v-model:value="sceneSearchQuery" size="tiny" clearable placeholder="搜索场景名称" aria-label="按名称搜索场景">
+            <template #prefix><n-icon><Search /></n-icon></template>
+          </n-input>
+          <div v-if="sceneBrowserViewMode === 'grid'" class="theater-scene-browser__sizes" role="group" aria-label="缩略图大小">
+            <button
+              v-for="size in sceneBrowserThumbSizes"
+              :key="size"
+              type="button"
+              :class="{ 'is-active': sceneBrowserThumbSize === size }"
+              :aria-pressed="sceneBrowserThumbSize === size"
+              :aria-label="`${sceneBrowserThumbSizeLabels[size]}缩略图`"
+              @click="setSceneBrowserThumbSize(size)"
+            >{{ sceneBrowserThumbSizeLabels[size] }}</button>
+          </div>
+        </div>
+        <div v-if="sceneBrowserViewMode === 'grid'" class="theater-scene-folder-tabs" role="tablist" aria-label="场景文件夹">
+          <div
+            v-for="tab in sceneGridFolderTabs"
+            :key="tab.id || 'virtual:uncategorized'"
+            class="theater-scene-folder-tab"
+            :class="{ 'is-active': !sceneSearchActive && tab.id === sceneGridFolderId, 'is-drop-target': isSceneFolderDropTarget(tab.id) }"
+            :data-scene-folder-drop="tab.id"
+          >
+            <button type="button" role="tab" :aria-selected="tab.id === sceneGridFolderId" @click="selectSceneGridFolder(tab.id)">
+              <span>{{ tab.name }}</span>
+              <small>{{ tab.count }}</small>
+            </button>
+            <n-dropdown v-if="tab.folder && canEditAllObjects && tab.id === sceneGridFolderId && !sceneSearchActive" trigger="click" :options="sceneFolderMenuOptions" :menu-props="theaterSecondaryMenuProps" @select="handleSceneFolderMenu($event, tab.id)">
+              <n-button quaternary circle size="tiny" aria-label="文件夹操作" @click.stop><template #icon><n-icon><Dots /></n-icon></template></n-button>
+            </n-dropdown>
+          </div>
+        </div>
+        <div ref="sceneListRef" class="theater-scene-list" :class="sceneBrowserViewMode === 'grid' ? ['is-grid', `is-thumb-${sceneBrowserThumbSize}`] : []">
+          <template v-for="entry in sceneBrowserEntries" :key="entry.key">
           <div
             v-if="entry.kind === 'folder' || entry.kind === 'uncategorized'"
             class="theater-scene-folder"
-            :class="{ 'is-collapsed': entry.collapsed, 'is-virtual': entry.kind === 'uncategorized' }"
+            :class="{ 'is-collapsed': entry.collapsed, 'is-virtual': entry.kind === 'uncategorized', 'is-drop-target': isSceneFolderDropTarget(entry.kind === 'folder' ? entry.folder.id : '') }"
+            :data-scene-folder-drop="entry.kind === 'folder' ? entry.folder.id : ''"
           >
-            <button type="button" class="theater-scene-folder__main" @click="toggleSceneFolder(entry.kind === 'folder' ? sceneFolderCollapseKey(entry.folder.id) : uncategorizedSceneFolderCollapseKey)">
+            <button type="button" class="theater-scene-folder__main" @click="!sceneSearchActive && toggleSceneFolder(entry.kind === 'folder' ? sceneFolderCollapseKey(entry.folder.id) : uncategorizedSceneFolderCollapseKey)">
               <n-icon :component="entry.collapsed ? ChevronRight : ChevronDown" />
               <n-icon><Folder /></n-icon>
               <strong>{{ entry.kind === 'folder' ? entry.folder.name : '未分类' }}</strong>
@@ -9958,13 +10081,14 @@ onBeforeUnmount(() => {
             :class="{
               'has-preload-pulse': scenePreloadPulse[entry.scene.id],
               'is-nested': entry.nested,
+              'is-grid': sceneBrowserViewMode === 'grid',
               'is-edit-mode': sceneEditMode,
               'is-batch-mode': sceneBatchMode,
               'has-scene-move-actions': canEditAllObjects,
               'has-scene-publish-actions': canEditAllObjects && canSwitchScene,
               'is-dragging': draggedSceneId === entry.scene.id,
-              'is-drop-before': sceneDropTarget?.id === entry.scene.id && sceneDropTarget.placement === 'before',
-              'is-drop-after': sceneDropTarget?.id === entry.scene.id && sceneDropTarget.placement === 'after',
+              'is-drop-before': isSceneDropTarget(entry.scene.id, 'before'),
+              'is-drop-after': isSceneDropTarget(entry.scene.id, 'after'),
             }"
           >
             <n-checkbox
@@ -9978,7 +10102,7 @@ onBeforeUnmount(() => {
             <span
               v-if="sceneEditMode && canEditAllObjects"
               class="theater-scene-row__grip"
-              aria-label="拖动调整场景顺序"
+              :aria-label="sceneSearchActive ? '拖动到文件夹' : '拖动调整场景顺序'"
               role="button"
               tabindex="0"
               @pointerdown.stop="startScenePointerDrag($event, entry.scene.id)"
@@ -10006,8 +10130,26 @@ onBeforeUnmount(() => {
                 :disabled="sceneEditMode || sceneBatchMode ? !canEditAllObjects : !canBrowseScenes"
                 @click="handleSceneClick(entry.scene)"
               >
-                <span class="theater-scene-card__title">{{ entry.scene.name }}</span>
-                <n-icon v-if="constructionSceneId === entry.scene.id" class="theater-scene-card__construction" aria-label="施工模式锁定场景"><Lock /></n-icon>
+                <template v-if="sceneBrowserViewMode === 'grid'">
+                  <StageSceneThumbnail :location="sceneThumbnailLocation(entry.scene)" :background-color="sceneThumbnailState(entry.scene).backgroundColor" />
+                  <span class="theater-scene-card__meta">
+                    <span class="theater-scene-card__title">{{ entry.scene.name }}</span>
+                    <n-icon v-if="constructionSceneId === entry.scene.id" class="theater-scene-card__construction" aria-label="施工模式锁定场景"><Lock /></n-icon>
+                    <n-icon v-if="canEditAllObjects && entry.scene.published" class="theater-scene-card__published" aria-label="已展示给玩家"><Eye /></n-icon>
+                    <span
+                      v-if="scenePreloadStatus[entry.scene.id]"
+                      class="theater-scene-card__preload"
+                      :class="`is-${scenePreloadStatus[entry.scene.id]}`"
+                      role="img"
+                      :aria-label="scenePreloadStatus[entry.scene.id] === 'loading' ? '预加载中' : scenePreloadStatus[entry.scene.id] === 'ready' ? '已预加载' : '预加载失败'"
+                    />
+                  </span>
+                  <small v-if="entry.folderName" class="theater-scene-card__folder">{{ entry.folderName }}</small>
+                </template>
+                <template v-else>
+                  <span class="theater-scene-card__title">{{ entry.scene.name }}</span>
+                  <n-icon v-if="constructionSceneId === entry.scene.id" class="theater-scene-card__construction" aria-label="施工模式锁定场景"><Lock /></n-icon>
+                </template>
               </button>
             </template>
             <div class="theater-scene-editor">
@@ -10144,6 +10286,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
           </template>
+          <div v-if="(sceneSearchActive || sceneBrowserViewMode === 'grid') && !sceneBrowserHasScenes" class="theater-panel-empty theater-scene-browser__empty">
+            {{ sceneSearchActive ? '没有匹配的场景' : '此文件夹暂无场景' }}
+          </div>
+        </div>
         </div>
         <div v-if="canSwitchScene || canEditAllObjects" class="theater-scene-actions">
           <n-tooltip v-if="canEditAllObjects" trigger="hover">
@@ -11527,9 +11673,9 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, transparent, var(--theater-panel) 10px); transition: opacity .14s ease;
 }
 .theater-scene-row:hover .theater-scene-row__actions, .theater-scene-row:has(button:focus-visible) .theater-scene-row__actions, .theater-scene-row.has-preload-pulse .theater-scene-row__actions { opacity: 1; pointer-events: auto; }
-.theater-scene-row:hover .theater-scene-card, .theater-scene-row:has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-preload-pulse .theater-scene-card { padding-right: 36px; }
-.theater-scene-row.has-scene-move-actions:hover .theater-scene-card, .theater-scene-row.has-scene-move-actions:has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-move-actions.has-preload-pulse .theater-scene-card { padding-right: 66px; }
-.theater-scene-row.has-scene-publish-actions:hover .theater-scene-card, .theater-scene-row.has-scene-publish-actions:has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-publish-actions.has-preload-pulse .theater-scene-card { padding-right: 96px; }
+.theater-scene-row:not(.is-grid):hover .theater-scene-card, .theater-scene-row:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 36px; }
+.theater-scene-row.has-scene-move-actions:not(.is-grid):hover .theater-scene-card, .theater-scene-row.has-scene-move-actions:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-move-actions:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 66px; }
+.theater-scene-row.has-scene-publish-actions:not(.is-grid):hover .theater-scene-card, .theater-scene-row.has-scene-publish-actions:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-publish-actions:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 96px; }
 .theater-scene-row.is-dragging { opacity: .36; }
 .theater-scene-row.is-drag-preview {
   position: fixed; z-index: 10003; top: 0; left: 0; pointer-events: none; opacity: .92;
@@ -11570,6 +11716,60 @@ onBeforeUnmount(() => {
   68% { transform: translateY(1px) scale(.96); }
 }
 @media (prefers-reduced-motion: reduce) { .theater-scene-preload.is-ready-pulse { animation: none; } }
+.theater-scene-browser { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.theater-scene-browser__toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 0 6px 6px; }
+.theater-scene-browser__toolbar > .n-input { flex: 1 1 auto; min-width: 0; }
+.theater-scene-browser__sizes { flex: 0 0 auto; display: flex; gap: 1px; padding: 1px; border: 1px solid var(--theater-border); border-radius: 5px; }
+.theater-scene-browser__sizes button {
+  min-width: 22px; height: 20px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--sc-text-secondary, #b5b5c5);
+  background: transparent; font-size: 10px; cursor: pointer;
+}
+.theater-scene-browser__sizes button.is-active { color: var(--sc-text-primary, #f4f4f5); background: color-mix(in srgb, var(--theater-accent) 22%, transparent); }
+.theater-scene-browser__empty { grid-column: 1 / -1; }
+.theater-scene-folder-tabs { flex: 0 0 auto; display: flex; gap: 4px; overflow-x: auto; padding: 0 6px 6px; scrollbar-width: thin; }
+.theater-scene-folder-tab {
+  flex: 0 0 auto; max-width: 160px; display: flex; align-items: center; border: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .1)); border-radius: 999px;
+  color: var(--sc-text-secondary, #b5b5c5); background: color-mix(in srgb, var(--theater-panel) 70%, transparent); transition: color .14s ease, border-color .14s ease, background .14s ease;
+}
+.theater-scene-folder-tab > button { min-width: 0; display: flex; align-items: center; gap: 5px; padding: 3px 9px; border: 0; color: inherit; background: transparent; font-size: 11px; cursor: pointer; }
+.theater-scene-folder-tab > button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theater-scene-folder-tab > button small { color: var(--sc-fg-muted, #71717a); font-size: 10px; }
+.theater-scene-folder-tab:hover { color: var(--sc-text-primary, #f4f4f5); }
+.theater-scene-folder-tab.is-active { color: var(--sc-text-primary, #f4f4f5); border-color: color-mix(in srgb, var(--theater-accent) 65%, transparent); background: color-mix(in srgb, var(--theater-accent) 16%, transparent); }
+.theater-scene-folder-tab > .n-button { width: 20px; height: 20px; margin-right: 2px; }
+.theater-scene-folder.is-drop-target, .theater-scene-folder-tab.is-drop-target { outline: 1px dashed #38bdf8; outline-offset: -1px; background: color-mix(in srgb, #38bdf8 14%, transparent); }
+.theater-scene-folder.is-drop-target { border-radius: 5px; }
+.theater-scene-list.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--theater-scene-thumb-min, 120px), 1fr)); align-content: start; gap: 6px; }
+.theater-scene-list.is-thumb-small { --theater-scene-thumb-min: 84px; }
+.theater-scene-list.is-thumb-medium { --theater-scene-thumb-min: 120px; }
+.theater-scene-list.is-thumb-large { --theater-scene-thumb-min: 172px; }
+.theater-scene-row.is-grid, .theater-scene-row.is-grid.is-edit-mode, .theater-scene-row.is-grid.is-batch-mode { display: block; min-width: 0; }
+.theater-scene-row.is-grid .theater-scene-card { flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 4px; }
+.theater-scene-row.is-grid .theater-scene-card__title { font-size: 11px; }
+.theater-scene-card__meta { min-width: 0; display: flex; align-items: center; gap: 4px; padding: 0 2px; }
+.theater-scene-card__meta .theater-scene-card__construction { margin-left: 0; font-size: 12px; }
+.theater-scene-card__published { flex: 0 0 auto; color: var(--theater-accent, #38bdf8); font-size: 12px; }
+.theater-scene-card__preload { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--sc-fg-muted, #71717a); }
+.theater-scene-card__preload.is-loading { background: var(--theater-accent, #38bdf8); animation: theater-scene-preload-dot 1s ease-in-out infinite alternate; }
+.theater-scene-card__preload.is-ready { background: #22c55e; }
+.theater-scene-card__preload.is-error { background: #ef4444; }
+@keyframes theater-scene-preload-dot { from { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .theater-scene-card__preload.is-loading { animation: none; } }
+.theater-scene-card__folder { min-width: 0; padding: 0 2px; overflow: hidden; color: var(--sc-fg-muted, #71717a); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.theater-scene-row.is-grid .theater-scene-row__select, .theater-scene-row.is-grid .theater-scene-row__grip {
+  position: absolute; z-index: 2; top: 8px; left: 8px; width: 22px; height: 22px; border-radius: 5px; background: color-mix(in srgb, var(--theater-panel) 84%, transparent);
+}
+.theater-scene-row.is-grid .theater-scene-row__grip { color: var(--sc-text-primary, #f4f4f5); }
+.theater-scene-row.is-grid .theater-scene-row__actions { top: 8px; right: 8px; padding: 1px; border-radius: 999px; background: color-mix(in srgb, var(--theater-panel) 86%, transparent); }
+.theater-scene-row.is-grid .theater-scene-preload { width: 22px; height: 22px; }
+.theater-scene-row.is-grid.is-drop-before::before, .theater-scene-row.is-grid.is-drop-after::after { top: 4px; right: auto; bottom: 4px; left: -4px; width: 2px; height: auto; }
+.theater-scene-row.is-grid.is-drop-after::after { right: -4px; left: auto; }
+@media (hover: none) {
+  .theater-scene-row .theater-scene-row__actions { opacity: 1; pointer-events: auto; }
+  .theater-scene-row:not(.is-grid) .theater-scene-card { padding-right: 36px; }
+  .theater-scene-row.has-scene-move-actions:not(.is-grid) .theater-scene-card { padding-right: 66px; }
+  .theater-scene-row.has-scene-publish-actions:not(.is-grid) .theater-scene-card { padding-right: 96px; }
+}
 .theater-scene-actions { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 1px; padding: 6px; border-top: 1px solid var(--theater-border); background: var(--theater-panel); }
 .theater-scene-playback-toggles { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .theater-scene-playback-toggle { display: flex; align-items: center; gap: 5px; color: var(--sc-text-secondary, #b5b5c5); font-size: 11px; }

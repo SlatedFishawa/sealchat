@@ -104,3 +104,25 @@ export const resolveTheaterStageMediaLocation = (
   const url = resolveStageImageUrl(candidate, baseHref)
   return url ? { url, managed, sourceKind } : null
 }
+
+export const theaterResourceThumbnailPath = (scope: TheaterStageMediaScope, resourceId: string, size: number) => (
+  `/${theaterResourcePath(scope, resourceId)}/thumbnail?size=${Math.round(size)}`
+)
+
+// Managed resources resolve to the server still-frame thumbnail; external
+// images stay unmanaged and video-only references have no thumbnail.
+export const resolveTheaterStageThumbnailLocation = (
+  imageRef: StageImageRef | null | undefined,
+  scope: TheaterStageMediaScope,
+  size: number,
+  baseHref?: string,
+): TheaterStageMediaLocation | null => {
+  if (!imageRef) return null
+  const location = resolveTheaterStageMediaLocation(imageRef, scope, baseHref)
+  if (!location) return null
+  if (location.managed) {
+    const url = resolveStageImageUrl(`${scope.urlBase.replace(/\/$/, '')}${theaterResourceThumbnailPath(scope, imageRef.resourceId.trim(), size)}`, baseHref)
+    return url ? { url, managed: true, sourceKind: 'image' } : null
+  }
+  return location.sourceKind === 'video' ? null : location
+}
