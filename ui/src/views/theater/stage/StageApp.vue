@@ -2169,6 +2169,16 @@ const scheduleSceneDragFrame = () => {
   if (sceneDragFrame === null) sceneDragFrame = window.requestAnimationFrame(runSceneDragFrame)
 }
 
+const createSceneDragPreview = (sceneId: string, clientX: number, clientY: number) => {
+  const scene = props.store.state.scenes[sceneId]
+  const ghost = document.createElement('div')
+  ghost.className = 'theater-scene-drag-preview'
+  ghost.setAttribute('aria-hidden', 'true')
+  ghost.textContent = scene?.name || '场景'
+  ghost.style.transform = `translate3d(${clientX + 12}px, ${clientY + 12}px, 0)`
+  return ghost
+}
+
 const startScenePointerDrag = (event: PointerEvent, sceneId: string) => {
   if (!canEditAllObjects.value || !sceneEditMode.value || event.button !== 0 || sceneDragSession) return
   const grip = event.currentTarget as HTMLElement
@@ -2176,11 +2186,7 @@ const startScenePointerDrag = (event: PointerEvent, sceneId: string) => {
   if (!row) return
   event.preventDefault()
   grip.setPointerCapture(event.pointerId)
-  const rect = row.getBoundingClientRect()
-  const ghost = row.cloneNode(true) as HTMLElement
-  ghost.classList.add('is-drag-preview')
-  ghost.setAttribute('aria-hidden', 'true')
-  ghost.style.width = `${rect.width}px`
+  const ghost = createSceneDragPreview(sceneId, event.clientX, event.clientY)
   document.body.appendChild(ghost)
   sceneDragSession = { sceneId, pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, ghost }
   draggedSceneId.value = sceneId
@@ -11964,11 +11970,15 @@ onBeforeUnmount(() => {
 .theater-scene-row:not(.is-grid):hover .theater-scene-card, .theater-scene-row:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 36px; }
 .theater-scene-row.has-scene-move-actions:not(.is-grid):hover .theater-scene-card, .theater-scene-row.has-scene-move-actions:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-move-actions:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 66px; }
 .theater-scene-row.has-scene-publish-actions:not(.is-grid):hover .theater-scene-card, .theater-scene-row.has-scene-publish-actions:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-publish-actions:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 96px; }
-.theater-scene-row.is-dragging { opacity: .36; }
-.theater-scene-row.is-drag-preview {
-  position: fixed; z-index: 10003; top: 0; left: 0; pointer-events: none; opacity: .92;
-  border: 1px solid color-mix(in srgb, var(--theater-accent, #38bdf8) 58%, transparent); border-radius: 5px;
-  background: var(--theater-panel); box-shadow: 0 10px 24px rgba(0, 0, 0, .26); will-change: transform;
+.theater-scene-row.is-dragging .theater-scene-card {
+  outline: 1px dashed color-mix(in srgb, var(--theater-accent, #38bdf8) 68%, transparent); outline-offset: -2px;
+}
+:global(.theater-scene-drag-preview) {
+  position: fixed; z-index: 10003; top: 0; left: 0; box-sizing: border-box; max-width: 220px; padding: 6px 9px;
+  overflow: hidden; border: 1px solid color-mix(in srgb, var(--theater-accent, #38bdf8) 58%, transparent); border-radius: 5px;
+  color: var(--sc-text-primary, #f4f4f5); background: var(--sc-bg-panel, #26262b); box-shadow: 0 8px 20px rgba(0, 0, 0, .24);
+  font-size: 11px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; user-select: none;
+  contain: paint; will-change: transform;
 }
 .theater-scene-row.is-drop-before::before, .theater-scene-row.is-drop-after::after {
   position: absolute; z-index: 1; right: 5px; left: 5px; height: 2px; border-radius: 1px; background: #38bdf8; content: '';

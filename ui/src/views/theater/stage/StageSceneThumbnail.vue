@@ -138,7 +138,11 @@ const load = () => {
   image.src = location.url
 }
 
-watch(() => [props.location?.url, props.location?.managed, visible.value] as const, ([, , isVisible]) => {
+watch([
+  () => props.location?.url,
+  () => props.location?.managed,
+  visible,
+], ([, , isVisible]) => {
   if (isVisible) load()
 })
 
