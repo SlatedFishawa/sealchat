@@ -12,34 +12,6 @@
   transition: background-color 0.25s ease, border-color 0.25s ease;
 }
 
-.identity-variant-dialog :deep(.n-card),
-.identity-dialog :deep(.n-card) {
-  background: var(--sc-bg-elevated, #ffffff);
-  color: var(--sc-text-primary, #0f172a);
-  border: 1px solid var(--sc-border-strong, rgba(15, 23, 42, 0.12));
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.15);
-}
-
-.identity-dialog :deep(.n-card__header),
-.identity-dialog :deep(.n-card__content),
-.identity-dialog :deep(.n-card__footer) {
-  color: var(--sc-text-primary, #0f172a);
-}
-
-.identity-variant-dialog :deep(.n-card__header),
-.identity-variant-dialog :deep(.n-card__content),
-.identity-variant-dialog :deep(.n-card__footer),
-.identity-dialog :deep(.n-card__header),
-.identity-dialog :deep(.n-card__content),
-.identity-dialog :deep(.n-card__footer) {
-  color: var(--sc-text-primary, #0f172a);
-}
-
-.identity-variant-dialog :deep(.n-form-item-label__text),
-.identity-dialog :deep(.n-form-item-label__text) {
-  color: var(--sc-text-secondary, #475569);
-}
-
 .identity-manage-shell :deep(.n-drawer),
 .identity-manage-shell :deep(.n-drawer-body) {
   background-color: transparent;

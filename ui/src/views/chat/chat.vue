@@ -148,6 +148,16 @@ import AvatarSetupPrompt from '@/components/AvatarSetupPrompt.vue'
 import AvatarEditor from '@/components/AvatarEditor.vue'
 import AvatarDecorationEditor from '@/components/avatar-decoration/AvatarDecorationEditor.vue'
 import TheaterPresentationEditorModal from '@/components/theater-presentation/TheaterPresentationEditorModal.vue'
+import ChannelIdentityWorkspace from './components/identity-workspace/ChannelIdentityWorkspace.vue'
+import ChannelIdentityProfilePanel from './components/identity-workspace/ChannelIdentityProfilePanel.vue'
+import ChannelIdentityVariantPanel from './components/identity-workspace/ChannelIdentityVariantPanel.vue'
+import {
+  resolveVariantNote,
+  resolveVariantSelectorEmojiSrc,
+  type IdentityWorkspaceAvatar,
+  type IdentityWorkspaceBadge,
+  type IdentityWorkspaceTab,
+} from './components/identity-workspace/identityWorkspaceTypes'
 import type { MultiplayerTheaterPresentationApply } from '@/components/theater-presentation/theaterPresentationEditorState'
 import TheaterDialogueControllerIdentity from './components/TheaterDialogueControllerIdentity.vue'
 import { readDialogueController, type DialogueControllerTemplate } from '@/views/theater/dialogue/theater-dialogue-controller'
@@ -3492,31 +3502,19 @@ const identityForm = reactive({
   promoteToShared: false,
 });
 const identityColorDraft = ref('');
+const identityWorkspaceTab = ref<IdentityWorkspaceTab>('profile');
 const identityOriginalCardId = ref('');
 const identityAvatarPreview = ref('');
 const identityAvatarInputRef = ref<HTMLInputElement | null>(null);
 const identityAvatarEditorVisible = ref(false);
 const identityAvatarEditorFile = ref<File | null>(null);
 const editingIdentity = ref<ChannelIdentity | null>(null);
-const identityVariantDialogVisible = ref(false);
+// 工作区内差分详情是否处于编辑状态；false 表示差分列表选中「默认状态」。
+const identityVariantEditorActive = ref(false);
 const identityVariantDialogMode = ref<'create' | 'edit'>('create');
 const identityVariantSubmitting = ref(false);
 const editingIdentityVariant = ref<ChannelIdentityVariant | null>(null);
 const identityVariantEmojiPickerVisible = ref(false);
-const identityVariantMatchModeOptions = [
-  { label: '前缀匹配', value: 'prefix' },
-  { label: '关键词匹配', value: 'keyword' },
-  { label: '正则表达式匹配', value: 'regex' },
-];
-const identityVariantKeywordMatchOptions = [
-  { label: '任一关键词', value: 'any' },
-  { label: '全部关键词', value: 'all' },
-];
-const identityVariantRegexMatchOptions = [
-  { label: '区分大小写', value: 'sensitive' },
-  { label: '忽略大小写', value: 'insensitive' },
-];
-const identityVariantResetDialogVisible = ref(false);
 const identityVariantResetForm = reactive({
   matchMode: 'prefix' as IdentityVariantMatchMode,
   matchDrafts: {
@@ -3526,13 +3524,6 @@ const identityVariantResetForm = reactive({
   } as Record<IdentityVariantMatchMode, { config: string; content: string }>,
 });
 const activeIdentityVariantResetMatchDraft = computed(() => identityVariantResetForm.matchDrafts[identityVariantResetForm.matchMode]);
-const identityVariantResetMatchContentPlaceholder = computed(() => {
-  if (identityVariantResetForm.matchMode === 'prefix') return '例如：还原';
-  if (identityVariantResetForm.matchMode === 'keyword') {
-    return activeIdentityVariantResetMatchDraft.value.config === 'all' ? '例如：结束&恢复' : '例如：还原|恢复';
-  }
-  return '例如：^(还原|恢复)';
-});
 const identityVariantForm = reactive({
   selectorEmoji: '',
   matchMode: 'prefix' as IdentityVariantMatchMode,
@@ -3549,13 +3540,6 @@ const identityVariantForm = reactive({
   enabled: true,
 });
 const activeIdentityVariantMatchDraft = computed(() => identityVariantForm.matchDrafts[identityVariantForm.matchMode]);
-const identityVariantMatchContentPlaceholder = computed(() => {
-  if (identityVariantForm.matchMode === 'prefix') return '例如：笑';
-  if (identityVariantForm.matchMode === 'keyword') {
-    return activeIdentityVariantMatchDraft.value.config === 'all' ? '例如：笑&挥手' : '例如：笑|开心';
-  }
-  return '例如：笑|开心|挥手';
-});
 const identityVariantColorDraft = ref('');
 const identityVariantAvatarPreview = ref('');
 const identityVariantAvatarInputRef = ref<HTMLInputElement | null>(null);
@@ -3636,16 +3620,14 @@ const identityDialogTitle = computed(() => {
   }
   return isEditingTemporaryIdentity.value ? '编辑临时频道角色' : '编辑频道角色';
 });
-const identityDialogSubmitText = computed(() => (
-  isEditingTemporaryIdentity.value ? '保存并生成新身份' : '保存'
-));
+const identityDialogSubmitText = computed(() => {
+  if (identityDialogMode.value === 'create') return '创建角色';
+  return isEditingTemporaryIdentity.value ? '保存并生成新身份' : '保存角色资料';
+});
 const identityTemporaryHint = computed(() => (
   isEditingTemporaryIdentity.value
     ? '改名会生成新的频道角色 ID，历史消息保留旧身份；头像差分与已绑人物卡不会自动迁移。'
     : ''
-));
-const identityActivateModeLabel = computed(() => (
-  identityForm.icOocOnActivate === 'ooc' ? '场外' : '场内'
 ));
 const activeIdentityFolderId = ref<'all' | 'favorites' | 'ungrouped' | string>('all');
 const identitySelection = ref<string[]>([]);
@@ -3666,27 +3648,7 @@ const isIdentityDrawerMobile = computed(() => windowWidth.value > 0 && windowWid
 let identityVariantAvatarObjectURL: string | null = null;
 let identityVariantAvatarFile: File | null = null;
 
-const resolveVariantSelectorEmojiSrc = (selectorEmoji?: string) => {
-  const raw = String(selectorEmoji || '').trim();
-  if (!raw.startsWith('id:')) {
-    return '';
-  }
-  return resolveAttachmentUrl(raw);
-};
-
 const isVariantSelectorEmojiAttachment = (selectorEmoji?: string) => !!resolveVariantSelectorEmojiSrc(selectorEmoji);
-
-const resolveVariantNote = (variant?: ChannelIdentityVariant | null) => {
-  const note = String(variant?.note || '').trim();
-  if (note) {
-    return note;
-  }
-  const keyword = String(variant?.keyword || '').trim();
-  if (keyword) {
-    return `=${keyword}`;
-  }
-  return '未备注';
-};
 
 const folderMap = computed<Record<string, ChannelIdentityFolder>>(() => {
   const map: Record<string, ChannelIdentityFolder> = {};
@@ -3972,15 +3934,15 @@ watch(identityManageCandidateKeyword, useDebounceFn(async (value: string) => {
 
 watch(identityDialogVisible, (visible) => {
   if (!visible) {
-    identityVariantDialogVisible.value = false;
+    identityVariantEditorActive.value = false;
     identityVariantEmojiPickerVisible.value = false;
     editingIdentityVariant.value = null;
     revokeIdentityVariantObjectURL();
   }
 });
 
-watch(identityVariantDialogVisible, (visible) => {
-  if (!visible) {
+watch(identityVariantEditorActive, (active) => {
+  if (!active) {
     identityVariantEmojiPickerVisible.value = false;
     editingIdentityVariant.value = null;
   }
@@ -4022,6 +3984,35 @@ const identityGeneratedAvatarStyleOptions = computed(() => (
     }))
     : []
 ));
+
+const identityWorkspaceBaseAvatar = computed<IdentityWorkspaceAvatar>(() => {
+  const textAvatar = identityForm.isTemporary || Boolean(identityForm.avatarTextStyle);
+  return {
+    src: identityGeneratedAvatarPreview.value || identityAvatarDisplay.value || (textAvatar ? '' : managedIdentityFallbackAvatar.value),
+    useTextFallback: textAvatar,
+    textFallbackStyle: identityForm.avatarTextStyle,
+    textFallbackAccentColor: identityForm.avatarTextStyle ? identityForm.color : undefined,
+    fallbackText: identityForm.displayName,
+  };
+});
+const identityWorkspaceBadges = computed<IdentityWorkspaceBadge[]>(() => {
+  const badges: IdentityWorkspaceBadge[] = [];
+  if (identityDialogMode.value === 'create') badges.push({ label: '未创建', type: 'warning' });
+  if (isManagingBotIdentity.value) {
+    badges.push({ label: 'BOT', type: 'info' });
+  } else if (isManagingOtherUserIdentity.value) {
+    badges.push({ label: `代管 · ${currentManagedIdentityLabel.value}`, type: 'info' });
+  }
+  if (identityForm.isTemporary) badges.push({ label: '临时角色', type: 'warning' });
+  if (editingIdentity.value?.sharedIdentityId) badges.push({ label: '跨频道', type: 'success' });
+  if (identityDialogMode.value === 'edit' && editingIdentity.value?.isDefault) badges.push({ label: '默认身份', type: 'default' });
+  return badges;
+});
+const identityWorkspaceVariantUnavailableReason = computed<'unsaved' | 'temporary' | ''>(() => {
+  if (identityForm.isTemporary) return 'temporary';
+  if (identityDialogMode.value !== 'edit' || !editingIdentity.value?.id) return 'unsaved';
+  return '';
+});
 
 const identityImportInputRef = ref<HTMLInputElement | null>(null);
 const identityExporting = ref(false);
@@ -5481,6 +5472,7 @@ const resetIdentityForm = (identity?: ChannelIdentity | null) => {
   identityOriginalCardId.value = identityForm.characterCardId;
   identityForm.promoteToShared = false;
   identityAvatarPreview.value = resolveAttachmentUrl(identity?.avatarAttachmentId);
+  syncIdentityVariantResetDraft();
 };
 
 const handlePromoteIdentityToSharedUpdate = async (checked: boolean) => {
@@ -5543,7 +5535,7 @@ const enterTheaterForAppearanceEdit = async (mode: 'base' | 'variant') => {
     targetAvatar: identityManageTargetAvatar.value || undefined,
   });
   identityDialogVisible.value = false;
-  identityVariantDialogVisible.value = false;
+  identityVariantEditorActive.value = false;
   identityManageVisible.value = false;
   theaterPresentationEditorVisible.value = false;
   try {
@@ -5769,10 +5761,6 @@ const handleIdentityDecorationEditorShow = async (show: boolean) => {
   }
 };
 
-const setIdentityActivateMode = (mode: 'ic' | 'ooc') => {
-  identityForm.icOocOnActivate = mode;
-};
-
 watch(() => identityForm.isTemporary, (isTemporary) => {
   if (isTemporary) identityForm.avatarTextStyle = '';
   if (identityDialogMode.value === 'create') {
@@ -5805,6 +5793,7 @@ const openIdentityCreate = async () => {
   }
   identityForm.characterCardId = '';
   identityOriginalCardId.value = '';
+  identityWorkspaceTab.value = 'profile';
   identityDialogVisible.value = true;
 };
 
@@ -5822,6 +5811,9 @@ const openIdentityEdit = async (identity: ChannelIdentity) => {
       ? characterCardStore.getBoundCardId(identity.id, identity.sharedIdentityId) || ''
       : '';
     identityOriginalCardId.value = identityForm.characterCardId;
+  }
+  if (!identityDialogVisible.value) {
+    identityWorkspaceTab.value = 'profile';
   }
   identityDialogVisible.value = true;
 };
@@ -5853,8 +5845,18 @@ const closeIdentityDialog = () => {
   identityDialogVisible.value = false;
   identityDecorationEditorVisible.value = false;
   theaterPresentationEditorVisible.value = false;
-  identityVariantDialogVisible.value = false;
+  identityVariantEditorActive.value = false;
   identityVariantEmojiPickerVisible.value = false;
+};
+
+const requestCloseIdentityWorkspace = async () => {
+  if (identitySubmitting.value || identityVariantSubmitting.value) {
+    return;
+  }
+  if (!(await confirmDiscardIdentityVariantDraft())) {
+    return;
+  }
+  closeIdentityDialog();
 };
 
 const handleIdentityAvatarTrigger = () => {
@@ -5945,9 +5947,41 @@ const resetIdentityVariantForm = (variant?: ChannelIdentityVariant | null) => {
   identityVariantColorDraft.value = identityVariantForm.color;
   identityVariantForm.enabled = variant?.enabled !== false;
   identityVariantAvatarPreview.value = resolveAttachmentUrl(variant?.avatarAttachmentId);
+  identityVariantDraftBaseline.value = serializeIdentityVariantDraft();
 };
 
-const openIdentityVariantResetConfig = () => {
+// 差分改为在工作区内联切换，切换前用快照判断当前差分草稿是否有未保存修改。
+const identityVariantDraftBaseline = ref('');
+const serializeIdentityVariantDraft = () => JSON.stringify({
+  selectorEmoji: identityVariantForm.selectorEmoji,
+  matchMode: identityVariantForm.matchMode,
+  match: identityVariantForm.matchDrafts[identityVariantForm.matchMode],
+  note: identityVariantForm.note,
+  avatarAttachmentId: identityVariantForm.avatarAttachmentId,
+  avatarPreview: identityVariantAvatarPreview.value,
+  displayName: identityVariantForm.displayName,
+  color: identityVariantColorDraft.value,
+  theaterPresentation: identityVariantForm.theaterPresentation,
+  enabled: identityVariantForm.enabled,
+});
+const identityVariantDraftDirty = computed(() => (
+  identityVariantEditorActive.value && serializeIdentityVariantDraft() !== identityVariantDraftBaseline.value
+));
+
+const confirmDiscardIdentityVariantDraft = async () => {
+  if (!identityVariantDraftDirty.value) {
+    return true;
+  }
+  return Boolean(await dialogAskConfirm(
+    dialog,
+    '放弃差分修改',
+    identityVariantDialogMode.value === 'create'
+      ? '新差分尚未创建，确定放弃吗？'
+      : '当前差分有未保存的修改，确定放弃吗？',
+  ));
+};
+
+const syncIdentityVariantResetDraft = () => {
   identityVariantResetForm.matchMode = identityForm.variantResetMatchMode || 'prefix';
   identityVariantResetForm.matchDrafts = {
     prefix: { config: '=', content: '还原' },
@@ -5957,7 +5991,6 @@ const openIdentityVariantResetConfig = () => {
   const activeDraft = identityVariantResetForm.matchDrafts[identityVariantResetForm.matchMode];
   activeDraft.config = identityForm.variantResetMatchConfig || activeDraft.config;
   activeDraft.content = identityForm.variantResetMatchContent || activeDraft.content;
-  identityVariantResetDialogVisible.value = true;
 };
 
 const applyIdentityVariantResetConfig = async () => {
@@ -5992,16 +6025,15 @@ const applyIdentityVariantResetConfig = async () => {
   identityForm.variantResetMatchConfig = matchConfig;
   identityForm.variantResetMatchContent = matchContent;
   if (await submitIdentityForm({ closeDialog: false, successMessage: false })) {
-    identityVariantResetDialogVisible.value = false;
     message.success('恢复默认头像规则已更新');
   }
 };
 
-const closeIdentityVariantDialog = () => {
+const closeIdentityVariantEditor = () => {
   if (identityVariantSubmitting.value) {
     return;
   }
-  identityVariantDialogVisible.value = false;
+  identityVariantEditorActive.value = false;
   identityVariantEmojiPickerVisible.value = false;
 };
 
@@ -6013,14 +6045,50 @@ const openIdentityVariantCreate = () => {
   editingIdentityVariant.value = null;
   identityVariantDialogMode.value = 'create';
   resetIdentityVariantForm(null);
-  identityVariantDialogVisible.value = true;
+  identityVariantEditorActive.value = true;
+  identityWorkspaceTab.value = 'variants';
 };
 
 const openIdentityVariantEdit = (variant: ChannelIdentityVariant) => {
   editingIdentityVariant.value = variant;
   identityVariantDialogMode.value = 'edit';
   resetIdentityVariantForm(variant);
-  identityVariantDialogVisible.value = true;
+  identityVariantEditorActive.value = true;
+  identityWorkspaceTab.value = 'variants';
+};
+
+const selectIdentityWorkspaceVariant = async (variant: ChannelIdentityVariant | null) => {
+  if (identityVariantSubmitting.value) {
+    return;
+  }
+  if (variant
+    ? identityVariantEditorActive.value && identityVariantDialogMode.value === 'edit' && editingIdentityVariant.value?.id === variant.id
+    : !identityVariantEditorActive.value) {
+    return;
+  }
+  if (!(await confirmDiscardIdentityVariantDraft())) {
+    return;
+  }
+  if (variant) {
+    openIdentityVariantEdit(variant);
+  } else {
+    closeIdentityVariantEditor();
+  }
+};
+
+const startIdentityWorkspaceVariantCreate = async () => {
+  if (identityVariantSubmitting.value || !(await confirmDiscardIdentityVariantDraft())) {
+    return;
+  }
+  openIdentityVariantCreate();
+};
+
+const revertIdentityWorkspaceVariant = () => {
+  if (identityVariantDialogMode.value === 'create') {
+    closeIdentityVariantEditor();
+    return;
+  }
+  resetIdentityVariantForm(editingIdentityVariant.value);
 };
 
 let theaterAppearanceEditResumeRunning = false;
@@ -6251,7 +6319,7 @@ const submitIdentityVariantForm = async (options: { closeDialog?: boolean; succe
       resetIdentityVariantForm(savedVariant);
     }
     if (closeDialog) {
-      identityVariantDialogVisible.value = false;
+      identityVariantEditorActive.value = false;
     }
     return true;
   } catch (error: any) {
@@ -6286,7 +6354,7 @@ const deleteIdentityVariant = async (variant: ChannelIdentityVariant) => {
   try {
       await chat.channelIdentityVariantDelete(chat.curChannel.id, variant.id, currentIdentityTargetUserId.value);
     if (editingIdentityVariant.value?.id === variant.id) {
-      identityVariantDialogVisible.value = false;
+      identityVariantEditorActive.value = false;
       editingIdentityVariant.value = null;
     }
     message.success('头像差分已删除');
@@ -17899,272 +17967,97 @@ onBeforeUnmount(() => {
       </n-form-item>
     </n-form>
   </n-modal>
-  <n-modal
-    v-model:show="identityDialogVisible"
-    preset="card"
-    :auto-focus="false"
-    class="identity-dialog"
+  <ChannelIdentityWorkspace
+    v-model:tab="identityWorkspaceTab"
+    :show="identityDialogVisible"
+    :title="identityDialogTitle"
+    :display-name="identityForm.displayName"
+    :color="identityForm.color"
+    :avatar="identityWorkspaceBaseAvatar"
+    :badges="identityWorkspaceBadges"
+    :hint="identityTemporaryHint"
+    :variant-count="currentEditingIdentityVariants.length"
+    :variants-hidden="isEditingTemporaryIdentity"
+    :variant-dirty="identityVariantDraftDirty"
+    :trap-focus="!identityVariantEmojiPickerVisible"
+    @close="requestCloseIdentityWorkspace"
   >
-    <template #header>
-      <div class="identity-dialog__header">
-        <span class="identity-dialog__header-title">{{ identityDialogTitle }}</span>
-        <n-tooltip v-if="identityTemporaryHint" trigger="hover">
-          <template #trigger>
-            <button
-              type="button"
-              class="identity-dialog__header-help"
-              aria-label="查看临时身份说明"
-            >
-              ？
-            </button>
-          </template>
-          {{ identityTemporaryHint }}
-        </n-tooltip>
-      </div>
+    <template #profile>
+      <ChannelIdentityProfilePanel
+        v-model:color-draft="identityColorDraft"
+        :form="identityForm"
+        :mode="identityDialogMode"
+        :avatar="identityWorkspaceBaseAvatar"
+        :avatar-pending="identityAvatarFilePending"
+        :generated-style="identityGeneratedAvatarStyle"
+        :generated-style-options="identityGeneratedAvatarStyleOptions"
+        :show-generated-styles="showIdentityGeneratedAvatarStyles"
+        :character-card-options="characterCardSelectOptions"
+        :managing-bot="isManagingBotIdentity"
+        :managing-other-user="isManagingOtherUserIdentity"
+        :delegated-shared="isDelegatedSharedIdentity"
+        :shared-fields-disabled="sharedSynchronizedFieldsDisabled"
+        :editing-temporary="isEditingTemporaryIdentity"
+        :shared-identity="Boolean(editingIdentity?.sharedIdentityId)"
+        :can-promote-shared="canPromoteEditingIdentityToShared"
+        :submitting="identitySubmitting"
+        :submit-text="identityDialogSubmitText"
+        @color-picker-update="handleIdentityColorPickerUpdate"
+        @color-commit="handleIdentityColorBlur"
+        @color-clear="clearIdentityColor"
+        @avatar-upload="handleIdentityAvatarTrigger"
+        @avatar-text="enableIdentityTextAvatar"
+        @avatar-remove="removeIdentityAvatar"
+        @avatar-style="selectIdentityAvatarStyle"
+        @promote-shared="handlePromoteIdentityToSharedUpdate"
+        @open-decoration="openIdentityDecorationEditor"
+        @open-theater="openIdentityTheaterPresentationEditor"
+        @submit="submitIdentityForm({ closeDialog: false })"
+      />
     </template>
-    <n-form label-width="90px" label-placement="left" class="identity-dialog__form">
-      <n-form-item v-if="isManagingBotIdentity" label="全局资料">
-        <div class="flex flex-col gap-1">
-          <n-switch
-            :value="identityForm.botAppearanceMode !== 'custom'"
-            @update:value="identityForm.botAppearanceMode = $event ? 'inherit' : 'custom'"
-          >
-            <template #checked>跟随 BOT 全局资料</template>
-            <template #unchecked>使用自定义资料</template>
-          </n-switch>
-          <n-text depth="3">BOT 角色设置会在当前世界的所有频道同步；“跟随”仅控制昵称、颜色、头像来源。</n-text>
-        </div>
-      </n-form-item>
-      <n-form-item label="频道昵称">
-        <n-input v-model:value="identityForm.displayName" :disabled="sharedSynchronizedFieldsDisabled" maxlength="32" show-count placeholder="请输入频道内显示的昵称" />
-      </n-form-item>
-      <n-form-item label="昵称颜色">
-        <div class="identity-color-field">
-          <n-color-picker
-            :value="identityForm.color"
-            :modes="['hex']"
-            :show-alpha="false"
-            size="small"
-            class="identity-color-picker"
-            :disabled="sharedSynchronizedFieldsDisabled"
-            @update:value="handleIdentityColorPickerUpdate"
-          />
-          <n-input
-            v-model:value="identityColorDraft"
-            size="small"
-            placeholder="#RRGGBB"
-            class="identity-color-input"
-            :disabled="sharedSynchronizedFieldsDisabled"
-            @blur="handleIdentityColorBlur"
-            @keyup.enter="handleIdentityColorBlur"
-          />
-          <n-button tertiary size="small" :disabled="sharedSynchronizedFieldsDisabled" @click="clearIdentityColor">清除</n-button>
-        </div>
-      </n-form-item>
-      <n-form-item label="频道头像">
-        <div class="identity-avatar-section">
-          <div class="identity-avatar-field">
-            <AvatarVue
-              :size="48"
-              :border="false"
-              :src="identityGeneratedAvatarPreview || identityAvatarDisplay || (identityForm.isTemporary || identityForm.avatarTextStyle ? '' : managedIdentityFallbackAvatar)"
-              :use-text-fallback="identityForm.isTemporary || Boolean(identityForm.avatarTextStyle)"
-              :text-fallback-style="identityForm.avatarTextStyle"
-              :text-fallback-accent-color="identityForm.avatarTextStyle ? identityForm.color : undefined"
-              :fallback-text="identityForm.displayName"
-            />
-            <n-space>
-              <n-button size="small" type="primary" :disabled="sharedSynchronizedFieldsDisabled" @click="handleIdentityAvatarTrigger">上传头像</n-button>
-              <n-button size="small" :type="identityForm.avatarTextStyle ? 'primary' : 'default'" secondary :disabled="sharedSynchronizedFieldsDisabled" @click="enableIdentityTextAvatar">文字头像</n-button>
-              <n-button v-if="identityForm.avatarAttachmentId || identityAvatarFilePending || identityForm.avatarTextStyle" size="small" tertiary :disabled="sharedSynchronizedFieldsDisabled" @click="removeIdentityAvatar">移除</n-button>
-            </n-space>
-          </div>
-          <div
-            v-if="showIdentityGeneratedAvatarStyles"
-            class="identity-avatar-style-picker"
-            role="radiogroup"
-            aria-label="文字头像样式"
-          >
-            <n-tooltip v-for="option in identityGeneratedAvatarStyleOptions" :key="option.style">
-              <template #trigger>
-                <button
-                  type="button"
-                  role="radio"
-                  class="identity-avatar-style-picker__item"
-                  :class="{ 'is-active': identityGeneratedAvatarStyle === option.style }"
-                  :aria-checked="identityGeneratedAvatarStyle === option.style"
-                  :aria-label="option.label"
-                  :disabled="sharedSynchronizedFieldsDisabled"
-                  @click="selectIdentityAvatarStyle(option.style)"
-                >
-                  <img :src="option.src" alt="" draggable="false" />
-                </button>
-              </template>
-              {{ option.label }}
-            </n-tooltip>
-          </div>
-        </div>
-      </n-form-item>
-      <n-form-item label="头像装饰">
-        <div class="flex flex-col gap-2">
-          <n-space align="center">
-            <n-button size="small" type="primary" secondary :disabled="isDelegatedSharedIdentity" @click="openIdentityDecorationEditor">编辑装饰</n-button>
-            <n-tag v-if="identityForm.avatarDecorations.some(item => item.enabled && item.resourceAttachmentId)" size="small" type="success">
-              已配置
-            </n-tag>
-            <n-text v-else depth="3">未配置</n-text>
-          </n-space>
-          <n-text depth="3">
-            {{ editingIdentity?.sharedIdentityId || identityForm.promoteToShared
-              ? '会同步到此角色的其他频道副本，并且只显示在频道消息头像上。'
-              : '仅对当前频道角色生效，并且只会显示在频道消息头像上。' }}
-          </n-text>
-        </div>
-      </n-form-item>
-      <n-form-item label="小剧场演出">
-        <div class="flex flex-col gap-2">
-          <n-space align="center">
-            <n-button size="small" type="primary" secondary :disabled="isDelegatedSharedIdentity" @click="openIdentityTheaterPresentationEditor">编辑演出外观</n-button>
-            <n-tag v-if="identityForm.theaterPresentation" size="small" type="success">已配置</n-tag>
-            <n-text v-else depth="3">未配置</n-text>
-          </n-space>
-          <n-text depth="3">仅用于小剧场消息演出，不影响频道消息头像。</n-text>
-        </div>
-      </n-form-item>
-      <n-alert v-if="isDelegatedSharedIdentity" type="info" :show-icon="false">
-        此角色由本人跨频道共享。管理员可维护会同步到全部副本的头像差分；昵称、颜色、头像、头像装饰及基础小剧场演出只读。当前频道默认身份、文件夹、IC/OOC 映射和人物卡保持独立。
-      </n-alert>
-      <n-form-item v-if="!isEditingTemporaryIdentity && !isManagingBotIdentity" label="绑定人物卡">
-        <n-select
-          v-model:value="identityForm.characterCardId"
-          :options="characterCardSelectOptions"
-          placeholder="选择要绑定的人物卡"
-          clearable
-        />
-      </n-form-item>
-      <n-form-item v-if="!isEditingTemporaryIdentity && !isManagingBotIdentity" class="identity-dialog__check-item">
-        <n-checkbox v-model:checked="identityForm.isDefault">
-          设为频道默认身份
-        </n-checkbox>
-      </n-form-item>
-      <n-form-item
-        v-if="identityDialogMode === 'edit' && !isEditingTemporaryIdentity && !isManagingBotIdentity && !isManagingOtherUserIdentity"
-        label="跨频道角色"
-      >
-        <div class="flex flex-col gap-1">
-          <n-tag v-if="editingIdentity?.sharedIdentityId" type="success" size="small">已启用跨频道同步</n-tag>
-          <n-checkbox
-            v-else-if="canPromoteEditingIdentityToShared"
-            :checked="identityForm.promoteToShared"
-            @update:checked="handlePromoteIdentityToSharedUpdate"
-          >
-            提升为跨频道角色
-            <n-tag size="small" type="warning">实验性</n-tag>
-          </n-checkbox>
-        </div>
-      </n-form-item>
-      <n-form-item v-if="!isManagingBotIdentity" label="切换到此角色时">
-        <div class="identity-mini-mode-switch">
-          <n-button-group size="small">
-            <n-button
-              :type="identityForm.icOocOnActivate === 'ic' ? 'primary' : 'default'"
-              @click="setIdentityActivateMode('ic')"
-            >
-              场内
-            </n-button>
-            <n-button
-              :type="identityForm.icOocOnActivate === 'ooc' ? 'primary' : 'default'"
-              @click="setIdentityActivateMode('ooc')"
-            >
-              场外
-            </n-button>
-          </n-button-group>
-          <span class="identity-mini-mode-switch__hint">切换到此角色时，自动切到{{ identityActivateModeLabel }}（需开启场内场外自动切换）</span>
-        </div>
-      </n-form-item>
-      <n-form-item v-if="identityDialogMode === 'create' && !isManagingBotIdentity" class="identity-dialog__check-item">
-        <n-checkbox v-model:checked="identityForm.isTemporary">
-          创建为临时 NPC 角色
-        </n-checkbox>
-      </n-form-item>
-      <template v-if="!isEditingTemporaryIdentity">
-        <n-divider title-placement="left" class="identity-dialog__variant-divider">头像差分</n-divider>
-        <div v-if="identityDialogMode === 'edit' && editingIdentity" class="identity-variant-section">
-          <div class="identity-variant-section__header">
-            <div>
-              <div class="identity-variant-section__title">{{ editingIdentity.sharedIdentityId ? '配置跨频道同步的头像差分' : '为当前频道角色配置头像差分' }}</div>
-              <div class="identity-variant-section__hint">
-                {{ isManagingBotIdentity ? 'BOT 发送消息时由后端按匹配规则自动选择差分或恢复默认头像' : '可通过已配置的匹配规则切换差分或恢复默认头像' }}
-              </div>
-            </div>
-            <div class="identity-variant-section__actions">
-              <n-button size="small" @click="openIdentityVariantResetConfig">恢复默认头像</n-button>
-              <n-button size="small" type="primary" @click="openIdentityVariantCreate">新增差分</n-button>
-            </div>
-          </div>
-          <div v-if="currentEditingIdentityVariants.length" class="identity-variant-list">
-            <div
-              v-for="variant in currentEditingIdentityVariants"
-              :key="variant.id"
-              class="identity-variant-list__item"
-            >
-              <button
-                type="button"
-                class="identity-variant-list__selector"
-                @click="openIdentityVariantEdit(variant)"
-              >
-                <img
-                  v-if="isVariantSelectorEmojiAttachment(variant.selectorEmoji)"
-                  :src="resolveVariantSelectorEmojiSrc(variant.selectorEmoji)"
-                  :alt="resolveVariantNote(variant)"
-                />
-                <span v-else>{{ variant.selectorEmoji || '🙂' }}</span>
-              </button>
-              <AvatarVue
-                :size="40"
-                :border="false"
-                :src="resolveAttachmentUrl(variant.avatarAttachmentId || identityForm.avatarAttachmentId) || (identityForm.isTemporary || identityForm.avatarTextStyle ? '' : managedIdentityFallbackAvatar)"
-                :use-text-fallback="identityForm.isTemporary || Boolean(identityForm.avatarTextStyle)"
-                :text-fallback-style="identityForm.avatarTextStyle"
-                :text-fallback-accent-color="identityForm.avatarTextStyle ? (variant.color || identityForm.color) : undefined"
-                :fallback-text="variant.displayName || identityForm.displayName"
-              />
-              <div class="identity-variant-list__meta">
-                <div class="identity-variant-list__name-row">
-                  <span class="identity-variant-list__name">{{ resolveVariantNote(variant) }}</span>
-                  <n-tag size="small" type="info">={{ variant.keyword }}</n-tag>
-                  <n-tag v-if="variant.enabled === false" size="small" type="warning">停用</n-tag>
-                </div>
-                <div class="identity-variant-list__sub">
-                  <span v-if="variant.displayName">覆盖昵称：{{ variant.displayName }}</span>
-                  <span v-else>仅覆盖头像</span>
-                  <span v-if="variant.color">颜色：{{ variant.color }}</span>
-                </div>
-              </div>
-              <div class="identity-variant-list__actions">
-                <n-button text size="small" @click="openIdentityVariantEdit(variant)">编辑</n-button>
-                <n-button text size="small" type="error" @click="deleteIdentityVariant(variant)">删除</n-button>
-              </div>
-            </div>
-          </div>
-          <n-empty v-else description="当前角色还没有头像差分">
-            <template #extra>
-              <n-button size="small" type="primary" @click="openIdentityVariantCreate">创建首个差分</n-button>
-            </template>
-          </n-empty>
-        </div>
-        <n-alert v-else type="info" :show-icon="false">
-          请先保存频道角色，随后即可继续配置头像差分。
-        </n-alert>
-      </template>
-    </n-form>
-    <template #footer>
-      <n-space justify="end">
-        <n-button @click="closeIdentityDialog">取消</n-button>
-        <n-button type="primary" :loading="identitySubmitting" @click="submitIdentityForm">{{ identityDialogSubmitText }}</n-button>
-      </n-space>
+    <template #variants>
+      <ChannelIdentityVariantPanel
+        v-model:color-draft="identityVariantColorDraft"
+        :available="!identityWorkspaceVariantUnavailableReason"
+        :unavailable-reason="identityWorkspaceVariantUnavailableReason"
+        :variants="currentEditingIdentityVariants"
+        :base-avatar="identityWorkspaceBaseAvatar"
+        :base-name="identityForm.displayName"
+        :base-color="identityForm.color"
+        :managing-bot="isManagingBotIdentity"
+        :shared-identity="Boolean(editingIdentity?.sharedIdentityId)"
+        :editor-active="identityVariantEditorActive"
+        :editor-mode="identityVariantDialogMode"
+        :editing-variant-id="editingIdentityVariant?.id || ''"
+        :form="identityVariantForm"
+        :avatar-preview="identityVariantAvatarPreview"
+        :dirty="identityVariantDraftDirty"
+        :submitting="identityVariantSubmitting"
+        :reset-form="identityVariantResetForm"
+        :reset-rule="{
+          mode: identityForm.variantResetMatchMode,
+          config: identityForm.variantResetMatchConfig,
+          content: identityForm.variantResetMatchContent,
+        }"
+        :identity-submitting="identitySubmitting"
+        @select="selectIdentityWorkspaceVariant"
+        @create="startIdentityWorkspaceVariantCreate"
+        @save="submitIdentityVariantForm({ closeDialog: false })"
+        @revert="revertIdentityWorkspaceVariant"
+        @delete="deleteIdentityVariant"
+        @avatar-upload="handleIdentityVariantAvatarTrigger"
+        @avatar-remove="removeIdentityVariantAvatar"
+        @pick-emoji="identityVariantEmojiPickerVisible = true"
+        @open-theater="openIdentityVariantTheaterPresentationEditor"
+        @color-picker-update="handleIdentityVariantColorPickerUpdate"
+        @color-commit="handleIdentityVariantColorBlur"
+        @color-clear="clearIdentityVariantColor"
+        @reset-save="applyIdentityVariantResetConfig"
+        @save-identity="submitIdentityForm({ closeDialog: false })"
+        @edit-profile="identityWorkspaceTab = 'profile'"
+      />
     </template>
-  </n-modal>
+  </ChannelIdentityWorkspace>
   <n-modal
     :show="identityDecorationEditorVisible"
     @update:show="handleIdentityDecorationEditorShow"
@@ -18183,237 +18076,6 @@ onBeforeUnmount(() => {
     <template #footer>
       <n-space justify="end">
         <n-button :loading="identitySubmitting" @click="handleIdentityDecorationEditorShow(false)">完成</n-button>
-      </n-space>
-    </template>
-  </n-modal>
-  <n-modal
-    v-model:show="identityVariantResetDialogVisible"
-    preset="card"
-    title="恢复默认规则"
-    :auto-focus="false"
-    class="identity-variant-dialog"
-  >
-    <n-form label-width="90px" label-placement="left">
-      <n-form-item>
-        <template #label>
-          <span class="identity-variant-match-label">
-            匹配式
-            <n-popover trigger="hover" placement="right-start" :width="260">
-              <template #trigger>
-                <button type="button" class="identity-variant-match-help" aria-label="匹配式说明">?</button>
-              </template>
-              <div class="identity-variant-match-help-content">
-                <div><strong>前缀匹配：</strong>消息以指定符号和匹配内容开头时恢复默认头像，并移除匹配头。</div>
-                <div><strong>关键词匹配：</strong>消息包含关键词时恢复；| 表示“或”，&amp; 表示“与”。</div>
-                <div><strong>正则表达式匹配：</strong>使用正则规则匹配消息内容；无效规则不会触发。</div>
-              </div>
-            </n-popover>
-          </span>
-        </template>
-        <n-select v-model:value="identityVariantResetForm.matchMode" :options="identityVariantMatchModeOptions" />
-      </n-form-item>
-      <n-form-item>
-        <div class="identity-variant-match-grid">
-          <label class="identity-variant-match-field">
-            <span>{{ identityVariantResetForm.matchMode === 'prefix' ? '前缀符号' : identityVariantResetForm.matchMode === 'keyword' ? '关键词匹配类型' : '正则表达式匹配式' }}</span>
-            <n-input
-              v-if="identityVariantResetForm.matchMode === 'prefix'"
-              v-model:value="activeIdentityVariantResetMatchDraft.config"
-              maxlength="8"
-              placeholder="="
-            />
-            <n-select
-              v-else-if="identityVariantResetForm.matchMode === 'keyword'"
-              v-model:value="activeIdentityVariantResetMatchDraft.config"
-              :options="identityVariantKeywordMatchOptions"
-            />
-            <n-select
-              v-else
-              v-model:value="activeIdentityVariantResetMatchDraft.config"
-              :options="identityVariantRegexMatchOptions"
-            />
-          </label>
-          <label class="identity-variant-match-field">
-            <span>匹配内容</span>
-            <n-input
-              v-model:value="activeIdentityVariantResetMatchDraft.content"
-              maxlength="255"
-              :placeholder="identityVariantResetMatchContentPlaceholder"
-            />
-          </label>
-        </div>
-      </n-form-item>
-    </n-form>
-    <template #footer>
-      <n-space justify="end">
-        <n-button @click="identityVariantResetDialogVisible = false">取消</n-button>
-        <n-button type="primary" :loading="identitySubmitting" @click="applyIdentityVariantResetConfig">确定</n-button>
-      </n-space>
-    </template>
-  </n-modal>
-  <n-modal
-    v-model:show="identityVariantDialogVisible"
-    preset="card"
-    :title="identityVariantDialogMode === 'create' ? '新增头像差分' : '编辑头像差分'"
-    :auto-focus="false"
-    class="identity-variant-dialog"
-  >
-    <n-form label-width="90px" label-placement="left">
-      <n-form-item label="切换表情">
-        <div class="identity-variant-selector-field">
-          <button
-            type="button"
-            class="identity-variant-selector-field__preview"
-            @click="identityVariantEmojiPickerVisible = true"
-          >
-            <img
-              v-if="isVariantSelectorEmojiAttachment(identityVariantForm.selectorEmoji)"
-              :src="resolveVariantSelectorEmojiSrc(identityVariantForm.selectorEmoji)"
-              alt="差分表情"
-            />
-            <span v-else>{{ identityVariantForm.selectorEmoji || '🙂' }}</span>
-          </button>
-          <n-space>
-            <n-button size="small" type="primary" @click="identityVariantEmojiPickerVisible = true">选择表情</n-button>
-            <n-button
-              v-if="identityVariantForm.selectorEmoji"
-              size="small"
-              tertiary
-              @click="identityVariantForm.selectorEmoji = ''"
-            >
-              清除
-            </n-button>
-          </n-space>
-        </div>
-      </n-form-item>
-      <n-form-item>
-        <template #label>
-          <span class="identity-variant-match-label">
-            匹配式
-            <n-popover trigger="hover" placement="right-start" :width="260">
-              <template #trigger>
-                <button type="button" class="identity-variant-match-help" aria-label="匹配式说明">?</button>
-              </template>
-              <div class="identity-variant-match-help-content">
-                <div><strong>前缀匹配：</strong>消息以指定符号和关键词开头时触发，例如 =笑。</div>
-                <div><strong>关键词匹配：</strong>消息包含关键词时触发；| 表示“或”，&amp; 表示“与”。</div>
-                <div><strong>正则表达式匹配：</strong>使用正则规则匹配消息内容；无效规则不会触发。</div>
-              </div>
-            </n-popover>
-          </span>
-        </template>
-        <n-select v-model:value="identityVariantForm.matchMode" :options="identityVariantMatchModeOptions" />
-      </n-form-item>
-      <n-form-item>
-        <div class="identity-variant-match-grid">
-          <label class="identity-variant-match-field">
-            <span>{{ identityVariantForm.matchMode === 'prefix' ? '前缀符号' : identityVariantForm.matchMode === 'keyword' ? '关键词匹配类型' : '正则表达式匹配式' }}</span>
-            <n-input
-              v-if="identityVariantForm.matchMode === 'prefix'"
-              v-model:value="activeIdentityVariantMatchDraft.config"
-              maxlength="8"
-              placeholder="="
-            />
-            <n-select
-              v-else-if="identityVariantForm.matchMode === 'keyword'"
-              v-model:value="activeIdentityVariantMatchDraft.config"
-              :options="identityVariantKeywordMatchOptions"
-            />
-            <n-select
-              v-else
-              v-model:value="activeIdentityVariantMatchDraft.config"
-              :options="identityVariantRegexMatchOptions"
-            />
-          </label>
-          <label class="identity-variant-match-field">
-            <span>匹配内容</span>
-            <n-input
-              v-model:value="activeIdentityVariantMatchDraft.content"
-              maxlength="255"
-              :placeholder="identityVariantMatchContentPlaceholder"
-            />
-          </label>
-        </div>
-      </n-form-item>
-      <n-form-item label="备注">
-        <n-input
-          v-model:value="identityVariantForm.note"
-          maxlength="255"
-          placeholder="例如 战斗中 / 严肃 / 开心"
-        />
-      </n-form-item>
-      <n-form-item label="差分头像">
-        <div class="identity-avatar-field">
-          <AvatarVue
-            :size="48"
-            :border="false"
-            :src="identityVariantAvatarPreview || resolveAttachmentUrl(identityVariantForm.avatarAttachmentId) || identityAvatarDisplay || (identityForm.isTemporary || identityForm.avatarTextStyle ? '' : managedIdentityFallbackAvatar)"
-            :use-text-fallback="identityForm.isTemporary || Boolean(identityForm.avatarTextStyle)"
-            :text-fallback-style="identityForm.avatarTextStyle"
-            :text-fallback-accent-color="identityForm.avatarTextStyle ? (identityVariantForm.color || identityForm.color) : undefined"
-            :fallback-text="identityVariantForm.displayName || identityForm.displayName"
-          />
-          <n-space>
-            <n-button size="small" type="primary" @click="handleIdentityVariantAvatarTrigger">上传头像</n-button>
-            <n-button
-              v-if="identityVariantForm.avatarAttachmentId || identityVariantAvatarPreview"
-              size="small"
-              tertiary
-              @click="removeIdentityVariantAvatar"
-            >
-              移除
-            </n-button>
-          </n-space>
-        </div>
-      </n-form-item>
-      <n-form-item label="覆盖昵称">
-        <n-input
-          v-model:value="identityVariantForm.displayName"
-          maxlength="32"
-          placeholder="留空则沿用频道角色昵称"
-        />
-      </n-form-item>
-      <n-form-item label="覆盖颜色">
-        <div class="identity-color-field">
-          <n-color-picker
-            :value="identityVariantForm.color"
-            :modes="['hex']"
-            :show-alpha="false"
-            size="small"
-            class="identity-color-picker"
-            @update:value="handleIdentityVariantColorPickerUpdate"
-          />
-          <n-input
-            v-model:value="identityVariantColorDraft"
-            size="small"
-            placeholder="#RRGGBB"
-            class="identity-color-input"
-            @blur="handleIdentityVariantColorBlur"
-            @keyup.enter="handleIdentityVariantColorBlur"
-          />
-          <n-button tertiary size="small" @click="clearIdentityVariantColor">清除</n-button>
-        </div>
-      </n-form-item>
-      <n-form-item label="小剧场演出">
-        <div class="flex flex-col gap-2">
-          <n-space align="center">
-            <n-button size="small" type="primary" secondary @click="openIdentityVariantTheaterPresentationEditor">编辑差分演出</n-button>
-            <n-tag v-if="Object.keys(identityVariantForm.theaterPresentation).length" size="small" type="success">已设置差分</n-tag>
-            <n-text v-else depth="3">全部继承</n-text>
-          </n-space>
-          <n-text depth="3">各部分可独立选择继承、自定义或清除。</n-text>
-        </div>
-      </n-form-item>
-      <n-form-item>
-        <n-checkbox v-model:checked="identityVariantForm.enabled">
-          启用该差分
-        </n-checkbox>
-      </n-form-item>
-    </n-form>
-    <template #footer>
-      <n-space justify="end">
-        <n-button @click="closeIdentityVariantDialog">取消</n-button>
-        <n-button type="primary" :loading="identityVariantSubmitting" @click="submitIdentityVariantForm">保存</n-button>
       </n-space>
     </template>
   </n-modal>
