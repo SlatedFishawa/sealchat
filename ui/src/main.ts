@@ -66,7 +66,7 @@ import { useChatStore } from './stores/chat'
 
 router.beforeEach(async (to, from, next) => {
   // 允许未登录访问的公开路由
-  const publicRoutes = ['user-signin', 'user-signup', 'password-recovery', 'world-private-hint', 'observer-entry'];
+  const publicRoutes = ['user-signin', 'user-signup', 'password-recovery', 'world-private-hint', 'observer-entry', 'log-public'];
   if (publicRoutes.includes(to.name as string)) {
     return next();
   }

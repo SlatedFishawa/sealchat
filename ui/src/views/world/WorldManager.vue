@@ -73,6 +73,7 @@ watch(() => [props.worldId, props.visible] as const, async ([id, visible]) => {
       visibility: detail.world?.visibility,
       messageSortBasis: resolveMessageSortBasis([detail.world?.messageSortBasis], utils.config?.messageSortBasis),
       allowAdminEditMessages: detail.world?.allowAdminEditMessages ?? false,
+      allowMemberAccessLogLayout: (detail.world as any)?.allowMemberAccessLogLayout ?? false,
       allowManageOtherUserChannelIdentities: detail.world?.allowManageOtherUserChannelIdentities ?? false,
       allowMemberEditKeywords: detail.world?.allowMemberEditKeywords ?? false,
       strictWhisperPrivacy: detail.world?.strictWhisperPrivacy ?? true,
@@ -270,6 +271,13 @@ const getDescriptionCountLabel = (value?: string) => {
             <div class="sc-manage-row__label">允许管理员编辑其他成员发言</div>
           </div>
           <n-switch v-model:value="form.allowAdminEditMessages" class="sc-manage-row__control" />
+        </div>
+        <div class="sc-manage-row">
+          <div class="sc-manage-row__text">
+            <div class="sc-manage-row__label">允许世界成员进入 LOG 排版器</div>
+            <div class="sc-manage-row__hint">成员可通过设计链接参与排版并编辑自己的消息；不会授予编辑他人消息、调整来源或发布的权限。</div>
+          </div>
+          <n-switch v-model:value="form.allowMemberAccessLogLayout" class="sc-manage-row__control" />
         </div>
         <div class="sc-manage-row">
           <div class="sc-manage-row__text">

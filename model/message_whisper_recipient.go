@@ -89,28 +89,30 @@ func normalizeWhisperRecipientIDs(userIDs []string) []string {
 
 // ReplaceWhisperRecipients 全量替换消息的收件人记录
 func ReplaceWhisperRecipients(messageID string, userIDs []string) error {
+	return GetDB().Transaction(func(tx *gorm.DB) error { return ReplaceWhisperRecipientsTx(tx, messageID, userIDs) })
+}
+
+func ReplaceWhisperRecipientsTx(tx *gorm.DB, messageID string, userIDs []string) error {
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return nil
 	}
 	normalizedIDs := normalizeWhisperRecipientIDs(userIDs)
-	return GetDB().Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("message_id = ?", messageID).Delete(&MessageWhisperRecipientModel{}).Error; err != nil {
-			return err
+	if err := tx.Where("message_id = ?", messageID).Delete(&MessageWhisperRecipientModel{}).Error; err != nil {
+		return err
+	}
+	if len(normalizedIDs) == 0 {
+		return nil
+	}
+	recipients := make([]MessageWhisperRecipientModel, len(normalizedIDs))
+	for i, uid := range normalizedIDs {
+		recipients[i] = MessageWhisperRecipientModel{
+			MessageID: messageID,
+			UserID:    uid,
 		}
-		if len(normalizedIDs) == 0 {
-			return nil
-		}
-		recipients := make([]MessageWhisperRecipientModel, len(normalizedIDs))
-		for i, uid := range normalizedIDs {
-			recipients[i] = MessageWhisperRecipientModel{
-				MessageID: messageID,
-				UserID:    uid,
-			}
-			recipients[i].Init()
-		}
-		return tx.Create(&recipients).Error
-	})
+		recipients[i].Init()
+	}
+	return tx.Create(&recipients).Error
 }
 
 // HasWhisperRecipient 判断用户是否为消息收件人

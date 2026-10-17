@@ -179,6 +179,11 @@ const returnAfterSignIn = () => {
   if (typeof request === 'string' && /^[A-Za-z0-9_-]{43}$/.test(request)) {
     return router.replace({ name: 'mcp-oauth-consent', query: { request } });
   }
+  // 仅允许回跳到 LOG 设计入口这一种站内相对路由，避免开放重定向。
+  const redirect = router.currentRoute.value.query.redirect;
+  if (typeof redirect === 'string' && /^\/log\/layout\/[a-z0-9]{4,64}$/.test(redirect)) {
+    return router.replace(redirect);
+  }
   return router.replace({ name: 'home' });
 };
 

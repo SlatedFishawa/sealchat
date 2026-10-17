@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "sealchat-starter",
+  "version": "1.0.0",
+  "name": "基础排版",
+  "license": "MIT",
+  "minRendererVersion": "1.0.0",
+  "tokens": {},
+  "templates": {
+    "message": "<article class=\"log-message\"><header data-log-text=\"speaker.name\"></header><div data-log-slot=\"body\"></div></article>",
+    "heading": "<h2 data-log-text=\"text\"></h2>",
+    "cover": "<section class=\"log-cover\"><h1 data-log-text=\"title\"></h1><p data-log-text=\"subtitle\"></p></section>",
+    "body": "<section><div data-log-slot=\"body\"></div></section>",
+    "pageBreak": "<div class=\"log-page-break\"></div>",
+    "transition": "<p data-log-text=\"label\"></p>",
+    "imagePlate": "<figure><img data-log-bind-src=\"assetUrl\"><figcaption data-log-text=\"caption\"></figcaption></figure>",
+    "toc": "<section class=\"log-toc\"></section>"
+  },
+  "css": ".log-message { margin-bottom: 1em; } .log-message header { font-weight: bold; } .log-cover { break-after: page; text-align: center; } .log-page-break { break-after: page; }",
+  "rules": [{"templateId": "message"}],
+  "settingsSchema": {},
+  "assets": []
+}

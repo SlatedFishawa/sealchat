@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"regexp"
 	"sealchat/pkg/contentstats"
@@ -271,7 +270,7 @@ func resolveMessageDisplayOrderForPlacement(db *gorm.DB, channelID string, place
 	switch {
 	case beforeMsg.ID != "" && afterMsg.ID != "":
 		if beforeMsg.DisplayOrder <= afterMsg.DisplayOrder+displayOrderEpsilon {
-			if err := model.RebalanceChannelDisplayOrder(channelID); err != nil {
+			if err := model.RebalanceChannelDisplayOrderTx(db, channelID); err != nil {
 				return 0, err
 			}
 			if err := loadNeighbor(beforeID, &beforeMsg); err != nil {
@@ -828,14 +827,19 @@ func apiMessageContext(ctx *ChatContext, data *struct {
 }
 
 type messageDeletePayload struct {
-	ChannelID string `json:"channel_id"`
-	MessageID string `json:"message_id"`
+	ChannelID       string `json:"channel_id"`
+	MessageID       string `json:"message_id"`
+	ExpectedVersion *int64 `json:"expected_version"`
+	ClientOpID      string `json:"client_op_id"`
 }
 
 type messageRemovePayload struct {
-	ChannelID  string   `json:"channel_id"`
-	MessageID  string   `json:"message_id"`
-	MessageIDs []string `json:"message_ids"`
+	ChannelID        string           `json:"channel_id"`
+	MessageID        string           `json:"message_id"`
+	MessageIDs       []string         `json:"message_ids"`
+	ExpectedVersion  *int64           `json:"expected_version"`
+	ExpectedVersions map[string]int64 `json:"expected_versions"`
+	ClientOpID       string           `json:"client_op_id"`
 }
 
 type messageRemoveResult struct {
@@ -844,6 +848,13 @@ type messageRemoveResult struct {
 }
 
 func apiMessageDelete(ctx *ChatContext, data *messageDeletePayload) (any, error) {
+	opHash, replay, err := service.MessageOperationReplay(ctx.User.ID, data.ClientOpID, "message.delete", data)
+	if err != nil {
+		return nil, err
+	}
+	if replay != nil {
+		return replay, nil
+	}
 	db := model.GetDB()
 	item := model.MessageModel{}
 	db.Where("channel_id = ? and id = ?", data.ChannelID, data.MessageID).Limit(1).Find(&item)
@@ -852,11 +863,24 @@ func apiMessageDelete(ctx *ChatContext, data *messageDeletePayload) (any, error)
 			return nil, fmt.Errorf("消息已删除，无法撤回")
 		}
 		if item.UserID != ctx.User.ID {
+			if data.ExpectedVersion != nil || data.ClientOpID != "" {
+				return nil, fmt.Errorf("PERMISSION_DENIED: 无权撤回此消息")
+			}
 			return nil, nil // 失败了
 		}
 
 		item.IsRevoked = true
-		db.Model(&item).Update("is_revoked", true)
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := model.MessageUpdateTx(tx, item.ID, data.ExpectedVersion, map[string]any{"is_revoked": true}); err != nil {
+				return err
+			}
+			if err := tx.Where("id = ?", item.ID).Take(&item).Error; err != nil {
+				return err
+			}
+			return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, map[string]any{"success": true, "version": item.Version})
+		}); err != nil {
+			return nil, err
+		}
 		service.TTSCancelMessage(item.ID)
 
 		var channel model.ChannelModel
@@ -866,13 +890,19 @@ func apiMessageDelete(ctx *ChatContext, data *messageDeletePayload) (any, error)
 		}
 		channelData := channel.ToProtocolType()
 
-		ctx.BroadcastEventInChannel(data.ChannelID, &protocol.Event{
+		event := &protocol.Event{
 			// 协议规定: 事件中必须含有 channel，message，user
 			Type:    protocol.EventMessageDeleted,
 			Message: item.ToProtocolType2(channelData),
 			Channel: channelData,
 			User:    ctx.User.ToProtocolType(),
-		})
+		}
+		if item.IsWhisper {
+			recipients := resolveWhisperRecipients(item.WhisperTo, model.GetWhisperRecipientIDs(item.ID), item.UserID)
+			ctx.BroadcastEventInChannelToUsers(data.ChannelID, append(recipients, item.UserID), event)
+		} else {
+			ctx.BroadcastEventInChannel(data.ChannelID, event)
+		}
 
 		_ = model.WebhookEventLogAppendForMessage(data.ChannelID, "message-deleted", item.ID)
 
@@ -881,10 +911,20 @@ func apiMessageDelete(ctx *ChatContext, data *messageDeletePayload) (any, error)
 		}{Success: true}, nil
 	}
 
+	if data.ExpectedVersion != nil || data.ClientOpID != "" {
+		return nil, fmt.Errorf("NOT_FOUND: 消息不存在")
+	}
 	return nil, nil
 }
 
 func apiMessageRemove(ctx *ChatContext, data *messageRemovePayload) (any, error) {
+	opHash, replay, replayErr := service.MessageOperationReplay(ctx.User.ID, data.ClientOpID, "message.remove", data)
+	if replayErr != nil {
+		return nil, replayErr
+	}
+	if replay != nil {
+		return replay, nil
+	}
 	channelID := strings.TrimSpace(data.ChannelID)
 	ids := make([]string, 0, len(data.MessageIDs)+1)
 	if trimmed := strings.TrimSpace(data.MessageID); trimmed != "" {
@@ -892,6 +932,15 @@ func apiMessageRemove(ctx *ChatContext, data *messageRemovePayload) (any, error)
 	}
 	ids = append(ids, collectMessageIDs(data.MessageIDs)...)
 	ids = lo.Uniq(ids)
+	if len(ids) > 200 {
+		return nil, fmt.Errorf("TOO_LARGE: 每次最多删除 200 条消息")
+	}
+	if data.ExpectedVersion != nil && len(ids) == 1 {
+		data.ExpectedVersions = map[string]int64{ids[0]: *data.ExpectedVersion}
+	}
+	if err := service.ValidateMessageExpectedVersions(ids, data.ExpectedVersions); err != nil {
+		return nil, err
+	}
 	if channelID == "" || len(ids) == 0 {
 		return nil, fmt.Errorf("channel_id 和 message_id/message_ids 不能为空")
 	}
@@ -946,14 +995,24 @@ func apiMessageRemove(ctx *ChatContext, data *messageRemovePayload) (any, error)
 	db := model.GetDB()
 	var rowsAffected int64
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&model.MessageModel{}).
-			Where("id IN ? AND channel_id = ? AND is_deleted = ?", ids, channelID, false).
-			Updates(updateData)
-		if result.Error != nil {
-			return result.Error
+		for _, msg := range messages {
+			var expected *int64
+			if data.ExpectedVersions != nil {
+				v := data.ExpectedVersions[msg.ID]
+				expected = &v
+			}
+			if err := model.MessageUpdateTx(tx, msg.ID, expected, updateData); err != nil {
+				return err
+			}
+			rowsAffected++
+			if err := tx.Where("id = ?", msg.ID).Take(msg).Error; err != nil {
+				return err
+			}
 		}
-		rowsAffected = result.RowsAffected
-		return invalidateMessageMentionWatermarksTx(tx, mentionInvalidationPlans)
+		if err := invalidateMessageMentionWatermarksTx(tx, mentionInvalidationPlans); err != nil {
+			return err
+		}
+		return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, &messageRemoveResult{Success: true, MessageIDs: ids})
 	}); err != nil {
 		return nil, err
 	}
@@ -1016,6 +1075,31 @@ func hydrateMessagesForBroadcast(messages []*model.MessageModel) {
 	if len(messages) == 0 {
 		return
 	}
+	// Reload persisted snapshots together with trigger-maintained versions.
+	// Pairing a new version with pre-commit content would defeat client CAS.
+	for start := 0; start < len(messages); start += 200 {
+		end := start + 200
+		if end > len(messages) {
+			end = len(messages)
+		}
+		ids := []string{}
+		targets := map[string]*model.MessageModel{}
+		for _, m := range messages[start:end] {
+			ids = append(ids, m.ID)
+			targets[m.ID] = m
+			m.Version = 0
+		}
+		var fresh []model.MessageModel
+		if model.GetDB().Where("id IN ?", ids).Find(&fresh).Error == nil {
+			for _, m := range fresh {
+				target := targets[m.ID]
+				user, member := target.User, target.Member
+				*target = m
+				target.User = user
+				target.Member = member
+			}
+		}
+	}
 
 	utils.QueryOneToManyMap(model.GetDB(), messages, func(i *model.MessageModel) []string {
 		if i.QuoteID == "" {
@@ -1026,8 +1110,11 @@ func hydrateMessagesForBroadcast(messages []*model.MessageModel) {
 		if len(x) == 0 {
 			return
 		}
+		if x[0].IsWhisper || x[0].IsRevoked || x[0].IsDeleted || x[0].ChannelID != i.ChannelID {
+			return
+		}
 		i.Quote = x[0]
-	}, "id, content, created_at, user_id, is_revoked, is_deleted, whisper_to, channel_id, whisper_sender_member_id, whisper_sender_member_name, whisper_sender_user_name, whisper_sender_user_nick, whisper_target_member_id, whisper_target_member_name, whisper_target_user_name, whisper_target_user_nick")
+	}, "id, version, content, created_at, user_id, is_whisper, is_revoked, is_deleted, whisper_to, channel_id, whisper_sender_member_id, whisper_sender_member_name, whisper_sender_user_name, whisper_sender_user_nick, whisper_target_member_id, whisper_target_member_name, whisper_target_user_name, whisper_target_user_nick")
 
 	var whisperMsgIDs []string
 	for _, item := range messages {
@@ -1430,43 +1517,7 @@ const channelMemberRoleRankAdmin = 3
 const channelMemberRoleRankOwner = 4
 
 func getChannelMemberRoleRank(channel *model.ChannelModel, channelID, userID string) int {
-	if strings.TrimSpace(userID) == "" {
-		return channelMemberRoleRankNone
-	}
-	if channel != nil && channel.UserID == userID {
-		return channelMemberRoleRankOwner
-	}
-	roleIDs, err := model.UserRoleMappingListByUserID(userID, channelID, "channel")
-	rank := channelMemberRoleRankNone
-	if err == nil {
-		for _, roleID := range roleIDs {
-			switch {
-			case strings.HasSuffix(roleID, "-owner"):
-				return channelMemberRoleRankOwner
-			case strings.HasSuffix(roleID, "-admin"):
-				if rank < channelMemberRoleRankAdmin {
-					rank = channelMemberRoleRankAdmin
-				}
-			case strings.HasSuffix(roleID, "-member"):
-				if rank < channelMemberRoleRankMember {
-					rank = channelMemberRoleRankMember
-				}
-			case strings.HasSuffix(roleID, "-spectator"):
-				if rank < channelMemberRoleRankSpectator {
-					rank = channelMemberRoleRankSpectator
-				}
-			}
-		}
-	}
-	if channel != nil && strings.TrimSpace(channel.WorldID) != "" {
-		if service.IsWorldOwner(channel.WorldID, userID) {
-			return channelMemberRoleRankOwner
-		}
-		if service.IsWorldAdmin(channel.WorldID, userID) && rank < channelMemberRoleRankAdmin {
-			rank = channelMemberRoleRankAdmin
-		}
-	}
-	return rank
+	return service.ChannelMemberRoleRank(channel, channelID, userID)
 }
 
 func isChannelMemberOrAbove(channel *model.ChannelModel, channelID, userID string) bool {
@@ -3065,6 +3116,8 @@ func apiMessageList(ctx *ChatContext, data *struct {
 	}, nil
 }
 
+// Legacy in-process callers keep their payload shape; both transports use the
+// same implementation and transaction below.
 func apiMessageUpdate(ctx *ChatContext, data *struct {
 	ChannelID         string   `json:"channel_id"`
 	MessageID         string   `json:"message_id"`
@@ -3074,8 +3127,39 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 	IdentityID        *string  `json:"identity_id"`
 	IdentityVariantID *string  `json:"identity_variant_id"`
 }) (any, error) {
-	if strings.TrimSpace(data.Content) == "" {
+	return apiMessageUpdateVersioned(ctx, &messageUpdatePayload{ChannelID: data.ChannelID, MessageID: data.MessageID, Content: data.Content, WhisperToIds: data.WhisperToIds, ICMode: data.ICMode, IdentityID: data.IdentityID, IdentityVariantID: data.IdentityVariantID})
+}
+
+type messageUpdatePayload struct {
+	ChannelID         string                          `json:"channel_id"`
+	MessageID         string                          `json:"message_id"`
+	Content           string                          `json:"content"`
+	WhisperToIds      []string                        `json:"whisper_to_ids"`
+	ICMode            string                          `json:"ic_mode"`
+	IdentityID        *string                         `json:"identity_id"`
+	IdentityVariantID *string                         `json:"identity_variant_id"`
+	ExpectedVersion   *int64                          `json:"expected_version"`
+	ClientOpID        string                          `json:"client_op_id"`
+	AppearancePatch   *service.MessageAppearancePatch `json:"appearance_patch"`
+}
+
+func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (any, error) {
+	versioned := data.ExpectedVersion != nil || data.ClientOpID != "" || data.AppearancePatch != nil
+	opHash, replay, replayErr := service.MessageOperationReplay(ctx.User.ID, data.ClientOpID, "message.update", data)
+	if replayErr != nil {
+		return nil, replayErr
+	}
+	if replay != nil {
+		return replay, nil
+	}
+	if strings.TrimSpace(data.Content) == "" && data.AppearancePatch == nil {
 		return nil, fmt.Errorf("消息内容不能为空")
+	}
+	if data.AppearancePatch != nil && (data.IdentityID != nil || data.IdentityVariantID != nil) {
+		return nil, fmt.Errorf("INVALID_PATCH: 身份和外观不可同时修改")
+	}
+	if data.ExpectedVersion != nil && (*data.ExpectedVersion < 1 || *data.ExpectedVersion >= service.LogMaxVersion) {
+		return nil, fmt.Errorf("INVALID_INPUT: 消息版本无效")
 	}
 
 	icMode := strings.ToLower(strings.TrimSpace(data.ICMode))
@@ -3086,12 +3170,27 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 	db := model.GetDB()
 
 	var msg model.MessageModel
-	db.Where("id = ? AND channel_id = ?", data.MessageID, data.ChannelID).Limit(1).Find(&msg)
+	if err := db.Where("id = ? AND channel_id = ?", data.MessageID, data.ChannelID).Limit(1).Find(&msg).Error; err != nil {
+		return nil, err
+	}
 	if msg.ID == "" {
+		if versioned {
+			return nil, fmt.Errorf("NOT_FOUND: 消息不存在")
+		}
 		return nil, nil
 	}
 	if msg.IsRevoked || msg.IsDeleted {
+		if versioned {
+			return nil, fmt.Errorf("NOT_FOUND: 消息已撤回或删除")
+		}
 		return nil, nil
+	}
+	beforeSnapshot := service.MessageAppearanceSnapshot(&msg)
+	if data.ExpectedVersion != nil && msg.Version != *data.ExpectedVersion {
+		return nil, model.ErrMessageVersionConflict
+	}
+	if data.AppearancePatch != nil && strings.TrimSpace(data.Content) == "" {
+		data.Content = msg.Content
 	}
 
 	channel, _ := model.ChannelGet(data.ChannelID)
@@ -3118,7 +3217,10 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 		}
 	}
 	if !isAuthor && !isAdminEdit {
-		return nil, nil
+		return nil, fmt.Errorf("PERMISSION_DENIED: 无权编辑此消息")
+	}
+	if (versioned || !isAuthor) && !service.CanEditHistoricalMessage(channel, &msg, ctx.User.ID) {
+		return nil, fmt.Errorf("PERMISSION_DENIED: 消息不可见或不可编辑")
 	}
 	channelData := channel.ToProtocolType()
 	effectiveBotFeatureEnabled := service.IsBotFeatureEffectivelyEnabled(channel)
@@ -3139,14 +3241,14 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 
 	identityChanged := false
 	var resolvedIdentityProto *protocol.ChannelIdentity
-	if (data.IdentityID != nil || data.IdentityVariantID != nil) && isAuthor {
+	if data.IdentityID != nil || data.IdentityVariantID != nil {
 		rawIdentityID := strings.TrimSpace(msg.SenderIdentityID)
 		if data.IdentityID != nil {
 			rawIdentityID = strings.TrimSpace(*data.IdentityID)
 		}
-		identity, err := service.ChannelIdentityValidateMessageIdentity(ctx.User.ID, data.ChannelID, rawIdentityID)
+		identity, err := service.ChannelIdentityValidateMessageIdentity(msg.UserID, data.ChannelID, rawIdentityID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("INVALID_IDENTITY: %w", err)
 		}
 		rawVariantID := strings.TrimSpace(msg.SenderIdentityVariantID)
 		if data.IdentityID != nil && rawIdentityID == "" {
@@ -3155,9 +3257,9 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 		if data.IdentityVariantID != nil {
 			rawVariantID = strings.TrimSpace(*data.IdentityVariantID)
 		}
-		variant, err := service.ChannelIdentityVariantValidateMessageVariant(ctx.User.ID, data.ChannelID, identity, rawVariantID)
+		variant, err := service.ChannelIdentityVariantValidateMessageVariant(msg.UserID, data.ChannelID, identity, rawVariantID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("INVALID_IDENTITY: %w", err)
 		}
 		appearance := service.ResolveChannelIdentityAppearance(identity, variant)
 		if identity != nil {
@@ -3227,7 +3329,7 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 			return db.Select("id, nickname, username, avatar, is_bot")
 		}).Preload("Member", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id, nickname, channel_id, user_id")
-		}).Where("id = ?", msg.QuoteID).Limit(1).Find(&quote)
+		}).Where("id = ? AND channel_id = ? AND is_deleted = ? AND is_revoked = ? AND is_whisper = ?", msg.QuoteID, data.ChannelID, false, false, false).Limit(1).Find(&quote)
 		if quote.WhisperTo != "" {
 			quote.WhisperTarget = loadWhisperTargetForChannel(data.ChannelID, quote.WhisperTo)
 		}
@@ -3243,6 +3345,7 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 		msg.WhisperTargets = loadWhisperTargetsForMessage(data.ChannelID, msg.ID, msg.WhisperTarget)
 	}
 	whisperRecipientsChanged := false
+	var pendingRecipientIDs []string
 	if msg.IsWhisper && data.WhisperToIds != nil {
 		nextRecipientIDs := resolveWhisperRecipients("", data.WhisperToIds, msg.UserID)
 		if len(nextRecipientIDs) == 0 {
@@ -3302,9 +3405,7 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 			}
 		}
 		if whisperRecipientsChanged {
-			if err := model.ReplaceWhisperRecipients(msg.ID, nextRecipientIDs); err != nil {
-				return nil, err
-			}
+			pendingRecipientIDs = nextRecipientIDs
 		}
 	}
 
@@ -3371,21 +3472,21 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 	if icMode != "" && icMode != msg.ICMode {
 		icModeChanged = true
 	}
-	if prevContent == newContent && !icModeChanged && !identityChanged && !whisperRecipientsChanged {
+	if prevContent == newContent && !icModeChanged && !identityChanged && !whisperRecipientsChanged && data.AppearancePatch == nil {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := model.MessageUpdateTx(tx, msg.ID, data.ExpectedVersion, map[string]any{"updated_at": msg.UpdatedAt}); err != nil {
+				return err
+			}
+			return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, map[string]any{"message": buildMessage()})
+		}); err != nil {
+			return nil, err
+		}
 		return &struct {
 			Message *protocol.Message `json:"message"`
 		}{Message: buildMessage()}, nil
 	}
 
 	if prevContent != newContent {
-		history := model.MessageEditHistoryModel{
-			MessageID:    msg.ID,
-			EditorID:     ctx.User.ID,
-			PrevContent:  prevContent,
-			ChannelID:    msg.ChannelID,
-			EditedUserID: msg.UserID,
-		}
-		db.Create(&history)
 		msg.Content = newContent
 	}
 	if icModeChanged {
@@ -3440,28 +3541,60 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 	updates["edited_by_user_name"] = editorUserName
 	msg.EditedByUserID = ctx.User.ID
 	msg.EditedByUserName = editorUserName
-	err = model.MessageUpdate(msg.ID, updates)
+	if data.AppearancePatch != nil {
+		patch, patchErr := service.PrepareMessageAppearance(&msg, ctx.User.ID, *data.AppearancePatch)
+		if patchErr != nil {
+			return nil, patchErr
+		}
+		for key, value := range patch {
+			updates[key] = value
+		}
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := model.MessageUpdateTx(tx, msg.ID, data.ExpectedVersion, updates); err != nil {
+			return err
+		}
+		if effectiveBuiltInDiceEnabled {
+			if err := model.MessageDiceRollReplaceTx(tx, msg.ID, updatedDiceRolls); err != nil {
+				return err
+			}
+		}
+		if whisperRecipientsChanged {
+			if err := model.ReplaceWhisperRecipientsTx(tx, msg.ID, pendingRecipientIDs); err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("id = ?", msg.ID).Take(&msg).Error; err != nil {
+			return err
+		}
+		history := model.MessageEditHistoryModel{MessageID: msg.ID, EditorID: ctx.User.ID, PrevContent: prevContent, ChannelID: msg.ChannelID, EditedUserID: msg.UserID, BeforeSnapshot: beforeSnapshot, AfterSnapshot: service.MessageAppearanceSnapshot(&msg)}
+		if err := tx.Create(&history).Error; err != nil {
+			return err
+		}
+		return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, map[string]any{"message": buildMessage()})
+	})
 	if err != nil {
+		if replay := service.ReplayCommittedMessageOperation(ctx.User.ID, data.ClientOpID, opHash); replay != nil {
+			return replay, nil
+		}
 		return nil, err
 	}
 	service.TTSCancelMessage(msg.ID)
 	ttsBroadcastMessageState(msg.ID)
-	if effectiveBuiltInDiceEnabled {
-		if err := model.MessageDiceRollReplace(msg.ID, updatedDiceRolls); err != nil {
-			return nil, err
-		}
-	}
 
 	messageData := buildMessage()
 	if identityChanged {
 		if messageData.Member == nil {
 			messageData.Member = &protocol.GuildMember{
 				ID:   msg.MemberID,
-				User: ctx.User.ToProtocolType(),
+				User: &protocol.User{ID: msg.UserID},
 			}
 		}
 		if messageData.Member.User == nil {
-			messageData.Member.User = ctx.User.ToProtocolType()
+			messageData.Member.User = &protocol.User{ID: msg.UserID}
+		}
+		if authorUser != nil {
+			messageData.Member.User = authorUser.ToProtocolType()
 		}
 		if msg.SenderMemberName != "" {
 			messageData.Member.Nick = msg.SenderMemberName
@@ -3504,12 +3637,20 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 }
 
 func apiMessageReorder(ctx *ChatContext, data *struct {
-	ChannelID  string `json:"channel_id"`
-	MessageID  string `json:"message_id"`
-	BeforeID   string `json:"before_id"`
-	AfterID    string `json:"after_id"`
-	ClientOpID string `json:"client_op_id"`
+	ChannelID       string `json:"channel_id"`
+	MessageID       string `json:"message_id"`
+	BeforeID        string `json:"before_id"`
+	AfterID         string `json:"after_id"`
+	ClientOpID      string `json:"client_op_id"`
+	ExpectedVersion *int64 `json:"expected_version"`
 }) (any, error) {
+	opHash, replay, replayErr := service.MessageOperationReplay(ctx.User.ID, data.ClientOpID, "message.reorder", data)
+	if replayErr != nil {
+		return nil, replayErr
+	}
+	if replay != nil {
+		return replay, nil
+	}
 	if strings.TrimSpace(data.ChannelID) == "" || strings.TrimSpace(data.MessageID) == "" {
 		return nil, fmt.Errorf("缺少必要参数")
 	}
@@ -3526,6 +3667,9 @@ func apiMessageReorder(ctx *ChatContext, data *struct {
 		return nil, err
 	}
 	if msg.ID == "" {
+		if data.ExpectedVersion != nil || data.ClientOpID != "" {
+			return nil, fmt.Errorf("NOT_FOUND: 消息不存在")
+		}
 		return nil, nil
 	}
 	if msg.IsDeleted {
@@ -3545,26 +3689,25 @@ func apiMessageReorder(ctx *ChatContext, data *struct {
 		return nil, fmt.Errorf("缺少目标位置参数")
 	}
 
-	newOrder, err := resolveMessageDisplayOrderForPlacement(db, data.ChannelID, messageOrderPlacement{
-		BeforeID: data.BeforeID,
-		AfterID:  data.AfterID,
-	}, data.MessageID, msg.DisplayOrder)
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := model.MessageUpdateTx(tx, msg.ID, data.ExpectedVersion, map[string]any{"updated_at": time.Now()}); err != nil {
+			return err
+		}
+		newOrder, err := resolveMessageDisplayOrderForPlacement(tx, data.ChannelID, messageOrderPlacement{BeforeID: data.BeforeID, AfterID: data.AfterID}, data.MessageID, msg.DisplayOrder)
+		if err != nil {
+			return err
+		}
+		if err := model.MessageUpdateTx(tx, msg.ID, nil, map[string]any{"display_order": newOrder}); err != nil {
+			return err
+		}
+		if err := tx.Where("id = ?", msg.ID).Take(&msg).Error; err != nil {
+			return err
+		}
+		return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, map[string]any{"message_id": msg.ID, "channel_id": data.ChannelID, "display_order": msg.DisplayOrder, "version": msg.Version})
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	if math.Abs(newOrder-msg.DisplayOrder) < displayOrderEpsilon {
-		return &struct {
-			MessageID    string  `json:"message_id"`
-			ChannelID    string  `json:"channel_id"`
-			DisplayOrder float64 `json:"display_order"`
-		}{MessageID: msg.ID, ChannelID: data.ChannelID, DisplayOrder: msg.DisplayOrder}, nil
-	}
-
-	if err := db.Model(&model.MessageModel{}).Where("id = ?", msg.ID).UpdateColumn("display_order", newOrder).Error; err != nil {
-		return nil, err
-	}
-	msg.DisplayOrder = newOrder
 	_ = service.SyncBattleReportOrderFromDisplayMessage(data.ChannelID)
 
 	if msg.WhisperTo != "" && msg.WhisperTarget == nil {
@@ -3632,15 +3775,29 @@ func apiMessageReorder(ctx *ChatContext, data *struct {
 }
 
 func apiMessageReorderBatch(ctx *ChatContext, data *struct {
-	ChannelID  string   `json:"channel_id"`
-	MessageIDs []string `json:"message_ids"`
-	ClientOpID string   `json:"client_op_id"`
+	ChannelID        string           `json:"channel_id"`
+	MessageIDs       []string         `json:"message_ids"`
+	ClientOpID       string           `json:"client_op_id"`
+	ExpectedVersions map[string]int64 `json:"expected_versions"`
 }) (any, error) {
+	opHash, replay, replayErr := service.MessageOperationReplay(ctx.User.ID, data.ClientOpID, "message.reorder.batch", data)
+	if replayErr != nil {
+		return nil, replayErr
+	}
+	if replay != nil {
+		return replay, nil
+	}
 	channelID := strings.TrimSpace(data.ChannelID)
 	if channelID == "" {
 		return nil, fmt.Errorf("channel_id 不能为空")
 	}
 	ids := lo.Uniq(collectMessageIDs(data.MessageIDs))
+	if len(ids) > 200 {
+		return nil, fmt.Errorf("TOO_LARGE: 每次最多排序 200 条消息")
+	}
+	if err := service.ValidateMessageExpectedVersions(ids, data.ExpectedVersions); err != nil {
+		return nil, err
+	}
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("message_ids 不能为空")
 	}
@@ -3713,15 +3870,20 @@ func apiMessageReorderBatch(ctx *ChatContext, data *struct {
 		nextOrder := maxOrder
 		for _, msg := range messages {
 			nextOrder += displayOrderGap
-			if err := tx.Model(&model.MessageModel{}).
-				Where("id = ?", msg.ID).
-				UpdateColumn("display_order", nextOrder).Error; err != nil {
+			var expected *int64
+			if data.ExpectedVersions != nil {
+				v := data.ExpectedVersions[msg.ID]
+				expected = &v
+			}
+			if err := model.MessageUpdateTx(tx, msg.ID, expected, map[string]any{"display_order": nextOrder}); err != nil {
 				return err
 			}
-			msg.DisplayOrder = nextOrder
+			if err := tx.Where("id = ?", msg.ID).Take(&msg).Error; err != nil {
+				return err
+			}
 			results = append(results, reorderResult{message: msg})
 		}
-		return nil
+		return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, map[string]any{"message_ids": ids})
 	})
 	if err != nil {
 		return nil, err
@@ -3774,17 +3936,31 @@ func apiMessageReorderBatch(ctx *ChatContext, data *struct {
 }
 
 func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
-	ChannelID       string   `json:"channel_id"`
-	MessageIDs      []string `json:"message_ids"`
-	TargetMessageID string   `json:"target_message_id"`
-	Placement       string   `json:"placement"`
-	ClientOpID      string   `json:"client_op_id"`
+	ChannelID        string           `json:"channel_id"`
+	MessageIDs       []string         `json:"message_ids"`
+	TargetMessageID  string           `json:"target_message_id"`
+	Placement        string           `json:"placement"`
+	ClientOpID       string           `json:"client_op_id"`
+	ExpectedVersions map[string]int64 `json:"expected_versions"`
 }) (any, error) {
+	opHash, replay, replayErr := service.MessageOperationReplay(ctx.User.ID, data.ClientOpID, "message.relocate.batch", data)
+	if replayErr != nil {
+		return nil, replayErr
+	}
+	if replay != nil {
+		return replay, nil
+	}
 	channelID := strings.TrimSpace(data.ChannelID)
 	if channelID == "" {
 		return nil, fmt.Errorf("channel_id 不能为空")
 	}
 	ids := lo.Uniq(collectMessageIDs(data.MessageIDs))
+	if len(ids) > 200 {
+		return nil, fmt.Errorf("TOO_LARGE: 每次最多移动 200 条消息")
+	}
+	if err := service.ValidateMessageExpectedVersions(ids, data.ExpectedVersions); err != nil {
+		return nil, err
+	}
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("message_ids 不能为空")
 	}
@@ -3898,7 +4074,7 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 			}
 
 			if hasBefore && beforeOrder <= afterOrder+displayOrderEpsilon*float64(len(selected)+1) {
-				if err := model.RebalanceChannelDisplayOrder(channelID); err != nil {
+				if err := model.RebalanceChannelDisplayOrderTx(tx, channelID); err != nil {
 					return err
 				}
 				return fmt.Errorf("__sealchat_retry_relocate__")
@@ -3918,12 +4094,25 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 					return err
 				}
 				msg.DisplayOrder = nextOrder
+				if err := tx.Select("version").Where("id = ?", msg.ID).Take(&msg).Error; err != nil {
+					return err
+				}
 				updated = append(updated, reorderResult{message: msg})
 			}
 			results = updated
 			return nil
 		}
 
+		for _, id := range ids {
+			var expected *int64
+			if data.ExpectedVersions != nil {
+				v := data.ExpectedVersions[id]
+				expected = &v
+			}
+			if err := model.MessageUpdateTx(tx, id, expected, map[string]any{"updated_at": time.Now()}); err != nil {
+				return err
+			}
+		}
 		messages, _, loadErr := loadMessages()
 		if loadErr != nil {
 			return loadErr
@@ -3934,9 +4123,12 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 			if loadErr != nil {
 				return loadErr
 			}
-			return assignOrders(messages)
+			assignErr = assignOrders(messages)
 		}
-		return assignErr
+		if assignErr != nil {
+			return assignErr
+		}
+		return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, map[string]any{"message_ids": ids, "target_message_id": targetMessageID})
 	})
 	if err != nil {
 		return nil, err
@@ -4010,7 +4202,16 @@ func apiMessageEditHistory(ctx *ChatContext, data *struct {
 	}
 
 	var histories []model.MessageEditHistoryModel
-	model.GetDB().Where("message_id = ?", data.MessageID).Order("created_at asc").Find(&histories)
+	var visibleMessage model.MessageModel
+	if !service.CanReadChannelByUserId(ctx.User.ID, channelId) {
+		return nil, fmt.Errorf("PERMISSION_DENIED")
+	}
+	if err := service.ApplyWhisperVisibilityFilter(model.GetDB().Where("id = ? AND channel_id = ? AND is_deleted = ?", data.MessageID, channelId, false), ctx.User.ID, channelId).Take(&visibleMessage).Error; err != nil {
+		return nil, fmt.Errorf("NOT_FOUND")
+	}
+	if err := model.GetDB().Where("message_id = ? AND channel_id = ?", data.MessageID, channelId).Order("created_at asc").Limit(1000).Find(&histories).Error; err != nil {
+		return nil, err
+	}
 
 	userIDs := make([]string, 0, len(histories))
 	for _, h := range histories {
@@ -4028,9 +4229,12 @@ func apiMessageEditHistory(ctx *ChatContext, data *struct {
 	}
 
 	type historyItem struct {
-		PrevContent string         `json:"prev_content"`
-		EditedAt    int64          `json:"edited_at"`
-		Editor      *protocol.User `json:"editor"`
+		PrevContent    string         `json:"prev_content"`
+		EditedAt       int64          `json:"edited_at"`
+		Editor         *protocol.User `json:"editor"`
+		BeforeSnapshot string         `json:"before_snapshot,omitempty"`
+		AfterSnapshot  string         `json:"after_snapshot,omitempty"`
+		MutationJobID  string         `json:"mutation_job_id,omitempty"`
 	}
 
 	var resp []historyItem
@@ -4040,9 +4244,10 @@ func apiMessageEditHistory(ctx *ChatContext, data *struct {
 			editor = u.ToProtocolType()
 		}
 		resp = append(resp, historyItem{
-			PrevContent: h.PrevContent,
-			EditedAt:    h.CreatedAt.UnixMilli(),
-			Editor:      editor,
+			PrevContent:    h.PrevContent,
+			EditedAt:       h.CreatedAt.UnixMilli(),
+			Editor:         editor,
+			BeforeSnapshot: h.BeforeSnapshot, AfterSnapshot: h.AfterSnapshot, MutationJobID: h.MutationJobID,
 		})
 	}
 

@@ -542,6 +542,7 @@ func Init(config *utils.AppConfig, uiStatic fs.FS) error {
 	// the browser's explicit iframe request.
 	v1.Get("/channel-embed-tools/builtin/:key/assets/*", ChannelIFormBuiltinAsset)
 
+	bindLogProjectRoutes(v1)
 	v1Auth := v1.Group("")
 	v1Auth.Use(SignCheckMiddleware)
 	bindPersonalAPIKeyRoutes(v1Auth)
