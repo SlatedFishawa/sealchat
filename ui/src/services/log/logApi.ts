@@ -214,7 +214,13 @@ export interface LogIdentityOption {
   sharedIdentityId?: string;
   userId: string;
 }
-export interface LogIdentityVariantOption { id: string; identityId: string; label: string; displayName?: string }
+export interface LogIdentityVariantOption {
+  id: string;
+  identityId: string;
+  label: string;
+  displayName?: string;
+  avatarAttachmentId?: string;
+}
 
 export const fetchChannelIdentitiesForLog = async (channelId: string, targetUserId?: string) => {
   try {
@@ -222,7 +228,7 @@ export const fetchChannelIdentitiesForLog = async (channelId: string, targetUser
     if (targetUserId) params.targetUserId = targetUserId;
     const [identities, variants] = await Promise.all([
       api.get<{ items?: LogIdentityOption[] }>('api/v1/channel-identities', { params }),
-      api.get<{ items?: Array<{ id: string; identityId: string; keyword?: string; note?: string; displayName?: string; selectorEmoji?: string }> }>('api/v1/channel-identity-variants', { params }),
+      api.get<{ items?: Array<{ id: string; identityId: string; keyword?: string; note?: string; displayName?: string; selectorEmoji?: string; avatarAttachmentId?: string }> }>('api/v1/channel-identity-variants', { params }),
     ]);
     return {
       identities: (identities.data?.items || []).filter((item) => item && typeof item.id === 'string'),
@@ -230,6 +236,7 @@ export const fetchChannelIdentitiesForLog = async (channelId: string, targetUser
         id: v.id,
         identityId: v.identityId,
         displayName: v.displayName,
+        avatarAttachmentId: v.avatarAttachmentId,
         label: [v.selectorEmoji, v.displayName || v.keyword || v.note || v.id].filter(Boolean).join(' '),
       })) as LogIdentityVariantOption[],
     };
