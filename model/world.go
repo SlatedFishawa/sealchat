@@ -48,6 +48,7 @@ type WorldModel struct {
 	AllowAdminEditMessages                bool       `json:"allowAdminEditMessages" gorm:"default:false"`                // 允许管理员编辑成员发言
 	AllowManageOtherUserChannelIdentities bool       `json:"allowManageOtherUserChannelIdentities" gorm:"default:false"` // 允许管理其他用户频道角色
 	AllowMemberEditKeywords               bool       `json:"allowMemberEditKeywords" gorm:"default:false"`               // 允许成员编辑世界术语
+	AllowMemberAccessLogLayout            bool       `json:"allowMemberAccessLogLayout" gorm:"not null;default:false"`   // 允许普通成员进入 LOG 排版
 	StrictWhisperPrivacy                  bool       `json:"strictWhisperPrivacy" gorm:"default:true"`                   // 悄悄话严格保密：开启后管理员不可旁路查看
 	AudioLibraryMode                      string     `json:"audioLibraryMode" gorm:"size:16;default:database"`           // database/s3，按世界配置
 	AudioLibraryPrefix                    string     `json:"audioLibraryPrefix" gorm:"size:512"`                         // 世界音频 S3 prefix

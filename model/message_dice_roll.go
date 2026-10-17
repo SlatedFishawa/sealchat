@@ -36,23 +36,24 @@ func MessageDiceRollListByMessageID(messageID string) ([]*MessageDiceRollModel, 
 
 // MessageDiceRollReplace 将指定消息的掷骰结果重写为 rolls
 func MessageDiceRollReplace(messageID string, rolls []*MessageDiceRollModel) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("message_id = ?", messageID).
-			Delete(&MessageDiceRollModel{}).Error; err != nil {
-			return err
+	return db.Transaction(func(tx *gorm.DB) error { return MessageDiceRollReplaceTx(tx, messageID, rolls) })
+}
+func MessageDiceRollReplaceTx(tx *gorm.DB, messageID string, rolls []*MessageDiceRollModel) error {
+	if err := tx.Where("message_id = ?", messageID).
+		Delete(&MessageDiceRollModel{}).Error; err != nil {
+		return err
+	}
+	if len(rolls) == 0 {
+		return nil
+	}
+	for _, roll := range rolls {
+		if roll == nil {
+			continue
 		}
-		if len(rolls) == 0 {
-			return nil
+		roll.MessageID = messageID
+		if roll.ID == "" {
+			roll.Init()
 		}
-		for _, roll := range rolls {
-			if roll == nil {
-				continue
-			}
-			roll.MessageID = messageID
-			if roll.ID == "" {
-				roll.Init()
-			}
-		}
-		return tx.Create(&rolls).Error
-	})
+	}
+	return tx.Create(&rolls).Error
 }

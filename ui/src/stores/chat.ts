@@ -2294,6 +2294,7 @@ export const useChatStore = defineStore({
       enforceMembership?: boolean;
       messageSortBasis?: 'typing_start' | 'send_time';
       allowAdminEditMessages?: boolean;
+      allowMemberAccessLogLayout?: boolean;
       allowManageOtherUserChannelIdentities?: boolean;
       allowMemberEditKeywords?: boolean;
       strictWhisperPrivacy?: boolean;

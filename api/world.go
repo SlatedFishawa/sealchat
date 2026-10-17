@@ -256,6 +256,7 @@ func WorldDetail(c *fiber.Ctx) error {
 		"allowAdminEditMessages":                world.AllowAdminEditMessages,
 		"allowManageOtherUserChannelIdentities": world.AllowManageOtherUserChannelIdentities,
 		"allowMemberEditKeywords":               world.AllowMemberEditKeywords,
+		"allowMemberAccessLogLayout":            world.AllowMemberAccessLogLayout,
 		"strictWhisperPrivacy":                  world.StrictWhisperPrivacy,
 		"ownerNickname":                         ownerNickname,
 		"editNoticeAcked":                       editNoticeAcked,

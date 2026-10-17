@@ -25,6 +25,8 @@ useCursorThemeRuntime()
 let disposeMessageSoundNotifier: (() => void) | null = null
 let stopRuntimeModeWatch: WatchStopHandle | null = null
 const isInternalSurface = computed(() => route.meta.internalSurface === true)
+// 匿名 LOG 展示页与内部表面一样不挂载依赖登录/聊天连接的全局宿主。
+const hideGlobalHosts = computed(() => isInternalSurface.value || route.meta.logPublic === true)
 const worldClueHostWorldId = computed(() => route.name === 'embed' ? chat.currentWorldId : '')
 const globalFontFamily = computed(() => buildGlobalFontFamilyStack(display.settings.globalFontFamily))
 
@@ -82,9 +84,9 @@ const handleContextMenu = (e: MouseEvent) => {
 
 onMounted(() => {
   document.addEventListener('contextmenu', handleContextMenu)
-  stopRuntimeModeWatch = watch(isInternalSurface, (internalSurface) => {
+  stopRuntimeModeWatch = watch(hideGlobalHosts, (hidden) => {
     disposeMessageSoundNotifier?.()
-    disposeMessageSoundNotifier = internalSurface ? null : installMessageSoundNotifier()
+    disposeMessageSoundNotifier = hidden ? null : installMessageSoundNotifier()
   }, { immediate: true })
 })
 
@@ -104,9 +106,9 @@ onUnmounted(() => {
         <GlobalGlassBackground />
         <RouterView />
         <SpeechHost />
-        <GlobalLobbyAnnouncementHost v-if="!isInternalSurface" />
-        <QuickLoginApprovalHost v-if="!isInternalSurface" />
-        <WorldCluePresentationHost v-if="!isInternalSurface" :world-id="worldClueHostWorldId" />
+        <GlobalLobbyAnnouncementHost v-if="!hideGlobalHosts" />
+        <QuickLoginApprovalHost v-if="!hideGlobalHosts" />
+        <WorldCluePresentationHost v-if="!hideGlobalHosts" :world-id="worldClueHostWorldId" />
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>

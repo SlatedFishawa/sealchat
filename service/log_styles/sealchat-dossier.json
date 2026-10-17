@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "id": "sealchat-dossier",
+  "version": "2.0.1",
+  "name": "调查档案",
+  "license": "MIT",
+  "minRendererVersion": "1.0.0",
+  "tokens": {
+    "ink": "#26241f",
+    "muted": "#736d60",
+    "accent": "#a3261b",
+    "rule": "#bdb5a1",
+    "sheet": "#f4efe2",
+    "photo": 2.6,
+    "gap": 0.7,
+    "face": "\"FangSong\", \"STFangsong\", \"FangSong_GB2312\", \"Noto Serif CJK SC\", serif",
+    "showAvatar": true,
+    "showTime": true
+  },
+  "templates": {
+    "msg": "<section class=\"dz\"><div class=\"dz-ph\" role=\"presentation\">无相片</div><img class=\"dz-photo\" data-log-bind-src=\"speaker.avatarUrl\" alt=\"\"><header class=\"dz-head\"><span class=\"dz-kind\">笔录</span><span class=\"dz-name\" data-log-text=\"speaker.name\"></span><span class=\"dz-time\" data-log-if=\"createdAt\" data-log-text=\"createdAt\"></span></header><div class=\"dz-body\" data-log-slot=\"body\"></div></section>",
+    "msgOoc": "<aside class=\"dz-note\"><span class=\"dz-note-tag\">批注</span><span class=\"dz-note-name\" data-log-text=\"speaker.name\"></span><div class=\"dz-note-body\" data-log-slot=\"body\"></div></aside>",
+    "msgDice": "<section class=\"dz-form\"><div class=\"dz-form-k\"><span class=\"dz-form-kind\">检定</span><span class=\"dz-form-who\" data-log-text=\"speaker.name\"></span></div><div class=\"dz-form-v\" data-log-slot=\"body\"></div></section>",
+    "msgBot": "<section class=\"dz-sys\"><span class=\"dz-sys-tag\">附注</span><span class=\"dz-sys-name\" data-log-text=\"speaker.name\"></span><div class=\"dz-sys-body\" data-log-slot=\"body\"></div></section>",
+    "msgNarr": "<section class=\"dz-scene\"><span class=\"dz-scene-tag\">现场</span><div class=\"dz-scene-body\" data-log-slot=\"body\"></div></section>",
+    "cover": "<section class=\"cv\"><div class=\"cv-tab\">调查卷宗 · CASE FILE</div><div class=\"cv-box\"><div class=\"cv-row\"><span class=\"cv-k\">案件名称</span><h1 class=\"cv-title\" data-log-text=\"title\"></h1></div><div class=\"cv-row\" data-log-if=\"subtitle\"><span class=\"cv-k\">摘要</span><p class=\"cv-sub\" data-log-text=\"subtitle\"></p></div></div><figure class=\"cv-fig\" data-log-if=\"assetUrl\"><img data-log-bind-src=\"assetUrl\" alt=\"\"></figure><div class=\"cv-stamp\">机密</div></section>",
+    "imagePlate": "<figure class=\"ip\"><div class=\"ip-tag\">证物</div><img data-log-bind-src=\"assetUrl\" alt=\"\"><figcaption data-log-if=\"caption\" data-log-text=\"caption\"></figcaption></figure>",
+    "pageBreak": "<div class=\"pb\" role=\"presentation\"></div>",
+    "transition": "<div class=\"tr\" role=\"separator\"><span class=\"tr-label\" data-log-if=\"label\" data-log-text=\"label\"></span></div>",
+    "quote": "<blockquote class=\"qt\"><div class=\"qt-tag\">摘录</div><div class=\"qt-b\" data-log-slot=\"body\"></div></blockquote>",
+    "prologue": "<section class=\"pro\"><h2 class=\"pro-h\">案情概要</h2><div class=\"pro-b\" data-log-slot=\"body\"></div></section>",
+    "epilogue": "<section class=\"pro\"><h2 class=\"pro-h\">结案报告</h2><div class=\"pro-b\" data-log-slot=\"body\"></div></section>",
+    "heading": "<h2 class=\"hd\"><span class=\"hd-mark\">§</span><span class=\"hd-text\" data-log-text=\"text\"></span></h2>",
+    "toc": "<section class=\"toc\"><h2 class=\"toc-h\">卷宗目录</h2><div data-log-slot=\"body\"></div></section>",
+    "custom": "<aside class=\"cu\"><div class=\"cu-title\" data-log-if=\"props.title\" data-log-text=\"props.title\"></div><p class=\"cu-text\" data-log-text=\"props.text\"></p><p class=\"cu-note\" data-log-if=\"props.note\" data-log-text=\"props.note\"></p></aside>",
+    "pageHeader": "<div class=\"ph\"><span class=\"ph-l\">调查卷宗</span><span class=\"ph-title\" data-log-text=\"title\"></span><span class=\"ph-r\">机密</span></div>",
+    "pageFooter": "<div class=\"pf\"><span class=\"pf-sec\" data-log-text=\"section.title\"></span><span class=\"pf-num\" data-log-text=\"pageNumber\"></span></div>"
+  },
+  "css": ".log-body p { margin: 0 0 0.4em; }\n.log-body p:last-child { margin-bottom: 0; }\n.log-body ul, .log-body ol { margin: 0.3em 0; padding-left: 1.5em; }\n.log-body pre { margin: 0.3em 0; white-space: pre-wrap; font-size: 0.9em; }\n.log-mention { font-weight: 600; color: var(--log-accent); }\n.log-audio { color: var(--log-muted); font-size: 0.9em; }\n.pb { height: 0; }\n.cu-text { margin: 0; white-space: pre-wrap; }\n.log-page, .log-flow { background-color: var(--log-sheet); }\n.log-node--message { margin: 0 0 calc(var(--log-gap, 0.7) * 1em); }\n.log-node--message.log-merged { margin-top: calc(var(--log-gap, 0.7) * -0.55em); }\n.dz-body, .dz-note-body, .pro-b, .qt-b, .cv-title, .cv-sub, .dz-scene-body { font-family: var(--log-face); }\n.dz-kind, .dz-time, .dz-form, .dz-sys, .dz-note-tag, .dz-scene-tag, .hd, .tr, .ip-tag, .qt-tag, .pro-h, .toc, .cv-tab, .cv-k, .cv-stamp, .ph, .pf, .cu-title { font-family: \"Courier New\", \"SFMono-Regular\", \"Noto Sans Mono CJK SC\", monospace; }\n.dz { display: grid; grid-template-columns: calc(var(--log-photo, 2.6) * 1em) 1fr; column-gap: 0.8em; color: var(--log-ink); }\n.dz .dz-ph, .dz .dz-photo { grid-column: 1; grid-row: 1 / span 2; width: calc(var(--log-photo, 2.6) * 1em); height: calc(var(--log-photo, 2.6) * 1.25em); margin-top: 0.15em; }\n.dz .dz-ph { display: flex; align-items: center; justify-content: center; border: 1px dashed var(--log-rule); text-align: center; font-size: 0.6em; width: calc(var(--log-photo, 2.6) * 1em / 0.6); height: calc(var(--log-photo, 2.6) * 1.25em / 0.6); line-height: 1.3; color: var(--log-muted); }\n.dz .dz-photo { max-height: none; max-width: none; padding: 2px; border: 1px solid var(--log-ink); background: #ffffff; object-fit: cover; }\n:root[data-log-showavatar=\"false\"] .dz { grid-template-columns: 1fr; }\n:root[data-log-showavatar=\"false\"] .dz-ph, :root[data-log-showavatar=\"false\"] .dz-photo { display: none; }\n:root[data-log-showavatar=\"false\"] .dz-head, :root[data-log-showavatar=\"false\"] .dz-body, :root[data-log-showavatar=\"false\"] .log-continued .dz::before { grid-column: 1; }\n.dz-head { grid-column: 2; grid-row: 1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.1em 0.7em; padding-bottom: 0.15em; border-bottom: 1px solid var(--log-ink); line-height: 1.4; }\n.dz-kind { padding: 0 0.35em; border: 1px solid var(--log-accent); font-size: 0.68em; letter-spacing: 0.2em; color: var(--log-accent); }\n.dz-name { font-weight: 700; letter-spacing: 0.05em; color: var(--log-speaker-color, var(--log-ink)); }\n.dz-time { margin-left: auto; font-size: 0.72em; color: var(--log-muted); }\n:root[data-log-showtime=\"false\"] .dz-time { display: none; }\n.dz-body { grid-column: 2; grid-row: 2; min-width: 0; padding-top: 0.3em; line-height: 1.75; text-align: justify; }\n.log-merged .dz-ph, .log-merged .dz-photo, .log-merged .dz-head { display: none; }\n.log-merged .dz-body { padding-top: 0; }\n.log-continued .dz::before { content: \"（续上页）\"; grid-column: 2; grid-row: 1; font-family: \"Courier New\", \"SFMono-Regular\", \"Noto Sans Mono CJK SC\", monospace; font-size: 0.7em; color: var(--log-muted); }\n.dz-body img { display: block; max-height: 14em; margin: 0.4em 0; padding: 0.35em 0.35em 1.1em; border: 1px solid var(--log-rule); background: #ffffff; box-shadow: 1px 2px 0 rgba(0, 0, 0, 0.08); }\n.dz-note { margin: 0.1em 0 0 calc(var(--log-photo, 2.6) * 1em + 0.8em); padding: 0.1em 0 0.1em 0.7em; border-left: 2px solid var(--log-accent); font-family: \"Kaiti SC\", \"STKaiti\", \"KaiTi\", \"AR PL UKai CN\", \"Noto Serif CJK SC\", serif; font-size: 0.92em; line-height: 1.6; color: var(--log-accent); }\n.dz-note-tag { margin-right: 0.5em; padding: 0 0.3em; border: 1px solid var(--log-accent); font-size: 0.7em; letter-spacing: 0.15em; }\n.dz-note-name { font-weight: 700; }\n.dz-note-name::after { content: \"：\"; }\n.log-merged .dz-note-tag, .log-merged .dz-note-name { display: none; }\n.dz-form { display: grid; grid-template-columns: 7em 1fr; margin-left: calc(var(--log-photo, 2.6) * 1em + 0.8em); border: 1px solid var(--log-ink); font-size: 0.85em; line-height: 1.5; color: var(--log-ink); break-inside: avoid; }\n.dz-form-k { grid-column: 1; grid-row: 1; padding: 0.3em 0.5em; border-right: 1px solid var(--log-ink); background: rgba(0, 0, 0, 0.05); }\n.dz-form-kind { display: block; font-size: 0.8em; letter-spacing: 0.3em; color: var(--log-accent); }\n.dz-form-who { display: block; font-weight: 700; overflow-wrap: anywhere; }\n.dz-form-v { grid-column: 2; grid-row: 1; padding: 0.3em 0.6em; min-width: 0; }\n.dz-sys { margin-left: calc(var(--log-photo, 2.6) * 1em + 0.8em); padding: 0.35em 0.6em; border: 1px dashed var(--log-rule); font-size: 0.8em; line-height: 1.5; color: var(--log-muted); }\n.dz-sys-tag { margin-right: 0.5em; letter-spacing: 0.2em; color: var(--log-ink); }\n.dz-sys-name { font-weight: 700; }\n.dz-sys-name::after { content: \" ——\"; font-weight: 400; }\n.log-merged .dz-sys-tag, .log-merged .dz-sys-name { display: none; }\n.dz-scene { margin-left: calc(var(--log-photo, 2.6) * 1em + 0.8em); color: var(--log-ink); }\n.dz-scene-tag { display: inline-block; margin-bottom: 0.2em; padding: 0 0.4em; background: var(--log-ink); font-size: 0.68em; letter-spacing: 0.25em; color: var(--log-sheet); }\n.dz-scene-body { line-height: 1.75; }\n.hd { display: flex; align-items: baseline; gap: 0.5em; margin: 1.6em 0 0.9em; padding-bottom: 0.2em; border-bottom: 1px solid var(--log-ink); font-size: 1.1em; letter-spacing: 0.08em; color: var(--log-ink); break-after: avoid; }\n.hd-mark { color: var(--log-accent); }\n[data-log-level=\"1\"] .hd { margin-top: 2em; padding: 0.3em 0.6em; border: 0; background: var(--log-ink); font-size: 1.2em; color: var(--log-sheet); }\n[data-log-level=\"1\"] .hd-mark { color: var(--log-sheet); }\n[data-log-level=\"3\"] .hd { border-bottom-style: dashed; font-size: 0.95em; }\n.tr { margin: 1.2em 0; text-align: var(--log-style-align, center); font-size: 0.8em; letter-spacing: 0.2em; color: var(--log-muted); background: linear-gradient(var(--log-rule), var(--log-rule)) center / 100% 1px no-repeat; }\n.tr-label { padding: 0.1em 0.8em; border: 1px dashed var(--log-muted); background: var(--log-sheet); }\n.qt { margin: 1em 0 1em calc(var(--log-photo, 2.6) * 1em + 0.8em); padding: 0.5em 0.8em; border: 1px solid var(--log-rule); background: rgba(255, 255, 255, 0.45); text-align: var(--log-style-align, left); color: var(--log-ink); break-inside: avoid; }\n.qt-tag { margin-bottom: 0.3em; font-size: 0.68em; letter-spacing: 0.3em; color: var(--log-accent); }\n.log-style-italic .qt-b { font-style: italic; }\n.pro { margin: 0 0 1.4em; border: 1px solid var(--log-ink); }\n.pro-h { margin: 0; padding: 0.2em 0.6em; border-bottom: 1px solid var(--log-ink); font-size: 0.8em; font-weight: 700; letter-spacing: 0.3em; color: var(--log-ink); }\n.pro-b { padding: 0.6em 0.8em; line-height: 1.75; color: var(--log-ink); }\n.cv { position: relative; min-height: calc(var(--log-content-height, 180mm) * 0.92); display: flex; flex-direction: column; justify-content: center; break-after: page; }\n.cv-tab { align-self: flex-start; padding: 0.3em 1.2em; border: 2px solid var(--log-ink); border-bottom: 0; font-size: 0.8em; letter-spacing: 0.25em; color: var(--log-ink); }\n.cv-box { border: 2px solid var(--log-ink); }\n.cv-row { display: grid; grid-template-columns: 5.5em 1fr; border-bottom: 1px solid var(--log-ink); }\n.cv-row:last-child { border-bottom: 0; }\n.cv-k { padding: 0.6em 0.6em; border-right: 1px solid var(--log-ink); font-size: 0.75em; letter-spacing: 0.15em; color: var(--log-muted); }\n.cv-title { margin: 0; padding: 0.4em 0.6em; font-size: 1.6em; line-height: 1.35; color: var(--log-ink); }\n.cv-sub { margin: 0; padding: 0.6em 0.6em; color: var(--log-ink); }\n.cv-fig { margin: 1.4em 0 0; text-align: center; }\n.cv-fig img { max-height: calc(var(--log-content-height, 180mm) * 0.4); padding: 0.4em 0.4em 1.4em; border: 1px solid var(--log-rule); background: #ffffff; }\n.cv-stamp { position: absolute; top: 12%; right: 4%; padding: 0.1em 0.6em; border: 3px double var(--log-accent); font-size: 1.5em; font-weight: 700; letter-spacing: 0.4em; color: var(--log-accent); opacity: 0.85; }\n.ip { margin: 1.2em auto; width: fit-content; max-width: 100%; padding: 0.5em 0.5em 0.4em; border: 1px solid var(--log-rule); background: #ffffff; box-shadow: 2px 3px 0 rgba(0, 0, 0, 0.08); break-inside: avoid; }\n.ip-tag { margin-bottom: 0.35em; font-size: 0.68em; letter-spacing: 0.35em; color: var(--log-accent); }\n.ip img { display: block; }\n.ip figcaption { margin-top: 0.4em; font-family: \"Kaiti SC\", \"STKaiti\", \"KaiTi\", \"AR PL UKai CN\", \"Noto Serif CJK SC\", serif; font-size: 0.88em; color: var(--log-ink); }\n.toc { break-after: page; }\n.toc-h { margin: 0 0 0.8em; padding-bottom: 0.2em; border-bottom: 2px solid var(--log-ink); font-size: 1.15em; letter-spacing: 0.3em; }\n.toc .log-toc-item { padding: 0.25em 0; border-bottom: 1px dashed var(--log-rule); font-size: 0.9em; }\n.cu { margin: 1em 0; border: 1px solid var(--log-ink); background: repeating-linear-gradient(transparent 0, transparent 1.55em, var(--log-rule) 1.55em, var(--log-rule) 1.6em); break-inside: avoid; }\n.log-style-accent .cu { border: 2px solid var(--log-accent); }\n.cu-title { padding: 0.2em 0.6em; border-bottom: 1px solid var(--log-ink); background: var(--log-sheet); font-size: 0.8em; font-weight: 700; letter-spacing: 0.2em; }\n.cu-text { padding: 0.3em 0.7em; font-family: var(--log-face); line-height: 1.6em; }\n.cu-note { margin: 0; padding: 0 0.7em 0.3em; font-family: \"Kaiti SC\", \"STKaiti\", \"KaiTi\", \"AR PL UKai CN\", \"Noto Serif CJK SC\", serif; font-size: 0.85em; color: var(--log-accent); }\n.ph { width: 100%; display: flex; align-items: center; gap: 1em; letter-spacing: 0.15em; }\n.ph-title { flex: 1; text-align: center; }\n.ph-r { padding: 0 0.4em; border: 1px solid var(--log-accent); color: var(--log-accent); }\n.pf { width: 100%; display: flex; justify-content: space-between; gap: 1em; }\n.pf-num::before { content: \"第 \"; }\n.pf-num::after { content: \" 页\"; }\n@media print {\n  .dz-body img, .ip, .cv-fig img { box-shadow: none; }\n}\n",
+  "rules": [
+    {
+      "messageType": "ooc",
+      "templateId": "msgOoc"
+    },
+    {
+      "messageType": "dice",
+      "templateId": "msgDice"
+    },
+    {
+      "messageType": "bot",
+      "templateId": "msgBot"
+    },
+    {
+      "messageType": "narration",
+      "templateId": "msgNarr"
+    },
+    {
+      "templateId": "msg"
+    }
+  ],
+  "settingsSchema": {
+    "custom": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "accent": {
+              "type": "boolean",
+              "title": "强调边框"
+            }
+          }
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "标题",
+              "maxLength": 80
+            },
+            "text": {
+              "type": "string",
+              "title": "内容",
+              "maxLength": 2000
+            },
+            "note": {
+              "type": "string",
+              "title": "备注",
+              "maxLength": 200
+            }
+          }
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "align": {
+              "type": "string",
+              "title": "对齐",
+              "enum": [
+                "left",
+                "center",
+                "right"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "align": {
+              "type": "string",
+              "title": "对齐",
+              "enum": [
+                "left",
+                "center",
+                "right"
+              ]
+            },
+            "italic": {
+              "type": "boolean",
+              "title": "斜体"
+            }
+          }
+        }
+      }
+    }
+  },
+  "assets": []
+}

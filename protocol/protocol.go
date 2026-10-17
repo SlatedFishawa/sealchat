@@ -165,6 +165,7 @@ const (
 )
 
 type Message struct {
+	Version          int64              `json:"version,omitempty"`
 	TTS              *MessageTTS        `json:"tts,omitempty"`
 	ID               string             `json:"id"`
 	MessageID        string             // Deprecated

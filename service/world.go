@@ -79,6 +79,7 @@ type WorldUpdateParams struct {
 	AllowAdminEditMessages                *bool
 	AllowManageOtherUserChannelIdentities *bool
 	AllowMemberEditKeywords               *bool
+	AllowMemberAccessLogLayout            *bool `json:"allowMemberAccessLogLayout"`
 	StrictWhisperPrivacy                  *bool
 	ChannelDefaultDiceMode                *string
 	ChannelDefaultBotID                   *string
@@ -727,6 +728,9 @@ func WorldUpdate(worldID, actorID string, params WorldUpdateParams) (*model.Worl
 	}
 	if params.AllowMemberEditKeywords != nil {
 		updates["allow_member_edit_keywords"] = *params.AllowMemberEditKeywords
+	}
+	if params.AllowMemberAccessLogLayout != nil {
+		updates["allow_member_access_log_layout"] = *params.AllowMemberAccessLogLayout
 	}
 	if params.StrictWhisperPrivacy != nil {
 		updates["strict_whisper_privacy"] = *params.StrictWhisperPrivacy

@@ -271,6 +271,10 @@ func main() {
 	})
 	service.StartTheaterPackageWorker(ctx, config.Export.StorageDir)
 	service.StartTTSWorker(ctx)
+	if err := service.RegisterBuiltinLogStyles(); err != nil {
+		log.Fatalf("LOG builtin styles: %v", err)
+	}
+	service.StartLogWorker(ctx, api.BroadcastMessageMutation)
 	go service.TTSPrimeMPSCatalogs()
 
 	// 未读提醒取代旧未读邮件提醒主链路；旧代码保留但不再默认启动。

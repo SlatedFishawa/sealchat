@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { Eye, Robot } from '@vicons/tabler';
+import { Book, Eye, Robot } from '@vicons/tabler';
 import WorldInviteList from '../WorldInviteList.vue';
 import WorldObserverLinkCard from '../WorldObserverLinkCard.vue';
 import WorldAgentAccessLinkCard from '../WorldAgentAccessLinkCard.vue';
+import WorldLogLayoutCard from '../WorldLogLayoutCard.vue';
 
 // Only owner/admin reach this section; the embedded cards and the backend still enforce it.
 const props = defineProps<{
@@ -11,11 +12,11 @@ const props = defineProps<{
   canManage: boolean;
 }>();
 
-type AccessDrawerKind = 'observer' | 'agent';
+type AccessDrawerKind = 'observer' | 'agent' | 'log';
 
 const drawerVisible = ref(false);
 const drawerKind = ref<AccessDrawerKind>('observer');
-const drawerTitle = computed(() => (drawerKind.value === 'observer' ? 'OB 旁观链接' : 'AI Agent 访问链接'));
+const drawerTitle = computed(() => ({ observer: 'OB 旁观链接', agent: 'AI Agent 访问链接', log: 'LOG 排版与发布' }[drawerKind.value]));
 
 const openDrawer = (kind: AccessDrawerKind) => {
   drawerKind.value = kind;
@@ -38,6 +39,12 @@ const externalEntries: Array<{ kind: AccessDrawerKind; title: string; desc: stri
     title: 'AI Agent 访问链接',
     desc: '为外部 Agent 生成只读访问令牌，用于读取频道消息与计数。',
     icon: Robot,
+  },
+  {
+    kind: 'log',
+    title: 'LOG 排版与发布',
+    desc: '把跑团记录排版成书页，发布为可匿名阅读的固定版本；管理设计与展示链接。',
+    icon: Book,
   },
 ];
 </script>
@@ -69,7 +76,8 @@ const externalEntries: Array<{ kind: AccessDrawerKind; title: string; desc: stri
     <n-drawer v-model:show="drawerVisible" width="min(560px, 100vw)" placement="right">
       <n-drawer-content :title="drawerTitle" closable :native-scrollbar="false">
         <WorldObserverLinkCard v-if="drawerKind === 'observer'" :world-id="worldId" :can-manage="canManage" />
-        <WorldAgentAccessLinkCard v-else :world-id="worldId" :can-manage="canManage" />
+        <WorldAgentAccessLinkCard v-else-if="drawerKind === 'agent'" :world-id="worldId" :can-manage="canManage" />
+        <WorldLogLayoutCard v-else :world-id="worldId" :can-manage="canManage" />
       </n-drawer-content>
     </n-drawer>
   </div>
