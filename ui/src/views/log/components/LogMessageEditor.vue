@@ -10,6 +10,7 @@ import { uploadImageAttachment } from '@/views/chat/composables/useAttachmentUpl
 import {
   describeLogError,
   fetchChannelIdentitiesForLog,
+  fetchIdentityManageCandidatesForLog,
   fetchLogMessageContext,
   isLogError,
   type LogIdentityOption,
@@ -25,6 +26,7 @@ import { detectContentFormat, renderMessageBody } from '@/services/log/logConten
 import { resolveDesignSpeakerName } from '@/services/log/logRenderer';
 import { convertTextContentFormat, type TextContentFormat } from '@/utils/textContentFormat';
 import type { LogDesignMessage, LogProtocolMessage } from '@/types/log';
+import type { ChannelIdentityManageCandidate } from '@/types';
 
 const props = defineProps<{
   show: boolean;
@@ -45,6 +47,7 @@ const toast = useMessage();
 const SAVE_DELAY = 600;
 const HEX = /^#[0-9a-fA-F]{6}$/;
 const IDENTITY_SEARCH_THRESHOLD = 8;
+const IDENTITY_OWNER_SEARCH_DELAY = 200;
 
 // ---- 正文 ----
 const messageId = ref('');
@@ -74,6 +77,20 @@ const resetFrom = (item: LogDesignMessage) => {
   contentError.value = '';
   conflict.value = null;
   resetAppearance(item);
+  selectedIdentityOwnerUserId.value = item.message.user?.id || '';
+  selectedIdentityOwner.value = null;
+  identityOwners.value = [];
+  identityOwnerTotal.value = 0;
+  identityOwnerAvailable.value = false;
+  identityOwnerLoading.value = false;
+  identityOwnerSearch.value = '';
+  identityOwnerPopover.value = false;
+  if (ownerSearchTimer) clearTimeout(ownerSearchTimer);
+  ownerSearchTimer = null;
+  identities.value = [];
+  variants.value = [];
+  identityRequestSeq += 1;
+  ownerRequestSeq += 1;
   identityId.value = item.message.identity?.id || '';
   variantId.value = item.message.identity?.variantId || '';
   identitySearch.value = '';
@@ -220,6 +237,77 @@ const identitySearch = ref('');
 const variantSearch = ref('');
 const identityListRef = ref<HTMLElement | null>(null);
 const variantListRef = ref<HTMLElement | null>(null);
+const selectedIdentityOwnerUserId = ref('');
+const selectedIdentityOwner = ref<ChannelIdentityManageCandidate | null>(null);
+const identityOwners = ref<ChannelIdentityManageCandidate[]>([]);
+const identityOwnerTotal = ref(0);
+const identityOwnerAvailable = ref(false);
+const identityOwnerLoading = ref(false);
+const identityOwnerSearch = ref('');
+const identityOwnerPopover = ref(false);
+let identityRequestSeq = 0;
+let ownerRequestSeq = 0;
+let ownerSearchTimer: ReturnType<typeof setTimeout> | null = null;
+
+const originalOwnerUserId = computed(() => props.item?.message.user?.id || '');
+const ownerChanged = computed(() => selectedIdentityOwnerUserId.value !== originalOwnerUserId.value);
+const canSwitchOwner = computed(() => !!originalOwnerUserId.value && !props.item?.message.isWhisper &&
+  !props.item?.message.user?.isBot && !props.item?.message.user?.is_bot);
+const showOwnerSwitcher = computed(() => !!originalOwnerUserId.value);
+const ownerSwitcherEnabled = computed(() => canSwitchOwner.value && !!caps.value?.changeIdentity &&
+  identityOwnerAvailable.value && !identityOwnerLoading.value);
+const ownerSwitcherDisabledReason = computed(() => {
+  if (identityOwnerLoading.value) return '正在检查可代管的角色所属用户';
+  if (props.item?.message.isWhisper) return '悄悄话暂不支持切换角色所属用户';
+  if (props.item?.message.user?.isBot || props.item?.message.user?.is_bot) return 'BOT 消息暂不支持切换角色所属用户';
+  if (!caps.value?.changeIdentity) return '当前消息没有角色编辑权限';
+  return '当前不可切换到其他用户。请确认已开启“允许管理其他用户频道角色”，且存在你有权代管的用户';
+});
+const selectedOwner = computed(() => identityOwners.value.find((owner) => owner.userId === selectedIdentityOwnerUserId.value) ||
+  (selectedIdentityOwner.value?.userId === selectedIdentityOwnerUserId.value ? selectedIdentityOwner.value : undefined));
+const selectedOwnerName = computed(() => selectedOwner.value?.nickname || selectedOwner.value?.username ||
+  props.item?.message.user?.nick || props.item?.message.user?.name || props.item?.message.user?.username || originalOwnerUserId.value);
+const filteredOwners = computed(() => {
+  const query = normalizedSearch(identityOwnerSearch.value);
+  return identityOwners.value.filter((owner) => !query ||
+    `${owner.nickname} ${owner.username} ${owner.userId}`.toLocaleLowerCase().includes(query));
+});
+
+const loadIdentityOwners = async (keyword = '') => {
+  const sequence = ++ownerRequestSeq;
+  if (!canSwitchOwner.value || !caps.value?.changeIdentity) {
+    identityOwners.value = [];
+    identityOwnerTotal.value = 0;
+    identityOwnerAvailable.value = false;
+    identityOwnerLoading.value = false;
+    return;
+  }
+  const channelId = props.channelId;
+  const targetMessageId = messageId.value;
+  const normalizedKeyword = keyword.trim();
+  identityOwnerLoading.value = true;
+  try {
+    const result = await fetchIdentityManageCandidatesForLog(channelId, normalizedKeyword);
+    if (sequence !== ownerRequestSeq || channelId !== props.channelId || targetMessageId !== props.item?.message.id) return;
+    identityOwners.value = result.items;
+    const selected = result.items.find((owner) => owner.userId === selectedIdentityOwnerUserId.value);
+    if (selected) selectedIdentityOwner.value = selected;
+    if (!normalizedKeyword) {
+      identityOwnerTotal.value = result.total;
+      identityOwnerAvailable.value = result.items.some((owner) => owner.userId !== originalOwnerUserId.value);
+    }
+  } catch {
+    if (sequence !== ownerRequestSeq) return;
+    if (!normalizedKeyword) {
+      identityOwners.value = [];
+      identityOwnerTotal.value = 0;
+      identityOwnerAvailable.value = false;
+    }
+    // 代管入口是增强功能，读取失败不影响原作者角色切换。
+  } finally {
+    if (sequence === ownerRequestSeq) identityOwnerLoading.value = false;
+  }
+};
 
 const normalizedSearch = (value: string) => value.trim().toLocaleLowerCase();
 const scrollOptionIntoView = async (containerRef: typeof identityListRef, id: string) => {
@@ -235,21 +323,45 @@ const scrollIdentityIntoView = () => scrollOptionIntoView(identityListRef, ident
 const scrollVariantIntoView = () => scrollOptionIntoView(variantListRef, variantId.value || '__default__');
 
 const loadIdentities = async () => {
+  const sequence = ++identityRequestSeq;
   const item = props.item;
-  if (!item || !item.capabilities.changeIdentity) return;
+  const channelId = props.channelId;
+  const ownerUserId = selectedIdentityOwnerUserId.value;
+  const isCurrent = () => sequence === identityRequestSeq && channelId === props.channelId &&
+    item?.message.id === props.item?.message.id && ownerUserId === selectedIdentityOwnerUserId.value;
+  identities.value = [];
+  variants.value = [];
+  identityLoading.value = false;
+  if (!item || !item.capabilities.changeIdentity || !ownerUserId) return;
   identityLoading.value = true;
   identityError.value = '';
   try {
-    const res = await fetchChannelIdentitiesForLog(props.channelId, item.message.user?.id || undefined);
+    const res = await fetchChannelIdentitiesForLog(channelId, ownerUserId);
+    if (!isCurrent()) return;
     identities.value = res.identities;
     variants.value = res.variants;
     void scrollIdentityIntoView();
     void scrollVariantIntoView();
   } catch (error) {
+    if (!isCurrent()) return;
     identityError.value = describeLogError(error, '读取角色失败');
   } finally {
-    identityLoading.value = false;
+    if (isCurrent()) identityLoading.value = false;
   }
+};
+
+const selectIdentityOwner = (userId: string) => {
+  if (identityBusy.value || !canSwitchOwner.value || !identityOwners.value.some((owner) => owner.userId === userId)) return;
+  identityOwnerPopover.value = false;
+  if (selectedIdentityOwnerUserId.value === userId) return;
+  selectedIdentityOwnerUserId.value = userId;
+  selectedIdentityOwner.value = identityOwners.value.find((owner) => owner.userId === userId) || null;
+  identityId.value = userId === originalOwnerUserId.value ? props.item?.message.identity?.id || '' : '';
+  variantId.value = userId === originalOwnerUserId.value ? props.item?.message.identity?.variantId || '' : '';
+  identitySearch.value = '';
+  variantSearch.value = '';
+  identityOwnerSearch.value = '';
+  void loadIdentities();
 };
 
 const selectedIdentity = computed(() => identities.value.find((item) => item.id === identityId.value) || null);
@@ -271,7 +383,7 @@ const showVariantSearch = computed(() => currentVariants.value.length > IDENTITY
 
 const identityDirty = computed(() => {
   const cur = props.item?.message.identity;
-  return !!identityId.value && (identityId.value !== (cur?.id || '') || variantId.value !== (cur?.variantId || ''));
+  return ownerChanged.value || identityId.value !== (cur?.id || '') || variantId.value !== (cur?.variantId || '');
 });
 
 const selectIdentity = (id: string) => {
@@ -303,28 +415,38 @@ watch(identitySearch, (query) => {
 watch(variantSearch, (query) => {
   if (!query) void scrollVariantIntoView();
 });
+watch(identityOwnerSearch, (query) => {
+  if (!identityOwnerPopover.value) return;
+  if (ownerSearchTimer) clearTimeout(ownerSearchTimer);
+  ownerSearchTimer = setTimeout(() => {
+    ownerSearchTimer = null;
+    void loadIdentityOwners(query);
+  }, IDENTITY_OWNER_SEARCH_DELAY);
+});
 
 const applyIdentity = async () => {
   const item = props.item;
-  if (!item || !identityId.value) return;
+  if (!item || !selectedIdentity.value || !identityDirty.value || identityLoading.value || identityBusy.value) return;
   if (contentStatus.value === 'dirty' || contentStatus.value === 'saving' || contentStatus.value === 'conflict') {
     toast.warning('请先保存或处理正文修改，再切换角色');
     return;
   }
   identityBusy.value = true;
+  const reassigning = ownerChanged.value;
   try {
     const msg = await updateMessageIdentity(
       { channelId: props.channelId, messageId: messageId.value, expectedVersion: baseVersion.value },
       serverContent.value,
       identityId.value,
       variantId.value || null,
+      reassigning ? selectedIdentityOwnerUserId.value : undefined,
     );
     if (msg) {
       const version = typeof msg.version === 'number' ? msg.version : baseVersion.value + 1;
       baseVersion.value = version;
       emit('saved', msg, version);
     }
-    toast.success('已切换角色');
+    toast.success(reassigning ? '已重新归属本条消息的发送用户与角色' : '已切换角色');
   } catch (error) {
     toast.error(describeLogError(error, '切换失败'));
   } finally {
@@ -401,18 +523,21 @@ const applyAppearance = async () => {
   }
 };
 
-watch(() => props.item, (item, prev) => {
+watch([() => props.item, () => props.channelId], ([item, channelId], [prev, prevChannelId]) => {
   if (!item) return;
-  if (!prev || item.message.id !== messageId.value) {
+  if (!prev || item.message.id !== messageId.value || channelId !== prevChannelId) {
     if (timer) clearTimeout(timer);
     timer = null;
     resetFrom(item);
     void loadIdentities();
+    void loadIdentityOwners();
     return;
   }
   // 其他来源（聊天页、他人）推进了版本：本地无未保存输入时跟随服务端。
   if (item.version > baseVersion.value && !inFlight && (contentStatus.value === 'idle' || contentStatus.value === 'saved')) {
     resetFrom(item);
+    void loadIdentities();
+    void loadIdentityOwners();
   }
 }, { immediate: true });
 
@@ -440,6 +565,10 @@ const onKeydown = (e: KeyboardEvent) => {
 };
 
 onBeforeUnmount(() => {
+  identityRequestSeq += 1;
+  ownerRequestSeq += 1;
+  if (ownerSearchTimer) clearTimeout(ownerSearchTimer);
+  ownerSearchTimer = null;
   if (timer) {
     clearTimeout(timer);
     timer = null;
@@ -505,13 +634,46 @@ const tabModel = computed({
           </div>
         </n-tab-pane>
         <n-tab-pane name="identity" tab="角色/差分" :disabled="!caps?.changeIdentity">
+          <div class="log-editor__field-header">
+            <div class="log-editor__field-label">角色</div>
+            <div v-if="showOwnerSwitcher" class="log-editor__owner-switcher">
+              <n-popover v-if="ownerSwitcherEnabled" v-model:show="identityOwnerPopover" trigger="click" placement="bottom-end" :to="false" :width="260">
+                <template #trigger>
+                  <n-button size="tiny" round :disabled="identityBusy" class="log-editor__owner-chip" aria-label="角色所属用户">
+                    <AvatarVue :src="selectedOwner ? selectedOwner.avatar : item?.message.user?.avatar || ''" :fallback-text="selectedOwnerName" :use-text-fallback="true" :size="18" :border="false" />
+                    <span class="log-editor__owner-name">{{ selectedOwnerName }}</span><span aria-hidden="true">▾</span>
+                  </n-button>
+                </template>
+                <div class="log-editor__owner-picker">
+                  <n-input v-if="identityOwnerTotal > IDENTITY_SEARCH_THRESHOLD || identityOwnerSearch" v-model:value="identityOwnerSearch" size="small" clearable placeholder="搜索用户昵称 / 用户名" aria-label="搜索角色所属用户" />
+                  <n-spin :show="identityOwnerLoading" size="small">
+                    <div class="log-editor__owner-list" role="group" aria-label="角色所属用户">
+                      <button v-for="owner in filteredOwners" :key="owner.userId" type="button" class="log-editor__owner-option" :class="{ 'is-active': owner.userId === selectedIdentityOwnerUserId }" :aria-pressed="owner.userId === selectedIdentityOwnerUserId" @click="selectIdentityOwner(owner.userId)">
+                        <AvatarVue :src="owner.avatar" :fallback-text="owner.nickname || owner.username" :use-text-fallback="true" :size="26" :border="false" />
+                        <span class="log-editor__owner-details"><span class="log-editor__owner-name">{{ owner.nickname || owner.username }}</span><small>{{ owner.username }} · {{ owner.roleLabel }}</small></span>
+                      </button>
+                      <n-empty v-if="!filteredOwners.length && !identityOwnerLoading" description="没有匹配的用户" size="small" />
+                    </div>
+                  </n-spin>
+                </div>
+              </n-popover>
+              <n-tooltip v-else trigger="hover" placement="bottom-end">
+                <template #trigger>
+                  <span class="log-editor__owner-chip-disabled">
+                    <n-button size="tiny" round disabled class="log-editor__owner-chip" aria-label="角色所属用户不可切换">
+                      <AvatarVue :src="selectedOwner ? selectedOwner.avatar : item?.message.user?.avatar || ''" :fallback-text="selectedOwnerName" :use-text-fallback="true" :size="18" :border="false" />
+                      <span class="log-editor__owner-name">{{ selectedOwnerName }}</span><span aria-hidden="true">▾</span>
+                    </n-button>
+                  </span>
+                </template>
+                {{ ownerSwitcherDisabledReason }}
+              </n-tooltip>
+            </div>
+            <span v-if="showIdentitySearch" class="log-editor__option-count">{{ filteredIdentities.length }}/{{ identities.length }}</span>
+          </div>
           <n-spin :show="identityLoading">
             <n-alert v-if="identityError" type="error" :show-icon="false">{{ identityError }}</n-alert>
             <div class="log-editor__identity-section">
-              <div class="log-editor__field-header">
-                <div class="log-editor__field-label">角色</div>
-                <span v-if="showIdentitySearch" class="log-editor__option-count">{{ filteredIdentities.length }}/{{ identities.length }}</span>
-              </div>
               <n-input
                 v-if="showIdentitySearch"
                 v-model:value="identitySearch"
@@ -580,8 +742,9 @@ const tabModel = computed({
               </div>
               <n-empty v-else description="请先选择角色" size="small" />
             </div>
-            <p class="log-editor__hint">切换角色只改变此消息引用的角色与差分，正文与 IC/OOC、悄悄话设置保持不变。</p>
-            <n-button type="primary" size="small" :loading="identityBusy" :disabled="!identityDirty" @click="applyIdentity">应用</n-button>
+            <p class="log-editor__hint">{{ ownerChanged ? '应用后将本条消息的发送用户与角色重新归属到所选用户。请先选择该用户的角色；正文与 IC/OOC 保持不变。' : '同一用户内切换只改变此消息引用的角色与差分，正文与 IC/OOC、悄悄话设置保持不变。' }}</p>
+            <p v-if="item?.message.isWhisper" class="log-editor__hint">悄悄话仅支持原发送用户的角色，不支持跨用户重新归属。</p>
+            <n-button type="primary" size="small" :loading="identityBusy" :disabled="!identityDirty || !selectedIdentity || identityLoading" @click="applyIdentity">应用</n-button>
           </n-spin>
         </n-tab-pane>
         <n-tab-pane name="appearance" tab="本条外观" :disabled="!caps?.editAppearance">
@@ -661,6 +824,73 @@ const tabModel = computed({
 
 .log-editor__search {
   margin-top: 6px;
+}
+
+.log-editor__owner-switcher {
+  margin-left: auto;
+  min-width: 0;
+}
+
+.log-editor__owner-chip-disabled {
+  display: inline-flex;
+  max-width: 100%;
+  cursor: help;
+}
+
+.log-editor__owner-chip {
+  max-width: 210px;
+}
+
+.log-editor__owner-chip :deep(.n-button__content) {
+  gap: 5px;
+  min-width: 0;
+}
+
+.log-editor__owner-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.log-editor__owner-picker {
+  max-width: calc(100vw - 56px);
+}
+
+.log-editor__owner-list {
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: 4px;
+}
+
+.log-editor__owner-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  width: 100%;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.log-editor__owner-option:hover,
+.log-editor__owner-option.is-active {
+  background: rgba(32, 128, 240, 0.1);
+}
+
+.log-editor__owner-details {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.log-editor__owner-details small {
+  color: var(--sc-text-secondary, #777);
 }
 
 .log-editor__identity-section + .log-editor__identity-section {

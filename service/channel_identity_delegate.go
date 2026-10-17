@@ -275,6 +275,14 @@ func ListChannelIdentityManageCandidates(query ChannelIdentityManageCandidateQue
 	if operatorRank <= 0 {
 		return nil, ErrChannelPermissionDenied
 	}
+	allowDelegation := false
+	if channel.WorldID != "" {
+		world, err := GetWorldByID(channel.WorldID)
+		if err != nil {
+			return nil, err
+		}
+		allowDelegation = world != nil && world.AllowManageOtherUserChannelIdentities
+	}
 
 	userIDs := make([]string, 0, len(roleMap))
 	for userID := range roleMap {
@@ -307,12 +315,15 @@ func ListChannelIdentityManageCandidates(query ChannelIdentityManageCandidateQue
 	keyword := strings.ToLower(strings.TrimSpace(query.Keyword))
 	items := make([]*ChannelIdentityManageCandidate, 0, len(userIDs))
 	for _, userID := range userIDs {
+		if userID != actorID && !allowDelegation {
+			continue
+		}
 		rank := resolveChannelIdentityUserRank(channel, roleMap, userID)
 		if rank <= 0 || rank > operatorRank {
 			continue
 		}
 		userInfo, ok := userMap[userID]
-		if !ok {
+		if !ok || userInfo.IsBot {
 			continue
 		}
 		if keyword != "" {

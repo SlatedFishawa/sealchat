@@ -9,6 +9,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"sealchat/pm"
+	"sealchat/protocol"
 	"sealchat/service"
 )
 
@@ -155,7 +156,19 @@ func logMessagesGet(c *fiber.Ctx) error {
 		targetRank := targetRanks[m.UserID]
 		moderate := rank >= channelMemberRoleRankAdmin && rank > targetRank
 		edit := !m.IsRevoked && !m.IsDeleted && (own || (window.World.AllowAdminEditMessages && moderate))
-		items = append(items, fiber.Map{"message": m.ToProtocolType2(channelData), "version": m.Version, "capabilities": fiber.Map{
+		messageData := m.ToProtocolType2(channelData)
+		if m.User != nil {
+			messageData.User = m.User.ToProtocolType()
+		} else if m.UserID != "" {
+			messageData.User = &protocol.User{ID: m.UserID}
+		}
+		if m.Member != nil {
+			messageData.Member = m.Member.ToProtocolType()
+			if messageData.User != nil {
+				messageData.Member.User = messageData.User
+			}
+		}
+		items = append(items, fiber.Map{"message": messageData, "version": m.Version, "capabilities": fiber.Map{
 			"edit": edit, "changeIdentity": edit, "reorder": !m.IsDeleted && (own || reorderAll), "revoke": !m.IsDeleted && !m.IsRevoked && own, "remove": !m.IsDeleted && (own || systemAdmin || moderate), "editAppearance": edit,
 		}})
 	}

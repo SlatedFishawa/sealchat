@@ -69,12 +69,13 @@ export const updateMessageContent = async (t: MessageTarget, content: string) =>
 };
 
 /** 切换角色/差分；正文原样回传，避免空正文被拒或被改写。 */
-export const updateMessageIdentity = async (t: MessageTarget, content: string, identityId: string, variantId: string | null) => {
+export const updateMessageIdentity = async (t: MessageTarget, content: string, identityId: string, variantId: string | null, ownerUserId?: string) => {
   const result = await send<{ message?: LogProtocolMessage }>('message.update', {
     ...base(t, 'identity'),
     content,
     identity_id: identityId,
     identity_variant_id: variantId ?? '',
+    ...(ownerUserId ? { identity_owner_user_id: ownerUserId } : {}),
   });
   return result?.message || null;
 };

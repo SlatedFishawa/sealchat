@@ -1,6 +1,7 @@
 // LOG REST 适配层：所有新接口的 `{data}` / `{error}` 包裹只在这里拆一次。
 import axiosFactory, { isAxiosError, type AxiosResponse } from 'axios';
 import { api, urlBase } from '@/stores/_config';
+import type { ChannelIdentityManageCandidatesResponse } from '@/types';
 import type {
   LogDesignMessage,
   LogDraft,
@@ -221,6 +222,19 @@ export interface LogIdentityVariantOption {
   displayName?: string;
   avatarAttachmentId?: string;
 }
+
+/** 显式频道的代管候选：只取首屏，更多用户通过服务端关键字搜索定位。 */
+export const fetchIdentityManageCandidatesForLog = async (channelId: string, keyword = ''): Promise<ChannelIdentityManageCandidatesResponse> => {
+  try {
+    const normalizedKeyword = keyword.trim();
+    const response = await api.get<ChannelIdentityManageCandidatesResponse>(`api/v1/channels/${seg(channelId)}/identity-manage-candidates`, {
+      params: { page: 1, pageSize: 20, ...(normalizedKeyword ? { keyword: normalizedKeyword } : {}) },
+    });
+    return { ...response.data, items: response.data.items || [] };
+  } catch (error) {
+    throw toLogError(error);
+  }
+};
 
 export const fetchChannelIdentitiesForLog = async (channelId: string, targetUserId?: string) => {
   try {

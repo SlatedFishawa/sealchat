@@ -3132,20 +3132,22 @@ func apiMessageUpdate(ctx *ChatContext, data *struct {
 }
 
 type messageUpdatePayload struct {
-	ChannelID         string                          `json:"channel_id"`
-	MessageID         string                          `json:"message_id"`
-	Content           string                          `json:"content"`
-	WhisperToIds      []string                        `json:"whisper_to_ids"`
-	ICMode            string                          `json:"ic_mode"`
-	IdentityID        *string                         `json:"identity_id"`
-	IdentityVariantID *string                         `json:"identity_variant_id"`
-	ExpectedVersion   *int64                          `json:"expected_version"`
-	ClientOpID        string                          `json:"client_op_id"`
-	AppearancePatch   *service.MessageAppearancePatch `json:"appearance_patch"`
+	ChannelID           string                          `json:"channel_id"`
+	MessageID           string                          `json:"message_id"`
+	Content             string                          `json:"content"`
+	WhisperToIds        []string                        `json:"whisper_to_ids"`
+	ICMode              string                          `json:"ic_mode"`
+	IdentityID          *string                         `json:"identity_id"`
+	IdentityVariantID   *string                         `json:"identity_variant_id"`
+	IdentityOwnerUserID string                          `json:"identity_owner_user_id,omitempty"`
+	ExpectedVersion     *int64                          `json:"expected_version"`
+	ClientOpID          string                          `json:"client_op_id"`
+	AppearancePatch     *service.MessageAppearancePatch `json:"appearance_patch"`
 }
 
 func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (any, error) {
-	versioned := data.ExpectedVersion != nil || data.ClientOpID != "" || data.AppearancePatch != nil
+	identityOwnerUserID := strings.TrimSpace(data.IdentityOwnerUserID)
+	versioned := data.ExpectedVersion != nil || data.ClientOpID != "" || data.AppearancePatch != nil || identityOwnerUserID != ""
 	opHash, replay, replayErr := service.MessageOperationReplay(ctx.User.ID, data.ClientOpID, "message.update", data)
 	if replayErr != nil {
 		return nil, replayErr
@@ -3156,7 +3158,7 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 	if strings.TrimSpace(data.Content) == "" && data.AppearancePatch == nil {
 		return nil, fmt.Errorf("消息内容不能为空")
 	}
-	if data.AppearancePatch != nil && (data.IdentityID != nil || data.IdentityVariantID != nil) {
+	if data.AppearancePatch != nil && (data.IdentityID != nil || data.IdentityVariantID != nil || identityOwnerUserID != "") {
 		return nil, fmt.Errorf("INVALID_PATCH: 身份和外观不可同时修改")
 	}
 	if data.ExpectedVersion != nil && (*data.ExpectedVersion < 1 || *data.ExpectedVersion >= service.LogMaxVersion) {
@@ -3187,6 +3189,8 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 		return nil, nil
 	}
 	beforeSnapshot := service.MessageAppearanceSnapshot(&msg)
+	originalUserID := msg.UserID
+	ownerChanged := identityOwnerUserID != "" && identityOwnerUserID != originalUserID
 	if data.ExpectedVersion != nil && msg.Version != *data.ExpectedVersion {
 		return nil, model.ErrMessageVersionConflict
 	}
@@ -3207,7 +3211,7 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 	if editorUserName == "" {
 		editorUserName = ctx.User.Username
 	}
-	if !isAuthor && channel.WorldID != "" {
+	if (!isAuthor || ownerChanged) && channel.WorldID != "" {
 		world, err := service.GetWorldByID(channel.WorldID)
 		if err == nil && world != nil && world.AllowAdminEditMessages {
 			operatorRank := getChannelMemberRoleRank(channel, data.ChannelID, ctx.User.ID)
@@ -3222,6 +3226,26 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 	}
 	if (versioned || !isAuthor) && !service.CanEditHistoricalMessage(channel, &msg, ctx.User.ID) {
 		return nil, fmt.Errorf("PERMISSION_DENIED: 消息不可见或不可编辑")
+	}
+	var identityActor *service.ChannelIdentityActorContext
+	if ownerChanged {
+		if !isAdminEdit {
+			return nil, fmt.Errorf("PERMISSION_DENIED: 无权重新归属消息发送者，需开启管理员编辑历史消息")
+		}
+		if msg.IsWhisper {
+			return nil, fmt.Errorf("INVALID_IDENTITY: 悄悄话不支持跨用户重新归属发送者")
+		}
+		var err error
+		identityActor, err = service.ResolveChannelIdentityActor(data.ChannelID, ctx.User.ID, identityOwnerUserID)
+		if err != nil {
+			return nil, fmt.Errorf("PERMISSION_DENIED: 无权代管目标用户的频道角色")
+		}
+		if identityActor.IsBotTarget {
+			return nil, fmt.Errorf("INVALID_IDENTITY: 暂不支持将消息重新归属到 BOT")
+		}
+		if data.IdentityID == nil || strings.TrimSpace(*data.IdentityID) == "" {
+			return nil, fmt.Errorf("INVALID_IDENTITY: 请明确选择目标用户的频道角色")
+		}
 	}
 	channelData := channel.ToProtocolType()
 	effectiveBotFeatureEnabled := service.IsBotFeatureEffectivelyEnabled(channel)
@@ -3238,7 +3262,30 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 		authorUser = ctx.User
 	}
 
-	authorMember, _ := model.MemberGetByUserIDAndChannelID(msg.UserID, data.ChannelID, msg.SenderMemberName)
+	var authorMember *model.MemberModel
+	if ownerChanged {
+		authorUser = model.UserGet(identityActor.TargetUserID)
+		if authorUser == nil || authorUser.IsBot {
+			return nil, fmt.Errorf("INVALID_IDENTITY: 目标用户不存在或不是人类用户")
+		}
+		var err error
+		authorMember, err = model.MemberGetByUserIDAndChannelIDBase(authorUser.ID, data.ChannelID, "", false)
+		if err != nil {
+			return nil, err
+		}
+		if authorMember == nil {
+			name := authorUser.Nickname
+			if name == "" {
+				name = authorUser.Username
+			}
+			authorMember = &model.MemberModel{UserID: authorUser.ID, ChannelID: data.ChannelID, Nickname: name}
+		}
+		msg.UserID = authorUser.ID
+		msg.MemberID = authorMember.ID
+		msg.SenderMemberName = authorMember.Nickname
+	} else {
+		authorMember, _ = model.MemberGetByUserIDAndChannelID(msg.UserID, data.ChannelID, msg.SenderMemberName)
+	}
 
 	identityChanged := false
 	var resolvedIdentityProto *protocol.ChannelIdentity
@@ -3247,11 +3294,20 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 		if data.IdentityID != nil {
 			rawIdentityID = strings.TrimSpace(*data.IdentityID)
 		}
-		identity, err := service.ChannelIdentityValidateMessageIdentity(msg.UserID, data.ChannelID, rawIdentityID)
+		var identity *model.ChannelIdentityModel
+		var err error
+		if ownerChanged {
+			identity, err = service.ValidateChannelIdentityActorIdentity(identityActor, data.ChannelID, rawIdentityID)
+		} else {
+			identity, err = service.ChannelIdentityValidateMessageIdentity(msg.UserID, data.ChannelID, rawIdentityID)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("INVALID_IDENTITY: %w", err)
 		}
 		rawVariantID := strings.TrimSpace(msg.SenderIdentityVariantID)
+		if ownerChanged {
+			rawVariantID = ""
+		}
 		if data.IdentityID != nil && rawIdentityID == "" {
 			rawVariantID = ""
 		}
@@ -3268,7 +3324,7 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 			if appearance != nil {
 				nextVariantID = appearance.VariantID
 			}
-			identityChanged = identity.ID != msg.SenderIdentityID || nextVariantID != msg.SenderIdentityVariantID
+			identityChanged = ownerChanged || identity.ID != msg.SenderIdentityID || nextVariantID != msg.SenderIdentityVariantID
 			if identityChanged {
 				msg.SenderIdentityID = identity.ID
 				msg.SenderSharedIdentityID = identity.SharedIdentityID
@@ -3290,6 +3346,7 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 					resolvedIdentityProto.AvatarAttachmentID = appearance.AvatarAttachmentID
 					resolvedIdentityProto.AvatarTextStyle = appearance.AvatarTextStyle
 					resolvedIdentityProto.AvatarDecorations = appearance.AvatarDecorations
+					resolvedIdentityProto.TheaterPresentation = appearance.TheaterPresentation
 					if len(appearance.AvatarDecorations) > 0 {
 						first := appearance.AvatarDecorations[0]
 						resolvedIdentityProto.AvatarDecoration = &first
@@ -3451,6 +3508,16 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 		if authorMember != nil {
 			messageData.Member = authorMember.ToProtocolType()
 		}
+		if identityChanged {
+			if messageData.Member == nil {
+				messageData.Member = &protocol.GuildMember{ID: msg.MemberID}
+			}
+			messageData.Member.User = messageData.User
+			if msg.SenderMemberName != "" {
+				messageData.Member.Nick = msg.SenderMemberName
+			}
+			messageData.Member.Identity = resolvedIdentityProto
+		}
 		if msg.WhisperTarget != nil {
 			messageData.WhisperTo = msg.WhisperTarget.ToProtocolType()
 		}
@@ -3556,6 +3623,19 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 		}
 	}
 	err = db.Transaction(func(tx *gorm.DB) error {
+		if ownerChanged {
+			if authorMember.ID == "" {
+				if err := tx.Create(authorMember).Error; err != nil {
+					return err
+				}
+			}
+			msg.MemberID = authorMember.ID
+			msg.ClientID = nil
+			updates["user_id"] = msg.UserID
+			updates["member_id"] = msg.MemberID
+			// client_id 是原发送用户的消息创建幂等键，不能随发送者重归属。
+			updates["client_id"] = nil
+		}
 		if err := model.MessageUpdateTx(tx, msg.ID, data.ExpectedVersion, updates); err != nil {
 			return err
 		}
@@ -3572,7 +3652,7 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 		if err := tx.Where("id = ?", msg.ID).Take(&msg).Error; err != nil {
 			return err
 		}
-		history := model.MessageEditHistoryModel{MessageID: msg.ID, EditorID: ctx.User.ID, PrevContent: prevContent, ChannelID: msg.ChannelID, EditedUserID: msg.UserID, BeforeSnapshot: beforeSnapshot, AfterSnapshot: service.MessageAppearanceSnapshot(&msg)}
+		history := model.MessageEditHistoryModel{MessageID: msg.ID, EditorID: ctx.User.ID, PrevContent: prevContent, ChannelID: msg.ChannelID, EditedUserID: originalUserID, BeforeSnapshot: beforeSnapshot, AfterSnapshot: service.MessageAppearanceSnapshot(&msg)}
 		if err := tx.Create(&history).Error; err != nil {
 			return err
 		}
@@ -3588,24 +3668,6 @@ func apiMessageUpdateVersioned(ctx *ChatContext, data *messageUpdatePayload) (an
 	ttsBroadcastMessageState(msg.ID)
 
 	messageData := buildMessage()
-	if identityChanged {
-		if messageData.Member == nil {
-			messageData.Member = &protocol.GuildMember{
-				ID:   msg.MemberID,
-				User: &protocol.User{ID: msg.UserID},
-			}
-		}
-		if messageData.Member.User == nil {
-			messageData.Member.User = &protocol.User{ID: msg.UserID}
-		}
-		if authorUser != nil {
-			messageData.Member.User = authorUser.ToProtocolType()
-		}
-		if msg.SenderMemberName != "" {
-			messageData.Member.Nick = msg.SenderMemberName
-		}
-		messageData.Member.Identity = resolvedIdentityProto
-	}
 
 	ev := &protocol.Event{
 		Type:    protocol.EventMessageUpdated,
