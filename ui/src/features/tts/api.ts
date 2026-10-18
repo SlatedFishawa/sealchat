@@ -58,6 +58,9 @@ export const speechAPI = {
   async role(identityId: string) { return (await api.get<RoleSpeechConfig>(`${root}/roles/${id(identityId)}`)).data },
   async saveRole(identityId: string, value: RoleSpeechConfig) { await api.put(`${root}/roles/${id(identityId)}`, value) },
   async message(messageId: string) { return (await api.get<{ tts: MessageSpeech | null }>(`${root}/messages/${id(messageId)}`)).data.tts },
+  // The server derives a durable request key from the message and its revision.
+  // Retrying an uncertain response never creates another charged attempt.
+  async synthesizeMessage(messageId: string) { return (await api.post<{ tts: MessageSpeech | null }>(`${root}/messages/${id(messageId)}/synthesize`)).data.tts },
   async ticket(kind: 'messages' | 'resources', resourceId: string) {
     return (await api.post<{ url: string }>(`${root}/${kind}/${id(resourceId)}/ticket`)).data.url
   },

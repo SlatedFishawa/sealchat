@@ -208,6 +208,17 @@ func BindTTSRoutes(auth fiber.Router) {
 		}
 		return c.JSON(fiber.Map{"tts": m.ValidTTS()})
 	})
+	r.Post("/messages/:id/synthesize", func(c *fiber.Ctx) error {
+		// This charged operation has no client-controlled synthesis parameters.
+		if body := strings.TrimSpace(string(c.Body())); body != "" && body != "{}" {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+		state, err := service.TTSSynthesizeMessage(getCurUser(c).ID, c.Params("id"))
+		if err != nil {
+			return ttsError(c, err)
+		}
+		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"tts": state})
+	})
 	r.Post("/messages/:id/ticket", func(c *fiber.Ctx) error {
 		m, err := ttsReadMessage(getCurUser(c).ID, c.Params("id"))
 		if err != nil {

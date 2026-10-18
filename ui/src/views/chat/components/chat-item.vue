@@ -4043,7 +4043,9 @@ const handleRetrySend = () => {
         :class="contentClassList">
         <div v-if="hasEditAction || item?.tts" class="message-action-bar"
           :class="{ 'message-action-bar--active': canShowEditAction && isActionBarVisible, 'message-action-bar--speech': !!item?.tts, 'message-action-bar--playing': speechPlayer.state.key === `messages:${item?.id}` }">
-          <MessageSpeechButton v-if="item?.id" :message="{ id: item.id, tts: item.tts }" />
+          <MessageSpeechButton v-if="item?.id"
+            :message="{ id: item.id, tts: item.tts, editCount: item.editCount, icMode: props.tone, widgetData: item.widgetData, isRevoked: item.isRevoked, isDeleted: item.isDeleted }"
+            :can-synthesize="canShowEditAction" />
           <n-tooltip v-if="canShowEditAction" trigger="hover">
             <template #trigger>
               <n-button text size="small" class="message-action-bar__btn" @click="handleEditClick">
@@ -4286,12 +4288,14 @@ const handleRetrySend = () => {
 }
 
 @media (hover: none), (pointer: coarse) {
-  .message-action-bar--speech {
+  .message-action-bar--speech,
+  .message-action-bar:has(.message-speech-button) {
     opacity: 1;
     pointer-events: auto;
   }
 
-  .chat-item--layout-compact .message-action-bar--speech {
+  .chat-item--layout-compact .message-action-bar--speech,
+  .chat-item--layout-compact .message-action-bar:has(.message-speech-button) {
     width: auto;
     top: -1.8rem;
     bottom: auto;
@@ -5103,13 +5107,18 @@ const handleRetrySend = () => {
   top: -1.6rem;
   right: clamp(-0.25rem, 0.8vw, 0.25rem);
   display: flex;
-  gap: 0.25rem;
+  flex-flow: row nowrap;
+  align-items: center;
+  width: max-content;
+  gap: 0.125rem;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .message-action-bar__btn {
+  flex: 0 0 auto;
+  min-width: 18px;
   pointer-events: auto;
   color: rgba(15, 23, 42, 0.75);
   padding: 0;
@@ -5136,15 +5145,15 @@ const handleRetrySend = () => {
   top: 0;
   right: 0;
   bottom: 0;
-  width: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
+  width: max-content;
   justify-content: center;
   align-items: center;
   transform: none;
 }
 
 .chat-item--layout-compact .message-action-bar__btn {
-  width: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
-  min-width: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
+  width: 18px;
+  min-width: 18px;
   height: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
   min-height: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
   display: inline-flex;
@@ -5168,13 +5177,9 @@ const handleRetrySend = () => {
     border-radius: 999px;
   }
 
-  .chat-item--layout-compact .message-action-bar {
-    width: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
-  }
-
   .chat-item--layout-compact .message-action-bar__btn {
-    width: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
-    min-width: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
+    width: 1.72rem;
+    min-width: 1.72rem;
     height: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
     min-height: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
   }
@@ -5433,11 +5438,19 @@ const handleRetrySend = () => {
   padding-right: var(--message-edit-slot-width);
 }
 
+.chat--layout-compact .chat-item > .right > .content:has(.message-speech-button) {
+  padding-right: max(var(--message-edit-slot-width, 18px), calc(36px + 0.125rem));
+}
+
 @media (hover: none), (pointer: coarse) {
   .chat--layout-compact .chat-item > .right > .content.content--has-edit-action,
   .chat--layout-compact .chat-item--ooc > .right > .content.content--has-edit-action {
     --message-edit-slot-width: clamp(1.2rem, 4.6vw, 1.65rem);
     padding-right: var(--message-edit-slot-width);
+  }
+
+  .chat--layout-compact .chat-item > .right > .content:has(.message-speech-button) {
+    padding-right: max(var(--message-edit-slot-width, 1.72rem), calc(3.44rem + 0.125rem));
   }
 }
 

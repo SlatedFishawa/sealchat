@@ -209,6 +209,9 @@ function onIntent(event: MessageEvent) {
   if (value.action === 'play' && (value.kind === 'messages' || value.kind === 'resources') && typeof value.id === 'string' && value.id.length <= 100) {
     void speechPlayer.play(value.kind, value.id)
   }
+  if (value.action === 'ensure-play' && (value.kind === 'messages' || value.kind === 'resources') && typeof value.id === 'string' && value.id.length <= 100) {
+    void speechPlayer.ensurePlay(value.kind, value.id)
+  }
 }
 function broadcastState() {
   if (!mainWindow) return

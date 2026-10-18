@@ -163,7 +163,10 @@ func ttsCompleteTranslation(s *TTSSnapshot, text string) {
 	s.Translation.StartedAt = 0
 	s.Input.Text, s.Input.Language = text, s.Translation.TargetLanguage
 	s.Fingerprint = ""
-	raw, _ := json.Marshal(s)
+	fingerprint := *s
+	fingerprint.ManualRequestedAt = 0
+	fingerprint.ManualRequestKey = ""
+	raw, _ := json.Marshal(fingerprint)
 	s.Fingerprint = ttsHash(string(raw))
 }
 
@@ -183,13 +186,14 @@ func ttsFailTranslation(db *gorm.DB, m model.MessageModel) {
 }
 
 func ttsFinalizeTranslation(ctx context.Context, db *gorm.DB, m model.MessageModel, s TTSSnapshot) {
-	job := &model.TTSJob{MessageID: m.ID, ChannelID: m.ChannelID, PayerUserID: m.UserID, MessageRevision: int64(m.EditCount), Snapshot: m.TTSIntent}
+	payerID := ttsMessagePayer(m, s)
+	job := &model.TTSJob{MessageID: m.ID, ChannelID: m.ChannelID, PayerUserID: payerID, MessageRevision: int64(m.EditCount), Snapshot: m.TTSIntent}
 	if !ttsMessageCurrentWithDB(db, job, s) {
 		return
 	}
 	var user model.UserModel
 	var channel model.ChannelModel
-	if db.Where("id = ? AND deleted_at IS NULL", m.UserID).First(&user).Error != nil ||
+	if db.Where("id = ? AND deleted_at IS NULL", payerID).First(&user).Error != nil ||
 		db.Where("id = ? AND deleted_at IS NULL", m.ChannelID).First(&channel).Error != nil {
 		ttsFailTranslation(db, m)
 		return

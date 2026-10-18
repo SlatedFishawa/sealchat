@@ -63,6 +63,8 @@ type TTSSnapshot struct {
 	AdoptAsVoicePreview bool                       `json:"adoptAsVoicePreview,omitempty"`
 	Audience            []string                   `json:"audience,omitempty"`
 	Whisper             bool                       `json:"whisper,omitempty"`
+	ManualRequestedAt   int64                      `json:"manualRequestedAt,omitempty"`
+	ManualRequestKey    string                     `json:"manualRequestKey,omitempty"`
 	SourceText          string                     `json:"sourceText,omitempty"`
 	Translation         *TTSTranslationSnapshot    `json:"translation,omitempty"`
 }
@@ -424,22 +426,31 @@ func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn
 	if !optIn || user == nil || user.IsBot || m.ICMode != "ic" || len(m.ChannelID) >= 30 || m.WidgetData != "" || !TTSAutomaticEnabled(user.ID) {
 		return
 	}
+	_ = ttsPrepareMessageIntent(m, user, 0, "")
+}
+
+// Both entry points freeze the same current role settings and audience. Only
+// automatic sending consults the user's automatic synthesis preference.
+func ttsPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, manualRequestedAt int64, manualRequestKey string) error {
+	if user == nil || user.IsBot || m.ICMode != "ic" || len(m.ChannelID) >= 30 || m.WidgetData != "" {
+		return TTSValidationError("此消息类型不朗读")
+	}
 	text, err := ttsPlainText(m.Content, ttsMessageSynthesisMaxRunes)
 	if err != nil {
 		m.TTSStatus = "skipped"
-		return
+		return err
 	}
 	r := TTSRequest{Text: text}
 	if m.SenderIdentityID != "" {
 		role, found, roleErr := channelIdentityTTSConfigTx(model.GetDB(), m.SenderIdentityID, m.SenderSharedIdentityID, false)
 		if roleErr != nil {
 			m.TTSStatus = "unavailable"
-			return
+			return roleErr
 		}
 		if found {
 			if role.Disabled {
 				m.TTSStatus = "skipped"
-				return
+				return TTSValidationError("此角色已禁用语音")
 			}
 			r.VoiceID = role.VoiceID
 			r.SystemVoice = role.SystemVoice
@@ -457,7 +468,7 @@ func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn
 	s, err := ttsSnapshotForRequest(user.ID, r, m.ChannelID+":"+m.ID, true)
 	if err != nil {
 		m.TTSStatus = "unavailable"
-		return
+		return err
 	}
 	if m.IsWhisper {
 		seen := map[string]bool{}
@@ -480,12 +491,16 @@ func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn
 		fingerprint, _ := json.Marshal(s)
 		s.Fingerprint = ttsHash(string(fingerprint))
 	}
+	// Outbox timing is not part of the speech/cache identity.
+	s.ManualRequestedAt = manualRequestedAt
+	s.ManualRequestKey = manualRequestKey
 	b, err := json.Marshal(s)
 	if err != nil {
-		return
+		return err
 	}
 	m.TTSIntent = string(b)
 	m.TTSStatus = "pending"
+	return nil
 }
 
 func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {

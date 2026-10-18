@@ -245,13 +245,18 @@ func ttsRecoverOutboxWithContext(ctx context.Context) {
 	for _, m := range messages {
 		status := "queued"
 		var s TTSSnapshot
-		if m.IsDeleted || m.IsRevoked || m.DeletedAt != nil || json.Unmarshal([]byte(m.TTSIntent), &s) != nil || (s.Translation == nil && time.Since(m.CreatedAt) > 2*time.Minute) {
+		decodeErr := json.Unmarshal([]byte(m.TTSIntent), &s)
+		requestedAt := m.CreatedAt
+		if s.ManualRequestedAt != 0 {
+			requestedAt = time.Unix(s.ManualRequestedAt, 0)
+		}
+		if m.IsDeleted || m.IsRevoked || m.DeletedAt != nil || decodeErr != nil || (s.Translation == nil && time.Since(requestedAt) > 2*time.Minute) {
 			status = "skipped"
 		} else {
 			if ttsRecoverTranslation(ctx, db, m, s) {
 				continue
 			}
-			j := &model.TTSJob{Operation: "message_synthesis", RequestKey: "message:" + m.ID, PayerUserID: m.UserID, ChannelID: m.ChannelID, MessageID: m.ID, MessageRevision: int64(m.EditCount), Snapshot: m.TTSIntent, VoiceID: s.VoiceID, Deadline: time.Now().Add(ttsMessageQueueWait)}
+			j := &model.TTSJob{Operation: "message_synthesis", RequestKey: ttsMessageRequestKey(m, s), PayerUserID: ttsMessagePayer(m, s), ChannelID: m.ChannelID, MessageID: m.ID, MessageRevision: int64(m.EditCount), Snapshot: m.TTSIntent, VoiceID: s.VoiceID, Deadline: time.Now().Add(ttsMessageQueueWait)}
 			if err := ttsReserveSnapshot(j, s); err != nil {
 				status = "skipped"
 			}
@@ -281,7 +286,7 @@ func ttsMessageCurrentWithDB(db *gorm.DB, job *model.TTSJob, s TTSSnapshot) bool
 		return false
 	}
 	text, err := ttsPlainText(m.Content, ttsMessageSynthesisMaxRunes)
-	if m.IsWhisper != (s.Whisper || len(s.Audience) > 0) || (job.ChannelID != "" && m.ChannelID != job.ChannelID) || (job.PayerUserID != "" && m.UserID != job.PayerUserID) {
+	if m.IsWhisper != (s.Whisper || len(s.Audience) > 0) || (job.ChannelID != "" && m.ChannelID != job.ChannelID) || (job.PayerUserID != "" && ttsMessagePayer(m, s) != job.PayerUserID) {
 		return false
 	}
 	expectedSource := s.SourceText
