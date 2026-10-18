@@ -6,13 +6,14 @@ import WorldObserverLinkCard from '../WorldObserverLinkCard.vue';
 import WorldAgentAccessLinkCard from '../WorldAgentAccessLinkCard.vue';
 import WorldLogLayoutCard from '../WorldLogLayoutCard.vue';
 
+type AccessDrawerKind = 'observer' | 'agent' | 'log';
+
 // Only owner/admin reach this section; the embedded cards and the backend still enforce it.
 const props = defineProps<{
   worldId: string;
   canManage: boolean;
+  openKind?: AccessDrawerKind | null;
 }>();
-
-type AccessDrawerKind = 'observer' | 'agent' | 'log';
 
 const drawerVisible = ref(false);
 const drawerKind = ref<AccessDrawerKind>('observer');
@@ -22,6 +23,12 @@ const openDrawer = (kind: AccessDrawerKind) => {
   drawerKind.value = kind;
   drawerVisible.value = true;
 };
+
+watch(() => props.openKind, (kind) => {
+  if (kind && props.canManage) {
+    openDrawer(kind);
+  }
+}, { immediate: true });
 
 watch(() => props.worldId, () => {
   drawerVisible.value = false;

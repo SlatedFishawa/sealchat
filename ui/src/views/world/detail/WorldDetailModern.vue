@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDialog, useMessage } from 'naive-ui';
-import { Bell, DoorExit, History, Settings, Share, Users } from '@vicons/tabler';
+import { Bell, Book, DoorExit, Eye, History, Robot, Settings, Share, Users } from '@vicons/tabler';
 import { useChatStore } from '@/stores/chat';
 import WorldManager from '../WorldManager.vue';
 import WorldMemberManager from '../WorldMemberManager.vue';
@@ -20,6 +20,7 @@ const message = useMessage();
 const dialog = useDialog();
 
 type SectionKey = 'overview' | 'access' | 'notify' | 'manage' | 'more';
+type AccessDrawerKind = 'observer' | 'agent' | 'log';
 
 const detail = ref<any>(null);
 const loading = ref(false);
@@ -30,6 +31,7 @@ const activeSection = ref<SectionKey>('overview');
 const worldManagerVisible = ref(false);
 const memberManagerVisible = ref(false);
 const inviteMap = ref<Record<string, any>>({});
+const accessDrawerKind = ref<AccessDrawerKind | null>(null);
 
 // Every async result is dropped unless it still belongs to the latest load of the current world.
 let loadSeq = 0;
@@ -134,6 +136,7 @@ watch(() => props.worldId, () => {
   detail.value = null;
   loadFailed.value = false;
   inviteMap.value = {};
+  accessDrawerKind.value = null;
   activeSection.value = 'overview';
   worldManagerVisible.value = false;
   memberManagerVisible.value = false;
@@ -141,11 +144,17 @@ watch(() => props.worldId, () => {
 }, { immediate: true });
 
 const selectSection = (key: SectionKey) => {
+  accessDrawerKind.value = null;
   activeSection.value = key;
   if (key === 'overview') {
     // Invites may have been created in the access section.
     void loadInviteSummary();
   }
+};
+
+const openAccessDrawer = (kind: AccessDrawerKind) => {
+  accessDrawerKind.value = kind;
+  activeSection.value = 'access';
 };
 
 // Settings may rename the world or change its cover; refresh on close unless it was deleted.
@@ -308,20 +317,9 @@ const handleLeaveWorld = () => {
                 <n-tag size="small" :bordered="false" :type="item.status.tagType">{{ item.status.text }}</n-tag>
               </li>
             </ul>
-            <p class="world-console-section-desc">OB 旁观链接与 AI Agent 访问链接也在此处配置。</p>
+            <p class="world-console-section-desc">管理成员邀请与旁观邀请。</p>
             <footer class="world-console-card__foot">
               <n-button size="small" secondary @click="selectSection('access')">管理访问与共享</n-button>
-            </footer>
-          </section>
-
-          <section v-if="canManageWorld" class="world-console-panel world-console-card">
-            <header class="world-console-card__head">
-              <n-icon size="18"><Bell /></n-icon>
-              <h2 class="world-console-section-title">世界未读提醒</h2>
-            </header>
-            <p class="world-console-section-desc">按时间窗口汇总低活跃时段的未读消息，并通过邮件或 Webhook 推送摘要。</p>
-            <footer class="world-console-card__foot">
-              <n-button size="small" secondary @click="selectSection('notify')">配置提醒</n-button>
             </footer>
           </section>
 
@@ -335,12 +333,57 @@ const handleLeaveWorld = () => {
               <n-button size="small" secondary @click="worldManagerVisible = true">打开设置</n-button>
             </footer>
           </section>
+
+          <section v-if="canManageWorld" class="world-console-panel world-console-card">
+            <header class="world-console-card__head">
+              <n-icon size="18"><Eye /></n-icon>
+              <h2 class="world-console-section-title">OB 旁观链接</h2>
+            </header>
+            <p class="world-console-section-desc">创建免登录旁观入口，供观众查看世界内容与频道消息。</p>
+            <footer class="world-console-card__foot">
+              <n-button size="small" secondary @click="openAccessDrawer('observer')">配置旁观链接</n-button>
+            </footer>
+          </section>
+
+          <section v-if="canManageWorld" class="world-console-panel world-console-card">
+            <header class="world-console-card__head">
+              <n-icon size="18"><Book /></n-icon>
+              <h2 class="world-console-section-title">LOG 排版与发布</h2>
+            </header>
+            <p class="world-console-section-desc">整理、排版跑团记录并发布为可分享、可匿名阅读的精美页面。</p>
+            <footer class="world-console-card__foot">
+              <n-button size="small" secondary @click="openAccessDrawer('log')">打开 LOG 排版</n-button>
+            </footer>
+          </section>
+
+          <section v-if="canManageWorld" class="world-console-panel world-console-card">
+            <header class="world-console-card__head">
+              <n-icon size="18"><Robot /></n-icon>
+              <h2 class="world-console-section-title">Agent 访问链接</h2>
+            </header>
+            <p class="world-console-section-desc">创建只读 Agent 访问入口，用于读取频道消息与世界内容。</p>
+            <footer class="world-console-card__foot">
+              <n-button size="small" secondary @click="openAccessDrawer('agent')">配置 Agent 链接</n-button>
+            </footer>
+          </section>
+
+          <section v-if="canManageWorld" class="world-console-panel world-console-card">
+            <header class="world-console-card__head">
+              <n-icon size="18"><Bell /></n-icon>
+              <h2 class="world-console-section-title">世界未读提醒</h2>
+            </header>
+            <p class="world-console-section-desc">按时间窗口汇总低活跃时段的未读消息，并通过邮件或 Webhook 推送摘要。</p>
+            <footer class="world-console-card__foot">
+              <n-button size="small" secondary @click="selectSection('notify')">配置提醒</n-button>
+            </footer>
+          </section>
         </div>
 
         <WorldDetailAccessPanel
           v-else-if="activeSection === 'access' && canManageWorld"
           :world-id="worldId"
           :can-manage="canManageWorld"
+          :open-kind="accessDrawerKind"
         />
 
         <section v-else-if="activeSection === 'notify' && canManageWorld" class="world-console-panel world-console-embed">
