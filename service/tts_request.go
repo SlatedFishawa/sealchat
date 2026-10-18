@@ -405,7 +405,7 @@ func ttsPlainText(content string, maxRunes int) (string, error) {
 	} else if strings.ContainsAny(input, "<>") || strings.Contains(input, "[CQ:") || strings.Contains(input, "[clue:") {
 		return "", TTSValidationError("此消息类型不朗读")
 	}
-	text := strings.TrimSpace(NormalizeMessageContentToPlainText(input))
+	text := strings.TrimSpace(ttsStripURLs(NormalizeMessageContentToPlainText(input)))
 	if text == "" || utf8.RuneCountInString(text) > maxRunes {
 		if maxRunes == 500 {
 			return "", TTSValidationError("朗读文本须为 1–500 字符")
