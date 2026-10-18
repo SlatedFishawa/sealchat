@@ -64,6 +64,8 @@ func bindLogReleaseRoutes(r fiber.Router) {
 	public.Get("/:slug", logPublicGet)
 	public.Get("/:slug/sections/:sectionId/items", logPublicQuery)
 	public.Get("/:slug/sections/:sectionId/context/:nodeId", logPublicQuery)
+	public.Get("/:slug/chapters/:chapterId/items", logPublicChapterQuery)
+	public.Get("/:slug/chapters/:chapterId/context/:nodeId", logPublicChapterQuery)
 	public.Get("/:slug/search", logPublicSearch)
 	public.Get("/:slug/assets/:assetKey", logPublicAsset)
 }
@@ -129,6 +131,14 @@ func logPublicQuery(c *fiber.Ctx) error {
 		return logResponse(c, nil, &service.LogError{Code: "INVALID_INPUT", Message: "limit 无效"})
 	}
 	data, err := service.QueryPublicLog(c.Params("slug"), c.Params("sectionId"), c.Query("cursor"), c.Params("nodeId"), "", limit)
+	return logResponse(c, data, err)
+}
+func logPublicChapterQuery(c *fiber.Ctx) error {
+	limit, err := strconv.Atoi(c.Query("limit", "100"))
+	if err != nil {
+		return logResponse(c, nil, &service.LogError{Code: "INVALID_INPUT", Message: "limit 无效"})
+	}
+	data, err := service.QueryPublicLogChapter(c.Params("slug"), c.Params("chapterId"), c.Query("cursor"), c.Params("nodeId"), limit)
 	return logResponse(c, data, err)
 }
 func logPublicSearch(c *fiber.Ctx) error {

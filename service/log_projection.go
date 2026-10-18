@@ -216,9 +216,25 @@ func logBuildElement(r *model.LogReleaseModel, e LogElement, ordinal int64) erro
 	return model.GetDB().Create(&row).Error
 }
 func logBuildPublicMetadata(r *model.LogReleaseModel, d *LogDraft) (map[string]any, error) {
+	// d.Sections is already in publish order. In chapter mode a section's public title is its chapter's
+	// visual title (labels are editor-only); readers that predate chapters still get one entry per section.
+	chapterTitles := map[string]string{}
+	for _, c := range d.Chapters {
+		chapterTitles[c.ID] = c.Title
+	}
 	sections := []map[string]string{}
+	chapters := []map[string]any{}
 	for _, s := range d.Sections {
-		sections = append(sections, map[string]string{"id": s.ID, "title": s.Title})
+		if s.ChapterID == "" {
+			sections = append(sections, map[string]string{"id": s.ID, "title": s.Title})
+			continue
+		}
+		sections = append(sections, map[string]string{"id": s.ID, "title": chapterTitles[s.ChapterID], "chapterId": s.ChapterID})
+		if n := len(chapters); n > 0 && chapters[n-1]["id"] == s.ChapterID {
+			chapters[n-1]["sectionIds"] = append(chapters[n-1]["sectionIds"].([]string), s.ID)
+			continue
+		}
+		chapters = append(chapters, map[string]any{"id": s.ChapterID, "title": chapterTitles[s.ChapterID], "sectionIds": []string{s.ID}})
 	}
 	b, _ := json.Marshal(d.Page)
 	page := map[string]any{}
@@ -263,7 +279,11 @@ func logBuildPublicMetadata(r *model.LogReleaseModel, d *LogDraft) (map[string]a
 		}
 		style = map[string]any{"schemaVersion": 1, "version": p.Version, "name": p.Name, "license": p.License, "minRendererVersion": p.MinRendererVersion, "tokens": tokens, "templates": p.Templates, "css": cssText, "rules": rules, "settingsSchema": p.SettingsSchema, "assets": assets}
 	}
-	return map[string]any{"schemaVersion": 1, "title": d.Title, "releaseId": r.ID, "sections": sections, "page": page, "style": style}, nil
+	out := map[string]any{"schemaVersion": 1, "title": d.Title, "releaseId": r.ID, "sections": sections, "page": page, "style": style}
+	if len(chapters) > 0 {
+		out["chapters"] = chapters
+	}
+	return out, nil
 }
 
 func logPublicCSS(release string, p *LogStylePackage) string {

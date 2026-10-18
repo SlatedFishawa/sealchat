@@ -188,6 +188,16 @@ func logVisiblePublicNodes(s *logPublicScope, rows []model.LogReleaseNodeModel) 
 	return out, nil
 }
 func QueryPublicLog(slug, section, cursor, target, query string, limit int) (map[string]any, error) {
+	return queryPublicLog(slug, false, section, cursor, target, query, limit)
+}
+
+// QueryPublicLogChapter reads one visual chapter: the release nodes of its sections in publish (ordinal) order.
+// Only releases published with chapters expose chapter scopes; legacy releases keep section scopes.
+func QueryPublicLogChapter(slug, chapter, cursor, target string, limit int) (map[string]any, error) {
+	return queryPublicLog(slug, true, chapter, cursor, target, "", limit)
+}
+
+func queryPublicLog(slug string, chapterScope bool, scope, cursor, target, query string, limit int) (map[string]any, error) {
 	if limit < 1 || limit > 200 || len([]rune(query)) > 200 {
 		return nil, logError("INVALID_INPUT", "查询参数无效")
 	}
@@ -195,18 +205,23 @@ func QueryPublicLog(slug, section, cursor, target, query string, limit int) (map
 	if err != nil {
 		return nil, err
 	}
-	if section != "" {
-		found := false
-		for _, x := range s.Draft.Sections {
-			if x.ID == section {
-				found = true
-			}
-		}
-		if !found {
-			return nil, logPublicNotFound()
+	// The cursor scope key keeps section and chapter cursors from being replayed against each other.
+	scopeKey := scope
+	sectionIDs := []string{}
+	for _, x := range s.Draft.Sections {
+		if (!chapterScope && x.ID == scope) || (chapterScope && x.ChapterID == scope) {
+			sectionIDs = append(sectionIDs, x.ID)
 		}
 	}
-	last, err := logDecodePublicCursor(s, section, query, cursor)
+	if chapterScope {
+		scopeKey = "chapter:" + scope
+		if scope == "" || len(sectionIDs) == 0 {
+			return nil, logPublicNotFound()
+		}
+	} else if scope != "" && len(sectionIDs) == 0 {
+		return nil, logPublicNotFound()
+	}
+	last, err := logDecodePublicCursor(s, scopeKey, query, cursor)
 	if err != nil {
 		return nil, err
 	}
@@ -216,8 +231,8 @@ func QueryPublicLog(slug, section, cursor, target, query string, limit int) (map
 			escaped := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(query))
 			q = q.Where("LOWER(search_text) LIKE ? ESCAPE '!'", "%"+escaped+"%")
 		}
-		if section != "" {
-			q = q.Where("section_id = ?", section)
+		if scope != "" {
+			q = q.Where("section_id IN ?", sectionIDs)
 		}
 		return q
 	}
@@ -233,11 +248,11 @@ func QueryPublicLog(slug, section, cursor, target, query string, limit int) (map
 		if len(v) == 0 {
 			return nil, logPublicNotFound()
 		}
-		before, err := logPublicContextSide(s, section, n.Ordinal, true)
+		before, err := logPublicContextSide(s, sectionIDs, n.Ordinal, true)
 		if err != nil {
 			return nil, err
 		}
-		after, err := logPublicContextSide(s, section, n.Ordinal, false)
+		after, err := logPublicContextSide(s, sectionIDs, n.Ordinal, false)
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +290,7 @@ func QueryPublicLog(slug, section, cursor, target, query string, limit int) (map
 				continue
 			}
 			if len(items) == limit {
-				key := logEncodePublicCursor(s, section, query, last)
+				key := logEncodePublicCursor(s, scopeKey, query, last)
 				next = &key
 				break
 			}
@@ -297,7 +312,7 @@ func QueryPublicLog(slug, section, cursor, target, query string, limit int) (map
 	return out, logPublicRecheck(s)
 }
 
-func logPublicContextSide(s *logPublicScope, section string, ordinal int64, before bool) ([]map[string]any, error) {
+func logPublicContextSide(s *logPublicScope, sectionIDs []string, ordinal int64, before bool) ([]map[string]any, error) {
 	out := []map[string]any{}
 	op, order := ">", "ordinal"
 	if before {
@@ -306,7 +321,7 @@ func logPublicContextSide(s *logPublicScope, section string, ordinal int64, befo
 	}
 	for len(out) < 20 {
 		var rows []model.LogReleaseNodeModel
-		if err := model.GetDB().Where("release_id = ? AND section_id = ? AND ordinal "+op+" ?", s.Release.ID, section, ordinal).Order(order).Limit(100).Find(&rows).Error; err != nil {
+		if err := model.GetDB().Where("release_id = ? AND section_id IN ? AND ordinal "+op+" ?", s.Release.ID, sectionIDs, ordinal).Order(order).Limit(100).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		visible, err := logVisiblePublicNodes(s, rows)

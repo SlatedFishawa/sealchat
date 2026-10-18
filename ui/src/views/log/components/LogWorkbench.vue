@@ -37,6 +37,7 @@ import {
   updateLogExclusions,
 } from '@/services/log/logApi';
 import {
+  listWorldChannels,
   removeMessage,
   reorderMessage,
   revokeMessage,
@@ -56,6 +57,7 @@ import { useLogMessageWindow } from '../composables/useLogMessageWindow';
 import { useLogAssets } from '../composables/useLogAssets';
 import { useLogSelection } from '../composables/useLogSelection';
 import { createElement, downloadJson, elementAvailability } from '../logDraftOps';
+import { chapterTitle, chapterViews, sectionLabel } from '../logChapterOps';
 import LogPreviewFrame from './LogPreviewFrame.vue';
 import LogSelectionBar from './LogSelectionBar.vue';
 import LogMessageEditor from './LogMessageEditor.vue';
@@ -83,6 +85,33 @@ const draft = draftCtl.draft;
 const sections = computed(() => draft.value.sections.slice().sort((a, b) => a.order - b.order));
 const sectionId = ref(sections.value[0]?.id || '');
 const currentSection = computed(() => sections.value.find((s) => s.id === sectionId.value) || null);
+// 视觉章节：工作台仍按来源片段加载与编辑，预览与页眉使用片段所属章节的标题。
+const chapters = computed(() => chapterViews(draft.value));
+const currentChapterIndex = computed(() => chapters.value.findIndex((c) => c.sections.some((s) => s.id === sectionId.value)));
+const currentChapter = computed(() => chapters.value[currentChapterIndex.value] || null);
+const currentIsFragment = computed(() => (currentChapter.value?.sections.length || 0) > 1);
+const visualTitle = computed(() => currentChapter.value?.title || '');
+// 只有出现多来源章节时才需要频道名来区分片段；读取失败时退回频道 id。
+const channelNames = shallowRef<Map<string, string>>(new Map());
+let channelNamesRequested = false;
+watch(() => chapters.value.some((c) => c.sections.length > 1), async (needed) => {
+  if (!needed || channelNamesRequested) return;
+  channelNamesRequested = true;
+  try {
+    const list = await listWorldChannels(props.context.worldId);
+    channelNames.value = new Map(list.map((c) => [c.id, c.name]));
+  } catch {
+    channelNamesRequested = false;
+  }
+}, { immediate: true });
+const sourceChannelName = (id: string) => channelNames.value.get(id) || id;
+/** 多来源章节中当前片段的位置说明，例如“大厅 · 汇合（2/4）”。 */
+const fragmentHint = computed(() => {
+  const c = currentChapter.value;
+  const s = currentSection.value;
+  if (!c || !s || c.sections.length < 2) return '';
+  return `${sectionLabel(s, sourceChannelName)}（${c.sections.indexOf(s) + 1}/${c.sections.length}）`;
+});
 const querySection = shallowRef<LogSection | null>(null);
 
 const commitQuerySection = () => {
@@ -141,7 +170,7 @@ const nodeCache = new Map<string, { key: string; node: RenderMessageNode }>();
 const composition = computed(() => {
   const sec = querySection.value;
   if (!sec) return null;
-  return composeDesignSection(sec.id, currentSection.value?.title || sec.title, win.items.value, draft.value.elements, win.complete.value, nodeCache);
+  return composeDesignSection(sec.id, visualTitle.value, win.items.value, draft.value.elements, win.complete.value, nodeCache);
 });
 const orderedIds = computed(() => composition.value?.nodes.map((n) => n.id) || []);
 
@@ -170,7 +199,7 @@ const rebuild = () => {
     style: pkg ? designStyleFromPackage(pkg, d.themeTokens) : null,
     page: d.page,
     title: d.title,
-    sectionTitle: currentSection.value?.title || '',
+    sectionTitle: visualTitle.value,
     nodes: comp.nodes,
     toc: comp.toc,
     backgroundToken: d.page.backgroundAssetId ? `style:${d.page.backgroundAssetId}` : null,
@@ -243,6 +272,12 @@ const openPanel = (tab: PanelTab) => {
   panelTab.value = tab;
   panelOpen.value = true;
   panelCollapsed.value = false;
+};
+const openElementFromPublish = (id: string) => {
+  const element = draft.value.elements.find((e) => e.id === id);
+  if (element?.anchor.sectionId) sectionId.value = element.anchor.sectionId;
+  focusElementId.value = id;
+  openPanel('elements');
 };
 const hidePanel = () => {
   if (narrow.value) panelOpen.value = false;
@@ -573,7 +608,15 @@ const titleModel = computed({
     d.title = v.slice(0, 200);
   }),
 });
-const sectionOptions = computed(() => sections.value.map((s, i) => ({ label: s.title || `第 ${i + 1} 章`, value: s.id })));
+// 单来源章节直接以章节出现；多来源章节分组列出其片段，选择的仍是来源片段。
+const sectionOptions = computed(() => chapters.value.map((c, i) => (c.sections.length === 1
+  ? { label: chapterTitle(c, i), value: c.sections[0].id }
+  : {
+      type: 'group' as const,
+      label: chapterTitle(c, i),
+      key: c.key,
+      children: c.sections.map((s) => ({ label: sectionLabel(s, sourceChannelName), value: s.id })),
+    })));
 const sectionsShow = ref(false);
 
 const saveStatusText = computed(() => ({
@@ -673,7 +716,7 @@ onBeforeUnmount(() => {
         />
         <button type="button" class="log-wb__text-btn" @click="sectionsShow = true">
           <n-icon :component="Stack2" size="16" />
-          <span>{{ caps.manageSources ? '章节与来源' : '来源与筛选' }}</span>
+          <span>{{ caps.manageSources ? '章节与来源' : '章节结构' }}</span>
         </button>
       </div>
 
@@ -695,8 +738,15 @@ onBeforeUnmount(() => {
           <button type="button" role="radio" :aria-checked="!previewPublish" :class="{ 'is-on': !previewPublish }" title="设计视图：显示选择与快捷操作" @click="previewPublish = false">
             <n-icon :component="Pencil" size="14" /><span>设计</span>
           </button>
-          <button type="button" role="radio" :aria-checked="previewPublish" :class="{ 'is-on': previewPublish }" title="发布效果：公开读者看到的版式" @click="previewPublish = true">
-            <n-icon :component="Eye" size="14" /><span>发布效果</span>
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="previewPublish"
+            :class="{ 'is-on': previewPublish }"
+            :title="currentIsFragment ? '当前片段的发布版式；公开章节会按编排串联全部片段' : '发布效果：公开读者看到的版式'"
+            @click="previewPublish = true"
+          >
+            <n-icon :component="Eye" size="14" /><span>{{ currentIsFragment ? '片段发布效果' : '发布效果' }}</span>
           </button>
         </div>
       </div>
@@ -869,6 +919,7 @@ onBeforeUnmount(() => {
               :complete="win.complete.value"
               :can-edit="caps.editDraft"
               :focus-element-id="focusElementId"
+              :scope-label="fragmentHint ? '片段' : '章节'"
               @locate="locate"
               @request-insert="requestInsert"
             />
@@ -889,12 +940,13 @@ onBeforeUnmount(() => {
               :sections="sections"
               :loaded-count="win.items.value.length"
               :complete="win.complete.value"
+              :current-is-fragment="currentIsFragment"
               :anchor-states="composition?.anchorStates || null"
               :layout="layoutInfo"
               :template-issues="frame?.issues || []"
               :session-exclusions="sessionExclusions"
               @undo-exclusion="undoExclusion"
-              @locate-element="(id: string) => { focusElementId = id; openPanel('elements'); }"
+              @locate-element="openElementFromPublish"
               @reload="emit('reload')"
             />
           </div>
@@ -921,8 +973,9 @@ onBeforeUnmount(() => {
     </div>
 
     <footer class="log-wb__status" role="status" aria-live="polite">
-      <span class="log-wb__stat is-strong">{{ currentSection?.title || '—' }}</span>
-      <span class="log-wb__stat">已加载 {{ win.items.value.length }} 条{{ win.loading.value ? '（加载中…）' : win.complete.value ? '（本章完整）' : '' }}</span>
+      <span class="log-wb__stat is-strong">{{ currentChapter ? chapterTitle(currentChapter, currentChapterIndex) : '—' }}</span>
+      <span v-if="fragmentHint" class="log-wb__stat">片段：{{ fragmentHint }}</span>
+      <span class="log-wb__stat">已加载 {{ win.items.value.length }} 条{{ win.loading.value ? '（加载中…）' : win.complete.value ? (fragmentHint ? '（本片段完整）' : '（本章完整）') : '' }}</span>
       <button v-if="win.nextCursor.value && !win.loading.value" type="button" class="log-wb__link-btn" @click="win.loadMore()">加载更多</button>
       <span v-if="layoutInfo" class="log-wb__stat">{{ viewMode === 'flow' ? '流式' : `共 ${layoutInfo.pageCount} 页${win.complete.value ? '' : '（未完整，页数暂不确定）'}` }}</span>
       <span v-if="layoutBusy" class="log-wb__stat is-busy">排版中…</span>
@@ -957,6 +1010,7 @@ onBeforeUnmount(() => {
       :update="draftCtl.update"
       :world-id="context.worldId"
       :can-manage="caps.manageSources"
+      :current-section-id="sectionId || null"
       @select="(id: string) => (sectionId = id)"
     />
 

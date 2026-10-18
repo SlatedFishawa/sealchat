@@ -8,6 +8,8 @@ import (
 	"math"
 	"reflect"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,16 +21,30 @@ import (
 type LogSourceSpec struct {
 	ChannelID       string     `json:"channelId"`
 	FromTime        *time.Time `json:"fromTime"`
+	FromExclusive   bool       `json:"fromExclusive,omitempty"`
 	ToTime          time.Time  `json:"toTime"`
 	IncludeOOC      bool       `json:"includeOoc"`
 	IncludeArchived bool       `json:"includeArchived"`
 	IdentityIDs     []string   `json:"identityIds"`
 }
+
+// LogSection is the smallest source unit: one channel and one linear message range.
+// Queries, cursors, exclusions, anchors and release nodes stay keyed by section ID.
+// In chapter mode Title is only an arrangement label; the visual title is the chapter's.
 type LogSection struct {
-	ID     string        `json:"id"`
-	Title  string        `json:"title"`
-	Source LogSourceSpec `json:"source"`
-	Order  int           `json:"order"`
+	ID        string        `json:"id"`
+	Title     string        `json:"title"`
+	Source    LogSourceSpec `json:"source"`
+	Order     int           `json:"order"`
+	ChapterID string        `json:"chapterId,omitempty"`
+}
+
+// LogChapter groups consecutive sections into one visual/narrative chapter. It is never a query unit.
+// Drafts without chapters (legacy) treat every section as its own single-source chapter.
+type LogChapter struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Order int    `json:"order"`
 }
 type LogPageSettings struct {
 	Preset    string  `json:"preset"`
@@ -56,6 +72,7 @@ type LogDraft struct {
 	SchemaVersion       int               `json:"schemaVersion"`
 	Title               string            `json:"title"`
 	Sections            []LogSection      `json:"sections"`
+	Chapters            []LogChapter      `json:"chapters,omitempty"`
 	Elements            []json.RawMessage `json:"elements"`
 	Page                LogPageSettings   `json:"page"`
 	StylePackageID      string            `json:"stylePackageId"`
@@ -98,7 +115,7 @@ func parseLogDraft(raw []byte) (LogDraft, error) {
 		}
 		seen[section.ID] = true
 		s := section.Source
-		if s.ChannelID == "" || len(s.ChannelID) > 100 || s.ToTime.IsZero() || (s.FromTime != nil && s.FromTime.After(s.ToTime)) || s.IdentityIDs == nil || len(s.IdentityIDs) > 200 {
+		if s.ChannelID == "" || len(s.ChannelID) > 100 || s.ToTime.IsZero() || (s.FromTime != nil && s.FromTime.After(s.ToTime)) || (s.FromExclusive && s.FromTime == nil) || s.IdentityIDs == nil || len(s.IdentityIDs) > 200 {
 			return draft, logError("INVALID_INPUT", "来源范围无效")
 		}
 		identities := map[string]bool{}
@@ -108,6 +125,9 @@ func parseLogDraft(raw []byte) (LogDraft, error) {
 			}
 			identities[id] = true
 		}
+	}
+	if err := validateLogChapters(&draft); err != nil {
+		return draft, err
 	}
 	p := draft.Page
 	m := p.MarginsMM
@@ -123,6 +143,87 @@ func parseLogDraft(raw []byte) (LogDraft, error) {
 		return draft, logError("INVALID_INPUT", "字体未登记")
 	}
 	return draft, nil
+}
+
+// validateLogChapters keeps the chapter layer consistent with the global section order, so that
+// publishing by section.order alone yields every chapter as one contiguous run in chapter order.
+func validateLogChapters(draft *LogDraft) error {
+	if len(draft.Chapters) == 0 {
+		draft.Chapters = nil
+		for _, section := range draft.Sections {
+			if section.ChapterID != "" {
+				return logError("INVALID_INPUT", "来源片段引用了不存在的章节")
+			}
+		}
+		return nil
+	}
+	if len(draft.Chapters) > 200 {
+		return logError("INVALID_INPUT", "章节数量超出上限")
+	}
+	sectionIDs := map[string]bool{}
+	for _, section := range draft.Sections {
+		sectionIDs[section.ID] = true
+	}
+	chapters := map[string]LogChapter{}
+	chapterOrders := map[int]bool{}
+	for _, c := range draft.Chapters {
+		if !logUUIDPattern.MatchString(c.ID) || chapters[c.ID].ID != "" || sectionIDs[c.ID] || len([]rune(c.Title)) > 200 || c.Order < 0 || int64(c.Order) > LogMaxVersion || chapterOrders[c.Order] {
+			return logError("INVALID_INPUT", "章节标识或顺序无效")
+		}
+		chapters[c.ID] = c
+		chapterOrders[c.Order] = true
+	}
+	sectionOrders := map[int]bool{}
+	for _, section := range draft.Sections {
+		if _, ok := chapters[section.ChapterID]; !ok {
+			return logError("INVALID_INPUT", "来源片段引用了不存在的章节")
+		}
+		if sectionOrders[section.Order] {
+			return logError("INVALID_INPUT", "来源片段顺序重复")
+		}
+		sectionOrders[section.Order] = true
+	}
+	ordered := append([]LogSection(nil), draft.Sections...)
+	sort.SliceStable(ordered, func(i, k int) bool { return ordered[i].Order < ordered[k].Order })
+	finished := map[string]bool{}
+	current := ""
+	for _, section := range ordered {
+		if section.ChapterID == current {
+			continue
+		}
+		if finished[section.ChapterID] || (current != "" && chapters[section.ChapterID].Order < chapters[current].Order) {
+			return logError("INVALID_INPUT", "章节内的来源片段必须连续且与章节顺序一致")
+		}
+		if current != "" {
+			finished[current] = true
+		}
+		current = section.ChapterID
+	}
+	if current != "" {
+		finished[current] = true
+	}
+	if len(finished) != len(chapters) {
+		return logError("INVALID_INPUT", "章节至少需要一个来源片段")
+	}
+	return nil
+}
+
+// logSectionArrangement maps each section to its chapter and rank inside that chapter.
+// Legacy sections are single-source chapters keyed by their own ID.
+func logSectionArrangement(d *LogDraft) map[string][2]string {
+	ordered := append([]LogSection(nil), d.Sections...)
+	sort.SliceStable(ordered, func(i, k int) bool { return ordered[i].Order < ordered[k].Order })
+	ranks := map[string]int{}
+	out := map[string][2]string{}
+	for _, s := range ordered {
+		chapter := s.ChapterID
+		if len(d.Chapters) == 0 {
+			chapter = "section:" + s.ID
+		}
+		out[s.ID] = [2]string{chapter, strconv.Itoa(ranks[chapter])}
+		ranks[chapter]++
+	}
+	return out
 }
 
 func loadLogProjectForDesign(id, userID string) (*model.LogProjectModel, bool, error) {
@@ -178,6 +279,10 @@ func SaveLogDraft(id, userID string, input LogDraftUpdate) (*LogDraftResult, err
 			if !ok || !reflect.DeepEqual(source, s.Source) {
 				return nil, logError("PERMISSION_DENIED", "仅管理者可以更改来源")
 			}
+		}
+		// Members may rename chapters and move whole chapters, but not regroup or reorder sources inside them.
+		if (len(old.Chapters) == 0) != (len(draft.Chapters) == 0) || !reflect.DeepEqual(logSectionArrangement(&old), logSectionArrangement(&draft)) {
+			return nil, logError("PERMISSION_DENIED", "仅管理者可以编排来源片段")
 		}
 	}
 	encoded, err := json.Marshal(draft)

@@ -17,6 +17,7 @@ import type { AnchorState } from '@/services/log/logRenderer';
 import type { FrameLayoutResult } from '@/services/log/pagination/logFrameHost';
 import type { LogProjectContext, LogReleaseJob, LogReleaseSummary, LogSection } from '@/types/log';
 import type { LogDraftController } from '../composables/useLogDraft';
+import { chapterViews } from '../logChapterOps';
 
 const props = defineProps<{
   context: LogProjectContext;
@@ -25,11 +26,13 @@ const props = defineProps<{
   sections: LogSection[];
   loadedCount: number;
   complete: boolean;
+  currentIsFragment: boolean;
   anchorStates: Map<string, AnchorState> | null;
   layout: FrameLayoutResult | null;
   templateIssues: string[];
   sessionExclusions: Array<{ sectionId: string; ids: string[]; label: string }>;
 }>();
+const chapterCount = computed(() => chapterViews(props.draftCtl.draft.value).length);
 const emit = defineEmits<{
   (e: 'undo-exclusion', index: number): void;
   (e: 'locate-element', id: string): void;
@@ -109,7 +112,7 @@ const finishJob = (j: LogReleaseJob) => {
 
 const publish = async () => {
   if (orphans.value.length) {
-    publishError.value = '本章有锚点不存在的元素，请先重新定位或删除';
+    publishError.value = `${props.currentIsFragment ? '当前片段' : '本章'}有锚点不存在的元素，请先重新定位或删除`;
     return;
   }
   publishing.value = true;
@@ -256,22 +259,23 @@ onBeforeUnmount(() => {
         <span v-else class="log-pub__hint">展示链接由世界管理者提供</span>
       </div>
       <div v-else class="log-pub__line"><n-tag size="small">未发布</n-tag><span class="log-pub__hint">发布前展示链接会显示“尚未发布”。</span></div>
-      <p class="log-pub__hint">工具栏的“发布效果”开关可预览公开读者看到的版式（不显示设计控件）。</p>
+      <p class="log-pub__hint">{{ currentIsFragment ? '工具栏的“片段发布效果”只预览当前来源片段；公开章节会按编排串联全部片段。' : '工具栏的“发布效果”开关可预览公开读者看到的版式（不显示设计控件）。' }}</p>
     </section>
 
     <section>
-      <div class="log-pub__title">发布前检查</div>
+      <div class="log-pub__title">发布前检查<template v-if="currentIsFragment">（当前片段）</template></div>
       <ul class="log-pub__checks">
-        <li>章节 {{ sections.length }} 个；当前章已加载 {{ loadedCount }} 条{{ complete ? '（完整）' : '（未完整加载，发布以服务器全量为准）' }}</li>
+        <li>章节 {{ chapterCount }} 个<template v-if="chapterCount !== sections.length">（来源片段 {{ sections.length }} 个）</template>；当前{{ currentIsFragment ? '片段' : '章' }}已加载 {{ loadedCount }} 条{{ complete ? '（完整）' : '（未完整加载，发布以服务器全量为准）' }}</li>
         <li :class="{ 'is-bad': draftCtl.status.value !== 'saved' }">草稿：{{ { saved: '已保存', dirty: '有未保存修改（发布前会先保存）', saving: '保存中', error: '保存失败', conflict: '冲突，需重新加载' }[draftCtl.status.value] }}</li>
         <li :class="{ 'is-bad': orphans.length }">
-          孤立元素：{{ orphans.length ? `${orphans.length} 个（必须处理）` : '无（当前章）' }}
+          孤立元素：{{ orphans.length ? `${orphans.length} 个（必须处理）` : `无（当前${currentIsFragment ? '片段' : '章'}）` }}
           <a v-for="id in orphans" :key="id" href="#" class="log-pub__link" @click.prevent="emit('locate-element', id)">处理</a>
         </li>
         <li :class="{ 'is-warn': templateIssues.length }">模板问题：{{ templateIssues.length || '无' }}</li>
         <li :class="{ 'is-warn': layout?.missingAssets }">资源：{{ layout?.missingAssets ? `${layout.missingAssets} 个缺失` : '正常' }}</li>
         <li v-if="layout">排版警告：{{ layout.warnings.length || '无' }}</li>
       </ul>
+      <p v-if="currentIsFragment" class="log-pub__hint">这里的元素、模板、资源与排版检查来自当前片段预览；正式发布时服务端仍会校验全部章节和来源片段。</p>
       <div v-if="sessionExclusions.length" class="log-pub__excl">
         <div class="log-pub__subtitle">本次会话排除的消息</div>
         <div v-for="(x, i) in sessionExclusions" :key="i" class="log-pub__line">

@@ -1,11 +1,14 @@
 <script setup lang="ts">
 // 匿名展示页：只调用 /public/log 接口（无凭据客户端），不加载编辑器、聊天连接或管理 DTO。
 // privacyVersion 或 releaseId 变化、链接失效时清空旧内容重新加载，不继续展示被下架的缓存。
+// 阅读单位是视觉章节：章节模式发布版按章节读取（可跨多个来源片段），旧发布版每个 section 即一章。
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   describeLogError,
   fetchPublicLog,
+  fetchPublicLogChapterContext,
+  fetchPublicLogChapterItems,
   fetchPublicLogContext,
   fetchPublicLogItems,
   isLogError,
@@ -27,7 +30,7 @@ const slug = computed(() => String(route.params.slug || ''));
 const state = ref<'loading' | 'ready' | 'missing' | 'error'>('loading');
 const errorText = ref('');
 const doc = shallowRef<LogPublicDocument | null>(null);
-const sectionId = ref('');
+const unitId = ref(''); // 当前阅读单位（章节模式为章节 id，旧发布版为 section id）
 const items = shallowRef<LogPublicNode[]>([]);
 const nextCursor = ref<string | null>(null);
 const partial = ref(false); // 通过 context 接口定位得到的局部窗口
@@ -38,8 +41,26 @@ const assets = useLogAssets({ publicSlug: () => slug.value });
 let generation = 0;
 let controller: AbortController | null = null;
 
-const sections = computed(() => doc.value?.sections || []);
-const sectionTitle = computed(() => sections.value.find((s) => s.id === sectionId.value)?.title || '');
+interface ReadingUnit {
+  id: string;
+  title: string;
+  sectionIds: string[];
+}
+const chapterMode = computed(() => !!doc.value?.chapters?.length);
+const units = computed<ReadingUnit[]>(() => {
+  const d = doc.value;
+  if (!d) return [];
+  if (d.chapters?.length) return d.chapters.map((c) => ({ id: c.id, title: c.title, sectionIds: c.sectionIds }));
+  return d.sections.map((s) => ({ id: s.id, title: s.title, sectionIds: [s.id] }));
+});
+/** 由片段 id（旧链接、搜索结果）找到所属阅读单位。 */
+const unitOfSection = (id: string) => units.value.find((u) => u.sectionIds.includes(id)) || null;
+const sectionTitle = computed(() => units.value.find((u) => u.id === unitId.value)?.title || '');
+const fetchUnitItems = (s: string, unit: string, cursor: string | null, signal: AbortSignal) =>
+  (chapterMode.value ? fetchPublicLogChapterItems : fetchPublicLogItems)(s, unit, cursor, PAGE, signal);
+const fetchUnitContext = (s: string, unit: string, node: string) =>
+  (chapterMode.value ? fetchPublicLogChapterContext : fetchPublicLogContext)(s, unit, node);
+const unitQuery = (unit: string, node?: string) => ({ [chapterMode.value ? 'c' : 's']: unit, ...(node ? { n: node } : {}) });
 const complete = computed(() => !partial.value && nextCursor.value === null && !loadingItems.value && !itemsError.value);
 
 const resetItems = () => {
@@ -83,10 +104,12 @@ const loadDocument = async () => {
     doc.value = d;
     document.title = d.title || 'LOG';
     state.value = 'ready';
-    const wanted = String(route.query.s || '');
-    sectionId.value = d.sections.some((x) => x.id === wanted) ? wanted : d.sections[0]?.id || '';
+    const wantedChapter = String(route.query.c || '');
+    const wantedSection = String(route.query.s || '');
+    const wanted = units.value.find((u) => u.id === wantedChapter) || (wantedSection ? unitOfSection(wantedSection) : null);
+    unitId.value = wanted?.id || units.value[0]?.id || '';
     const node = String(route.query.n || '');
-    if (node && sectionId.value) await locateNode(sectionId.value, node);
+    if (node && unitId.value) await locateNode(unitId.value, node);
     else await loadItems();
   } catch (error) {
     doc.value = null;
@@ -100,7 +123,7 @@ const loadDocument = async () => {
 
 const loadItems = async (more = false) => {
   const s = slug.value;
-  const sec = sectionId.value;
+  const sec = unitId.value;
   if (!sec || !doc.value) return;
   if (!more) resetItems();
   const gen = generation;
@@ -112,7 +135,7 @@ const loadItems = async (more = false) => {
     let cursor = more ? nextCursor.value : null;
     let acc = more ? items.value.slice() : [];
     do {
-      const r = await fetchPublicLogItems(s, sec, cursor, PAGE, ctrl.signal);
+      const r = await fetchUnitItems(s, sec, cursor, ctrl.signal);
       if (gen !== generation) return;
       if (!checkVersion(r.releaseId, r.privacyVersion)) return;
       acc = acc.concat(r.items);
@@ -135,7 +158,7 @@ const loadItems = async (more = false) => {
 
 const pendingScroll = ref<string | null>(null);
 const locateNode = async (sec: string, nodeId: string) => {
-  if (sec !== sectionId.value) sectionId.value = sec;
+  if (sec !== unitId.value) unitId.value = sec;
   if (items.value.some((n) => n.id === nodeId)) {
     previewRef.value?.scrollTo(nodeId, true);
     return;
@@ -144,7 +167,7 @@ const locateNode = async (sec: string, nodeId: string) => {
   const gen = generation;
   loadingItems.value = true;
   try {
-    const r = await fetchPublicLogContext(slug.value, sec, nodeId);
+    const r = await fetchUnitContext(slug.value, sec, nodeId);
     if (gen !== generation) return;
     if (!checkVersion(r.releaseId, r.privacyVersion)) return;
     items.value = r.items;
@@ -164,9 +187,9 @@ const locateNode = async (sec: string, nodeId: string) => {
 };
 
 const switchSection = (id: string) => {
-  if (id === sectionId.value && !partial.value) return;
-  sectionId.value = id;
-  void router.replace({ query: { s: id } });
+  if (id === unitId.value && !partial.value) return;
+  unitId.value = id;
+  void router.replace({ query: unitQuery(id) });
   void loadItems();
 };
 
@@ -237,14 +260,16 @@ const runSearch = async (more = false) => {
   }
 };
 const openHit = (hit: LogPublicSearchHit) => {
-  void router.replace({ query: { s: hit.sectionId, n: hit.nodeId } });
-  void locateNode(hit.sectionId, hit.nodeId);
+  const unit = unitOfSection(hit.sectionId);
+  if (!unit) return;
+  void router.replace({ query: unitQuery(unit.id, hit.nodeId) });
+  void locateNode(unit.id, hit.nodeId);
 };
 
 const copyPosition = async () => {
   const url = new URL(location.href);
   const node = currentNode.value;
-  const q = node ? `?s=${encodeURIComponent(sectionId.value)}&n=${encodeURIComponent(node)}` : `?s=${encodeURIComponent(sectionId.value)}`;
+  const q = `?${new URLSearchParams(unitQuery(unitId.value, node || undefined)).toString()}`;
   const link = `${url.origin}${url.pathname}#/log/views/${slug.value}${q}`;
   try {
     await navigator.clipboard.writeText(link);
@@ -278,11 +303,11 @@ onBeforeUnmount(() => {
         <header class="log-public__bar">
           <h1 class="log-public__title">{{ doc.title }}</h1>
           <n-select
-            v-if="sections.length > 1"
-            :value="sectionId"
+            v-if="units.length > 1"
+            :value="unitId"
             size="small"
             class="log-public__section"
-            :options="sections.map((s, i) => ({ label: s.title || `第 ${i + 1} 章`, value: s.id }))"
+            :options="units.map((u, i) => ({ label: u.title || `第 ${i + 1} 章`, value: u.id }))"
             aria-label="章节"
             @update:value="switchSection"
           />
@@ -297,7 +322,7 @@ onBeforeUnmount(() => {
         <div v-if="hits.length || searchError || searching" class="log-public__hits" role="region" aria-label="搜索结果">
           <n-alert v-if="searchError" type="error" :show-icon="false">{{ searchError }}</n-alert>
           <button v-for="h in hits" :key="h.nodeId" type="button" class="log-public__hit" @click="openHit(h)">
-            <span class="log-public__hit-sec">{{ sections.find((s) => s.id === h.sectionId)?.title }}</span>
+            <span class="log-public__hit-sec">{{ unitOfSection(h.sectionId)?.title }}</span>
             {{ h.excerpt }}
           </button>
           <n-button v-if="hitsCursor" size="tiny" :loading="searching" @click="runSearch(true)">更多结果</n-button>

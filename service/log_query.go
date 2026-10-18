@@ -43,7 +43,11 @@ func logSourceVersion(channelID string) (int64, error) {
 func logSourceQuery(p *model.LogProjectModel, s LogSection, userID string) *gorm.DB {
 	q := model.GetDB().Model(&model.MessageModel{}).Where("channel_id = ? AND is_deleted = ?", s.Source.ChannelID, false).Where("created_at <= ?", s.Source.ToTime)
 	if s.Source.FromTime != nil {
-		q = q.Where("created_at >= ?", *s.Source.FromTime)
+		op := ">="
+		if s.Source.FromExclusive {
+			op = ">"
+		}
+		q = q.Where("created_at "+op+" ?", *s.Source.FromTime)
 	}
 	if !s.Source.IncludeOOC {
 		q = q.Where("COALESCE(ic_mode, 'ic') <> ?", "ooc")

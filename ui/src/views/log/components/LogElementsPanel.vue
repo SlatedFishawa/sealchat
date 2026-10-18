@@ -18,7 +18,10 @@ const props = defineProps<{
   complete: boolean;
   canEdit: boolean;
   focusElementId: string | null;
+  /** 多来源章节中锚点范围是当前来源片段，文案用“片段”；默认“章节”。 */
+  scopeLabel?: string;
 }>();
+const scope = computed(() => props.scopeLabel || '章节');
 const emit = defineEmits<{
   (e: 'locate', nodeId: string): void;
   (e: 'request-insert', anchor: LogAnchor): void;
@@ -49,7 +52,7 @@ const excerpt = (messageId: string) => {
   return `${resolveDesignSpeakerName(m.message)}：${renderMessageBody(m.message.content).plainText.slice(0, 24)}`;
 };
 const anchorText = (a: LogAnchor) => {
-  if (a.kind !== 'message') return a.kind === 'sectionStart' ? '章节开头' : '章节末尾';
+  if (a.kind !== 'message') return a.kind === 'sectionStart' ? `${scope.value}开头` : `${scope.value}末尾`;
   return `${a.side === 'before' ? '前' : '后'}·${excerpt(a.messageId)}`;
 };
 
@@ -93,8 +96,8 @@ const relocating = ref<string | null>(null);
 const relocateTarget = ref<string>('sectionStart');
 const relocateSide = ref<'before' | 'after'>('after');
 const relocateOptions = computed(() => [
-  { label: '章节开头', value: 'sectionStart' },
-  { label: '章节末尾', value: 'sectionEnd' },
+  { label: `${scope.value}开头`, value: 'sectionStart' },
+  { label: `${scope.value}末尾`, value: 'sectionEnd' },
   ...props.messages.map((m, i) => ({ label: `#${i + 1} ${excerpt(m.message.id)}`, value: `m:${m.message.id}` })),
 ]);
 const applyRelocate = (e: LogElement) => {
@@ -164,8 +167,8 @@ const anchorAt = (kind: 'sectionStart' | 'sectionEnd'): LogAnchor => ({ kind, se
     <section class="log-el__lib">
       <div class="log-el__title">插入元素</div>
       <n-space size="small">
-        <n-button size="small" :disabled="!canEdit || !sectionId" @click="emit('request-insert', anchorAt('sectionStart'))">章节开头…</n-button>
-        <n-button size="small" :disabled="!canEdit || !sectionId" @click="emit('request-insert', anchorAt('sectionEnd'))">章节末尾…</n-button>
+        <n-button size="small" :disabled="!canEdit || !sectionId" @click="emit('request-insert', anchorAt('sectionStart'))">{{ scope }}开头…</n-button>
+        <n-button size="small" :disabled="!canEdit || !sectionId" @click="emit('request-insert', anchorAt('sectionEnd'))">{{ scope }}末尾…</n-button>
       </n-space>
       <p class="log-el__hint">也可以在预览中选中消息后使用“前插元素/后插元素”。元素跟随锚点消息移动。</p>
     </section>

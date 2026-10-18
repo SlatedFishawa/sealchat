@@ -289,6 +289,16 @@ export const fetchPublicLogItems = (slug: string, sectionId: string, cursor: str
 export const fetchPublicLogContext = (slug: string, sectionId: string, nodeId: string, signal?: AbortSignal) =>
   unwrapPublic<LogPublicItems>(publicClient.get(`api/v1/public/log/${seg(slug)}/sections/${seg(sectionId)}/context/${seg(nodeId)}`, { signal }));
 
+/** 章节模式发布版：按发布顺序读取一个视觉章节内全部来源片段的节点。 */
+export const fetchPublicLogChapterItems = (slug: string, chapterId: string, cursor: string | null, limit = 100, signal?: AbortSignal) =>
+  unwrapPublic<LogPublicItems>(publicClient.get(`api/v1/public/log/${seg(slug)}/chapters/${seg(chapterId)}/items`, {
+    params: cursor ? { cursor, limit } : { limit },
+    signal,
+  }));
+
+export const fetchPublicLogChapterContext = (slug: string, chapterId: string, nodeId: string, signal?: AbortSignal) =>
+  unwrapPublic<LogPublicItems>(publicClient.get(`api/v1/public/log/${seg(slug)}/chapters/${seg(chapterId)}/context/${seg(nodeId)}`, { signal }));
+
 export const searchPublicLog = (slug: string, q: string, cursor: string | null, limit = 20) =>
   unwrapPublic<{ items: LogPublicSearchHit[]; nextCursor: string | null }>(publicClient.get(`api/v1/public/log/${seg(slug)}/search`, {
     params: cursor ? { q, cursor, limit } : { q, limit },

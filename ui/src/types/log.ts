@@ -23,16 +23,31 @@ export interface LogMessageCapabilities {
 export interface LogSourceSpec {
   channelId: string;
   fromTime: string | null;
+  /** 接续片段可使用排他起点，避免相邻时间范围重复或留出毫秒级空隙。 */
+  fromExclusive?: boolean;
   toTime: string;
   includeOoc: boolean;
   includeArchived: boolean;
   identityIds: string[];
 }
 
+/**
+ * 来源片段：单频道的一段线性消息范围，是查询、游标、排除集合与元素锚点的边界。
+ * 章节模式下 title 只是编排用的片段名称；视觉章节标题属于 LogChapter。
+ */
 export interface LogSection {
   id: string;
   title: string;
   source: LogSourceSpec;
+  order: number;
+  /** 所属视觉章节；草稿没有 chapters 时（旧草稿）不存在，每个片段自成一章。 */
+  chapterId?: string;
+}
+
+/** 视觉/叙事章节：只做分组与命名，不是查询单元。 */
+export interface LogChapter {
+  id: string;
+  title: string;
   order: number;
 }
 
@@ -80,6 +95,8 @@ export interface LogDraft {
   schemaVersion: 1;
   title: string;
   sections: LogSection[];
+  /** 可选的章节层；存在时每个 section 都必须引用其中一个章节，且同章片段在 order 上连续。 */
+  chapters?: LogChapter[];
   elements: LogElement[];
   page: LogPageSettings;
   stylePackageId: string;
@@ -240,7 +257,10 @@ export interface LogPublicDocument {
   title: string;
   releaseId: string;
   privacyVersion: number;
-  sections: Array<{ id: string; title: string }>;
+  /** 发布顺序；章节模式下 title 为所属章节标题。 */
+  sections: Array<{ id: string; title: string; chapterId?: string }>;
+  /** 仅章节模式的发布版提供；旧发布版缺省时每个 section 即一章。 */
+  chapters?: Array<{ id: string; title: string; sectionIds: string[] }>;
   page: LogPageSettings;
   style: LogPublicStylePackage | null;
 }
