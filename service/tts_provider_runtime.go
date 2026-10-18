@@ -45,7 +45,7 @@ func ttsTencentSynthesize(ctx context.Context, client *ttsprovider.TencentClient
 	return client.Synthesize(ctx, snapshot.Provider.Model, snapshot.Input, sink)
 }
 
-func ttsProviderValidateCloneTransport(provider utils.SpeechProviderConfig) error {
+func ttsProviderValidateCloneTransport(provider utils.SpeechProviderConfig, source *model.AttachmentModel) error {
 	spec, ok := ttsprovider.LookupModel(provider.EffectiveProviderKind(), provider.Model)
 	if !ok {
 		return errTTSUnsupportedProvider
@@ -53,7 +53,10 @@ func ttsProviderValidateCloneTransport(provider utils.SpeechProviderConfig) erro
 	if spec.Runtime != ttsprovider.RuntimeAliyunQwen {
 		return nil
 	}
-	_, err := ttsClonePublicBaseURL()
+	if ttsClonePresignedURL(context.Background(), source) != "" {
+		return nil
+	}
+	_, err := ttsCloneProxyBaseURL(source)
 	return err
 }
 

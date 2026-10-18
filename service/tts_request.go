@@ -552,10 +552,10 @@ func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {
 	}
 	if operation == "clone" {
 		var a model.AttachmentModel
-		if model.GetDB().Where("id = ? AND user_id = ? AND root_id_type = ? AND parent_id_type = ? AND deleted_at IS NULL", r.SourceResourceID, userID, "tts", "clone_source").First(&a).Error != nil {
+		if model.GetDB().Where("id = ? AND user_id = ? AND root_id_type = ? AND parent_id_type = ? AND deleted_at IS NULL AND COALESCE(extra, '') <> ?", r.SourceResourceID, userID, "tts", "clone_source", ttsCloneSourceCleanupClaim).First(&a).Error != nil {
 			return nil, ErrTTSDenied
 		}
-		if err := ttsProviderValidateCloneTransport(s.Provider); err != nil {
+		if err := ttsProviderValidateCloneTransport(s.Provider, &a); err != nil {
 			return nil, err
 		}
 	}
