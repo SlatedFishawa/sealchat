@@ -216,6 +216,7 @@ async function submit(kind: 'audition' | 'design' | 'clone') {
     requestKey: speechRuntimeId(), channelId, text: text.value, name: name.value, description: description.value,
     sourceResourceId,
     ...(kind === 'clone' ? { cloneLanguageHint: cloneLanguageHint.value, clonePreprocess: clonePreprocess.value } : {}),
+    ...(kind === 'audition' && selection.value.type === 'personal' ? { adoptAsVoicePreview: true } : {}),
     ...(target ? { providerId: target.providerId, modelId: target.modelId } : requestVoiceFields(selection.value)),
   })
   if (!alive || userId !== user.info.id) return

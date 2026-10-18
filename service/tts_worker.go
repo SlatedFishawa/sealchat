@@ -689,6 +689,15 @@ func ttsArchive(ctx context.Context, j *model.TTSJob, s TTSSnapshot) {
 	ttsArchiveFresh(ctx, j, s, nil)
 }
 
+func ttsAdoptAuditionAsVoicePreview(db *gorm.DB, j *model.TTSJob, s TTSSnapshot, resourceID string) {
+	if db == nil || j == nil || j.Operation != "audition" || !s.AdoptAsVoicePreview || s.VoiceID == "" || resourceID == "" {
+		return
+	}
+	_ = db.Model(&model.TTSVoice{}).
+		Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND provider_status = ? AND deleted_at IS NULL AND (preview_resource_id = ? OR preview_resource_id IS NULL)", s.VoiceID, j.PayerUserID, "saved", "OK", "").
+		Update("preview_resource_id", resourceID).Error
+}
+
 func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *utils.SpeechConfig) {
 	db := model.GetDB()
 	if !TTSValidateSpool(j.SpoolPath) {
@@ -747,6 +756,7 @@ func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *u
 	if j.Operation == "design" || j.Operation == "clone" {
 		_ = db.Model(&model.TTSVoice{}).Where("id = ?", j.VoiceID).Update("preview_resource_id", a.ID).Error
 	}
+	ttsAdoptAuditionAsVoicePreview(db, j, s, a.ID)
 	if j.Operation == "audition" || j.Operation == "message_synthesis" {
 		cache := model.TTSCache{Fingerprint: s.Fingerprint, ResourceID: a.ID, Metadata: string(meta), Complete: true, ExpiresAt: time.Now().Add(30 * time.Minute)}
 		// Expiry drops reuse eligibility, never the durable attachment reference.

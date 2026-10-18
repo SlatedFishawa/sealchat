@@ -44,25 +44,27 @@ type TTSRequest struct {
 	SpeechLanguage        string  `json:"speechLanguage,omitempty"`
 	IdentityID            string  `json:"identityId,omitempty"`
 	ClonePreprocess       bool    `json:"clonePreprocess,omitempty"`
+	AdoptAsVoicePreview   bool    `json:"adoptAsVoicePreview,omitempty"`
 }
 type TTSSnapshot struct {
-	Version           int                        `json:"version"`
-	Provider          utils.SpeechProviderConfig `json:"provider"`
-	Input             ttsprovider.Input          `json:"input"`
-	VoiceID           string                     `json:"voiceId"`
-	VoiceRevision     int64                      `json:"voiceRevision"`
-	Owner             string                     `json:"owner"`
-	Scope             string                     `json:"scope"`
-	Fingerprint       string                     `json:"fingerprint"`
-	SourceResourceID  string                     `json:"sourceResourceId,omitempty"`
-	Name              string                     `json:"name,omitempty"`
-	Description       string                     `json:"description,omitempty"`
-	CloneLanguageHint string                     `json:"cloneLanguageHint,omitempty"`
-	ClonePreprocess   bool                       `json:"clonePreprocess,omitempty"`
-	Audience          []string                   `json:"audience,omitempty"`
-	Whisper           bool                       `json:"whisper,omitempty"`
-	SourceText        string                     `json:"sourceText,omitempty"`
-	Translation       *TTSTranslationSnapshot    `json:"translation,omitempty"`
+	Version             int                        `json:"version"`
+	Provider            utils.SpeechProviderConfig `json:"provider"`
+	Input               ttsprovider.Input          `json:"input"`
+	VoiceID             string                     `json:"voiceId"`
+	VoiceRevision       int64                      `json:"voiceRevision"`
+	Owner               string                     `json:"owner"`
+	Scope               string                     `json:"scope"`
+	Fingerprint         string                     `json:"fingerprint"`
+	SourceResourceID    string                     `json:"sourceResourceId,omitempty"`
+	Name                string                     `json:"name,omitempty"`
+	Description         string                     `json:"description,omitempty"`
+	CloneLanguageHint   string                     `json:"cloneLanguageHint,omitempty"`
+	ClonePreprocess     bool                       `json:"clonePreprocess,omitempty"`
+	AdoptAsVoicePreview bool                       `json:"adoptAsVoicePreview,omitempty"`
+	Audience            []string                   `json:"audience,omitempty"`
+	Whisper             bool                       `json:"whisper,omitempty"`
+	SourceText          string                     `json:"sourceText,omitempty"`
+	Translation         *TTSTranslationSnapshot    `json:"translation,omitempty"`
 }
 
 type TTSTranslationSnapshot struct {
@@ -584,6 +586,7 @@ func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {
 		ttsCompleteTranslation(&s, text)
 		s.Fingerprint = auditionFingerprint
 	}
+	s.AdoptAsVoicePreview = operation == "audition" && r.AdoptAsVoicePreview
 	b, _ := json.Marshal(s)
 	job := &model.TTSJob{Operation: operation, RequestKey: key, PayerUserID: userID, ChannelID: r.ChannelID, Snapshot: string(b), InputHash: inputHash, Deadline: time.Now().Add(2 * time.Minute), VoiceID: r.VoiceID}
 	// Auditions are cached only inside this authenticated user's safety domain.
@@ -618,11 +621,13 @@ func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {
 						var duplicate model.TTSJob
 						if model.GetDB().Where("request_key = ? AND payer_user_id = ? AND input_hash = ?", key, userID, inputHash).First(&duplicate).Error == nil {
 							ensureSystemPreview()
+							ttsAdoptAuditionAsVoicePreview(model.GetDB(), &duplicate, s, duplicate.ResourceID)
 							return &duplicate, nil
 						}
 						return nil, err
 					}
 					ensureSystemPreview()
+					ttsAdoptAuditionAsVoicePreview(model.GetDB(), job, s, job.ResourceID)
 					return job, nil
 				}
 			}

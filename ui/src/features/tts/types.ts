@@ -88,6 +88,7 @@ export interface SpeechRequest {
   cloneLanguageHint?: string
   speechLanguage?: string
   clonePreprocess?: boolean
+  adoptAsVoicePreview?: boolean
 }
 export interface SpeechJob {
   id: string
