@@ -536,6 +536,9 @@ func sharedChannelIdentityCreateFromCopyTxWithOrphans(tx *gorm.DB, ownerUserID, 
 	if dataErr != nil {
 		return dataErr
 	}
+	if err := promoteChannelIdentityTTSConfigToSharedDataTx(tx, identity.ID, template); err != nil {
+		return err
+	}
 	if err := tx.Create(template).Error; err != nil {
 		return err
 	}

@@ -425,8 +425,12 @@ func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn
 	}
 	r := TTSRequest{Text: text}
 	if m.SenderIdentityID != "" {
-		var role model.ChannelIdentityTTSConfig
-		if model.GetDB().Where("identity_id = ? AND deleted_at IS NULL", m.SenderIdentityID).First(&role).Error == nil {
+		role, found, roleErr := channelIdentityTTSConfigTx(model.GetDB(), m.SenderIdentityID, m.SenderSharedIdentityID, false)
+		if roleErr != nil {
+			m.TTSStatus = "unavailable"
+			return
+		}
+		if found {
 			if role.Disabled {
 				m.TTSStatus = "skipped"
 				return

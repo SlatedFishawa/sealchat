@@ -437,7 +437,136 @@ func TTSQuotaForUser(userID string) (TTSQuota, error) {
 	return q, err
 }
 
-func TTSRoleConfig(userID, identityID string) (*model.ChannelIdentityTTSConfig, error) {
+type sharedChannelIdentityTTSConfig struct {
+	Disabled              bool    `json:"disabled"`
+	VoiceID               string  `json:"voiceId"`
+	SystemVoice           string  `json:"systemVoice"`
+	SystemVoiceProvider   string  `json:"systemVoiceProvider"`
+	SystemVoiceProviderID string  `json:"systemVoiceProviderId"`
+	SystemVoiceModel      string  `json:"systemVoiceModel"`
+	SpeechLanguage        string  `json:"speechLanguage"`
+	Instruction           string  `json:"instruction"`
+	Rate                  float64 `json:"rate"`
+	Pitch                 float64 `json:"pitch"`
+	Volume                int     `json:"volume"`
+	Revision              int64   `json:"revision"`
+}
+
+func defaultChannelIdentityTTSConfig(identityID string) *model.ChannelIdentityTTSConfig {
+	return &model.ChannelIdentityTTSConfig{IdentityID: identityID, Rate: 1, Pitch: 1, Volume: 50}
+}
+
+func sharedChannelIdentityTTSConfigFromData(raw, identityID string) (*model.ChannelIdentityTTSConfig, bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, false, nil
+	}
+	document := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte(raw), &document); err != nil {
+		return nil, false, err
+	}
+	ttsRaw, ok := document["tts"]
+	if !ok || len(ttsRaw) == 0 || string(ttsRaw) == "null" {
+		return nil, false, nil
+	}
+	var shared sharedChannelIdentityTTSConfig
+	if err := json.Unmarshal(ttsRaw, &shared); err != nil {
+		return nil, false, err
+	}
+	return &model.ChannelIdentityTTSConfig{
+		IdentityID:            identityID,
+		Disabled:              shared.Disabled,
+		VoiceID:               shared.VoiceID,
+		SystemVoice:           shared.SystemVoice,
+		SystemVoiceProvider:   shared.SystemVoiceProvider,
+		SystemVoiceProviderID: shared.SystemVoiceProviderID,
+		SystemVoiceModel:      shared.SystemVoiceModel,
+		SpeechLanguage:        shared.SpeechLanguage,
+		Instruction:           shared.Instruction,
+		Rate:                  shared.Rate,
+		Pitch:                 shared.Pitch,
+		Volume:                shared.Volume,
+		Revision:              shared.Revision,
+	}, true, nil
+}
+
+func sharedChannelIdentityTTSData(previous string, role model.ChannelIdentityTTSConfig) (string, error) {
+	document := map[string]json.RawMessage{}
+	if strings.TrimSpace(previous) != "" {
+		if err := json.Unmarshal([]byte(previous), &document); err != nil {
+			return "", err
+		}
+	}
+	shared := sharedChannelIdentityTTSConfig{
+		Disabled: role.Disabled, VoiceID: role.VoiceID, SystemVoice: role.SystemVoice,
+		SystemVoiceProvider: role.SystemVoiceProvider, SystemVoiceProviderID: role.SystemVoiceProviderID,
+		SystemVoiceModel: role.SystemVoiceModel, SpeechLanguage: role.SpeechLanguage, Instruction: role.Instruction,
+		Rate: role.Rate, Pitch: role.Pitch, Volume: role.Volume, Revision: role.Revision,
+	}
+	raw, err := json.Marshal(shared)
+	if err != nil {
+		return "", err
+	}
+	document["tts"] = raw
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func legacyChannelIdentityTTSConfigTx(conn *gorm.DB, identityID string, lock bool) (*model.ChannelIdentityTTSConfig, bool, error) {
+	var role model.ChannelIdentityTTSConfig
+	query := conn.Where("identity_id = ? AND deleted_at IS NULL", identityID)
+	if lock {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.First(&role).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, nil
+	}
+	return &role, err == nil, err
+}
+
+func channelIdentityTTSConfigTx(conn *gorm.DB, identityID, sharedIdentityID string, lock bool) (*model.ChannelIdentityTTSConfig, bool, error) {
+	if sharedIdentityID != "" {
+		var template model.SharedChannelIdentityModel
+		query := conn.Select("id", "source_identity_id", "shared_data_json").Where("id = ?", sharedIdentityID)
+		if lock {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.Take(&template).Error; err != nil {
+			return nil, false, err
+		}
+		role, found, err := sharedChannelIdentityTTSConfigFromData(template.SharedDataJSON, identityID)
+		if err != nil || found {
+			return role, found, err
+		}
+		if template.SourceIdentityID != "" {
+			role, found, err = legacyChannelIdentityTTSConfigTx(conn, template.SourceIdentityID, lock)
+			if err != nil || found {
+				if role != nil {
+					role.IdentityID = identityID
+				}
+				return role, found, err
+			}
+			if template.SourceIdentityID == identityID {
+				return nil, false, nil
+			}
+		}
+	}
+	return legacyChannelIdentityTTSConfigTx(conn, identityID, lock)
+}
+
+func promoteChannelIdentityTTSConfigToSharedDataTx(tx *gorm.DB, identityID string, template *model.SharedChannelIdentityModel) error {
+	role, found, err := legacyChannelIdentityTTSConfigTx(tx, identityID, true)
+	if err != nil || !found {
+		return err
+	}
+	template.SharedDataJSON, err = sharedChannelIdentityTTSData(template.SharedDataJSON, *role)
+	return err
+}
+
+func ttsRoleIdentity(userID, identityID string) (*model.ChannelIdentityModel, error) {
 	var identity model.ChannelIdentityModel
 	if err := model.GetDB().Where("id = ? AND deleted_at IS NULL", identityID).First(&identity).Error; err != nil {
 		return nil, err
@@ -449,15 +578,25 @@ func TTSRoleConfig(userID, identityID string) (*model.ChannelIdentityTTSConfig, 
 	if _, err = ValidateChannelIdentityActorIdentity(actor, identity.ChannelID, identityID); err != nil {
 		return nil, err
 	}
-	var role model.ChannelIdentityTTSConfig
-	err = model.GetDB().Where("identity_id = ? AND deleted_at IS NULL", identityID).First(&role).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return &model.ChannelIdentityTTSConfig{IdentityID: identityID, Rate: 1, Pitch: 1, Volume: 50}, nil
+	return &identity, nil
+}
+
+func TTSRoleConfig(userID, identityID string) (*model.ChannelIdentityTTSConfig, error) {
+	identity, err := ttsRoleIdentity(userID, identityID)
+	if err != nil {
+		return nil, err
 	}
-	return &role, err
+	role, found, err := channelIdentityTTSConfigTx(model.GetDB(), identity.ID, identity.SharedIdentityID, false)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return defaultChannelIdentityTTSConfig(identityID), nil
+	}
+	return role, nil
 }
 func TTSSaveRoleConfig(userID, identityID string, input model.ChannelIdentityTTSConfig) error {
-	old, err := TTSRoleConfig(userID, identityID)
+	identity, err := ttsRoleIdentity(userID, identityID)
 	if err != nil {
 		return err
 	}
@@ -482,10 +621,60 @@ func TTSSaveRoleConfig(userID, identityID string, input model.ChannelIdentityTTS
 	if input.SystemVoice == "" {
 		input.SystemVoiceProvider, input.SystemVoiceProviderID, input.SystemVoiceModel = "", "", ""
 	}
+	if identity.SharedIdentityID != "" {
+		return model.GetDB().Transaction(func(tx *gorm.DB) error {
+			var template model.SharedChannelIdentityModel
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Select("id", "user_id", "source_identity_id", "shared_data_json").
+				Where("id = ? AND user_id = ?", identity.SharedIdentityID, identity.UserID).Take(&template).Error; err != nil {
+				return err
+			}
+			old, found, err := sharedChannelIdentityTTSConfigFromData(template.SharedDataJSON, identity.ID)
+			if err != nil {
+				return err
+			}
+			if !found && template.SourceIdentityID != "" {
+				old, found, err = legacyChannelIdentityTTSConfigTx(tx, template.SourceIdentityID, true)
+				if err != nil {
+					return err
+				}
+				if old != nil {
+					old.IdentityID = identity.ID
+				}
+			}
+			if !found && template.SourceIdentityID != identity.ID {
+				old, found, err = legacyChannelIdentityTTSConfigTx(tx, identity.ID, true)
+				if err != nil {
+					return err
+				}
+			}
+			if !found {
+				old = defaultChannelIdentityTTSConfig(identity.ID)
+			}
+			if input.Revision != old.Revision {
+				return ErrTTSConflict
+			}
+			input.IdentityID = identity.ID
+			input.Revision = old.Revision + 1
+			raw, err := sharedChannelIdentityTTSData(template.SharedDataJSON, input)
+			if err != nil {
+				return err
+			}
+			return tx.Model(&model.SharedChannelIdentityModel{}).Where("id = ? AND user_id = ?", template.ID, identity.UserID).
+				Update("shared_data_json", raw).Error
+		})
+	}
+	old, found, err := legacyChannelIdentityTTSConfigTx(model.GetDB(), identity.ID, false)
+	if err != nil {
+		return err
+	}
+	if !found {
+		old = defaultChannelIdentityTTSConfig(identity.ID)
+	}
 	if input.Revision != old.Revision {
 		return ErrTTSConflict
 	}
-	input.IdentityID = identityID
+	input.IdentityID = identity.ID
 	input.Revision = old.Revision + 1
 	if old.ID == "" {
 		input.StringPKBaseModel = model.StringPKBaseModel{}
