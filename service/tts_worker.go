@@ -459,6 +459,7 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 	requestID := ""
 	audioURL := ""
 	sseWAV := false
+	creationPreview := false
 	if j.Operation == "design" || j.Operation == "clone" {
 		var result ttsprovider.VoiceResult
 		result, err = ttsProviderCreateVoice(ctx, *provider, j, s)
@@ -476,8 +477,11 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 			_ = db.Model(&model.TTSVoice{}).Where("id = ?", j.VoiceID).Updates(updates).Error
 			if result.Output.PreviewAudio != nil {
 				data, e := base64.StdEncoding.DecodeString(result.Output.PreviewAudio.Data)
-				if e == nil && len(data) <= ttsprovider.MaxAudioBytes {
+				if e == nil && len(data) > 0 && len(data) <= ttsprovider.MaxAudioBytes {
 					_, e = f.Write(data)
+					if e == nil {
+						creationPreview = true
+					}
 				}
 				if e != nil {
 					err = e
@@ -564,7 +568,7 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 		ttsMessageStatus(j, "failed", nil)
 		return
 	}
-	if j.Operation == "clone" {
+	if j.Operation == "clone" && !creationPreview {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Update("status", "succeeded").Error
 		_ = os.Remove(j.SpoolPath)
 		return
@@ -740,7 +744,7 @@ func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *u
 	if err = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "succeeded", "resource_id": a.ID, "media_json": string(meta), "error_code": ""}).Error; err != nil {
 		return
 	}
-	if j.Operation == "design" {
+	if j.Operation == "design" || j.Operation == "clone" {
 		_ = db.Model(&model.TTSVoice{}).Where("id = ?", j.VoiceID).Update("preview_resource_id", a.ID).Error
 	}
 	if j.Operation == "audition" || j.Operation == "message_synthesis" {
