@@ -642,11 +642,16 @@ func ChatExportRetry(c *fiber.Ctx) error {
 	if job.UserID != user.ID {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": "无权限访问该任务"})
 	}
-	if err := validateExportChannel(user.ID, job.ChannelID); err != nil {
-		return c.Status(mapExportError(err)).JSON(fiber.Map{"error": err.Error()})
+	if !service.IsLogMessageExportJob(job) {
+		if err := validateExportChannel(user.ID, job.ChannelID); err != nil {
+			return c.Status(mapExportError(err)).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 	newJob, err := service.RetryMessageExportJob(job)
 	if err != nil {
+		if service.IsLogMessageExportJob(job) {
+			return logResponse(c, nil, err)
+		}
 		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	sliceLimit, maxConcurrency := service.ExportJobRuntimeSettings(newJob)

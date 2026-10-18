@@ -64,6 +64,21 @@ func newDocxImageResolver(channelIDs ...string) (*docxImageResolver, error) {
 	}, nil
 }
 
+func (r *docxImageResolver) UseChannel(channelID string) {
+	if r == nil {
+		return
+	}
+	channelID = strings.TrimSpace(channelID)
+	if r.channelID == channelID {
+		return
+	}
+	r.channelID = channelID
+	// Resolved images carry channel-specific layout dimensions, so a channel
+	// switch must not reuse entries produced for the previous channel.
+	r.cache = make(map[string]docxImage)
+	r.layoutCache = make(map[string]*exportImageLayout)
+}
+
 func (r *docxImageResolver) Close() {
 	if r != nil && r.tempDir != "" {
 		_ = os.RemoveAll(r.tempDir)

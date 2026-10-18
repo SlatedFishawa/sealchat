@@ -12,6 +12,7 @@ import {
   Book2,
   Bookmark,
   Components,
+  Download,
   Eye,
   Heading,
   LayoutSidebarRight,
@@ -67,6 +68,7 @@ import LogElementsPanel from './LogElementsPanel.vue';
 import LogPagePanel from './LogPagePanel.vue';
 import LogStylePanel from './LogStylePanel.vue';
 import LogPublishPanel from './LogPublishPanel.vue';
+import LogStandardExportDialog from './LogStandardExportDialog.vue';
 
 const props = defineProps<{ context: LogProjectContext; slug: string }>();
 const emit = defineEmits<{ (e: 'reload'): void }>();
@@ -618,6 +620,7 @@ const sectionOptions = computed(() => chapters.value.map((c, i) => (c.sections.l
       children: c.sections.map((s) => ({ label: sectionLabel(s, sourceChannelName), value: s.id })),
     })));
 const sectionsShow = ref(false);
+const exportShow = ref(false);
 
 const saveStatusText = computed(() => ({
   saved: '已保存',
@@ -766,6 +769,15 @@ onBeforeUnmount(() => {
         <span class="log-wb__save" :class="`is-${draftCtl.status.value}`" :title="draftCtl.lastError.value || `草稿 v${draftCtl.draftVersion.value}`">
           <i class="log-wb__save-dot" aria-hidden="true" />{{ saveStatusText }}
         </span>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" quaternary :circle="narrow" aria-label="导出" @click="exportShow = true">
+              <template #icon><n-icon :component="Download" /></template>
+              <span v-if="!narrow">导出</span>
+            </n-button>
+          </template>
+          按当前 LOG 编排顺序导出传统格式
+        </n-tooltip>
         <n-button
           size="small"
           type="primary"
@@ -1002,6 +1014,13 @@ onBeforeUnmount(() => {
       :section-id="querySection?.id || ''"
       :channel-id="sourceChannelId"
       @saved="onEditorSaved"
+    />
+
+    <LogStandardExportDialog
+      v-if="exportShow"
+      v-model:show="exportShow"
+      :project-id="projectId"
+      :draft-ctl="draftCtl"
     />
 
     <LogSectionsDialog

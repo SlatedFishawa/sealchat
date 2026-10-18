@@ -111,8 +111,15 @@ func processExportJob(job *model.MessageExportJobModel, cfg MessageExportWorkerC
 		}
 		return nil
 	}
-	channelName := resolveChannelName(job.ChannelID)
-	messages, err := loadMessagesForExport(job)
+	var messages []*model.MessageModel
+	var err error
+	channelName := job.DisplayName
+	if extraOptions.SourceKind == "log" {
+		messages, err = loadLogMessagesForExport(job, extraOptions)
+	} else {
+		channelName = resolveChannelName(job.ChannelID)
+		messages, err = loadMessagesForExport(job)
+	}
 	if err != nil {
 		_ = markJobFailed(job, err)
 		return err
@@ -132,7 +139,7 @@ func processExportJob(job *model.MessageExportJobModel, cfg MessageExportWorkerC
 	}
 	payload := buildExportPayload(job, channelName, messages, ctx, extraOptions)
 	if strings.EqualFold(job.Format, "docx") {
-		if len(extraOptions.TextColorizeBBCodeMap) == 0 && len(extraOptions.TextColorizeBBCodeNameMap) == 0 {
+		if extraOptions.SourceKind != "log" && len(extraOptions.TextColorizeBBCodeMap) == 0 && len(extraOptions.TextColorizeBBCodeNameMap) == 0 {
 			extraOptions.TextColorizeBBCodeMap, extraOptions.TextColorizeBBCodeNameMap = loadExportColorOverrides(job.UserID, job.ChannelID)
 		}
 		if payload.ExtraMeta == nil {

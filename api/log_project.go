@@ -22,6 +22,7 @@ func bindLogProjectRoutes(auth fiber.Router) {
 	auth.Put("/worlds/:worldId/log-project", logAuthentication, logProjectPut)
 	auth.Get("/log/layout/:slug", logAuthentication, logLayoutGet)
 	auth.Put("/log/projects/:id/draft", logAuthentication, logDraftPut)
+	auth.Post("/log/projects/:id/export", logAuthentication, logExportCreate)
 	auth.Get("/log/projects/:id/sections/:sectionId/messages", logAuthentication, logMessagesGet)
 	auth.Get("/log/projects/:id/sections/:sectionId/message-context/:messageId", logAuthentication, logMessagesGet)
 	auth.Put("/log/projects/:id/sections/:sectionId/exclusions", logAuthentication, logExclusionsPut)

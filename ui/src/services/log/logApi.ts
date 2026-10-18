@@ -107,6 +107,24 @@ export const resolveLogLayout = (slug: string) =>
 export const saveLogDraft = (projectId: string, expectedVersion: number, draft: LogDraft) =>
   unwrap<{ draftVersion: number; draft: LogDraft }>(api.put(`api/v1/log/projects/${seg(projectId)}/draft`, { expectedVersion, draft }));
 
+export interface LogStandardExportInput {
+  expectedDraftVersion: number;
+  format: 'txt' | 'docx' | 'html' | 'json';
+  displayName: string;
+  includeImages: boolean;
+  includeDiceCommands: boolean;
+  withoutTimestamp: boolean;
+  withoutOocParentheses: boolean;
+  mergeMessages: boolean;
+  autoCorrectPunctuation: boolean;
+  textBbcodeColorize: boolean;
+}
+
+export const createLogStandardExport = (projectId: string, input: LogStandardExportInput) =>
+  unwrap<{ task_id: string; status: string; message: string; requested_at: number }>(
+    api.post(`api/v1/log/projects/${seg(projectId)}/export`, input),
+  );
+
 export const fetchLogSectionMessages = (projectId: string, sectionId: string, cursor: string | null, limit = 100, signal?: AbortSignal) =>
   unwrap<LogMessageWindow>(api.get(`api/v1/log/projects/${seg(projectId)}/sections/${seg(sectionId)}/messages`, {
     params: cursor ? { cursor, limit } : { limit },

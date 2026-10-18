@@ -33,7 +33,13 @@ func (docxFormatter) Build(payload *ExportPayload) ([]byte, error) {
 	}
 	defer resolver.Close()
 	for i := range payload.Messages {
-		if err := renderDocxMessage(doc, payload, &payload.Messages[i], resolver); err != nil {
+		msg := &payload.Messages[i]
+		channelID := strings.TrimSpace(msg.ChannelID)
+		if channelID == "" {
+			channelID = strings.TrimSpace(payload.ChannelID)
+		}
+		resolver.UseChannel(channelID)
+		if err := renderDocxMessage(doc, payload, msg, resolver); err != nil {
 			return nil, err
 		}
 	}

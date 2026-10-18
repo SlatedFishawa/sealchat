@@ -38,6 +38,7 @@ type payloadContext struct {
 
 type ExportMessage struct {
 	ID                    string             `json:"id"`
+	ChannelID             string             `json:"-"`
 	SenderID              string             `json:"sender_id"`
 	SenderIdentityID      string             `json:"sender_identity_id,omitempty"`
 	SenderName            string             `json:"sender_name"`
@@ -134,10 +135,19 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 	imageLayoutResolver := newExportImageLayoutResolver(job.ChannelID)
 	stickyNoteResolver := newStickyNoteExportResolver(job.ChannelID)
 	worldClueResolver := newWorldClueExportResolver(job.ChannelID, job.UserID)
+	messageChannelID := job.ChannelID
 	exportMessages := make([]ExportMessage, 0, len(messages))
 	for _, msg := range messages {
 		if msg == nil {
 			continue
+		}
+		// Jobs without a channel still resolve embedded content in each message's real channel.
+		if job.ChannelID == "" && msg.ChannelID != messageChannelID {
+			messageChannelID = msg.ChannelID
+			identityResolver = newIdentityResolver(messageChannelID)
+			imageLayoutResolver = newExportImageLayoutResolver(messageChannelID)
+			stickyNoteResolver = newStickyNoteExportResolver(messageChannelID)
+			worldClueResolver = newWorldClueExportResolver(messageChannelID, job.UserID)
 		}
 		originalContent := msg.Content
 		exportContent := originalContent
@@ -185,6 +195,7 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 		}
 		exportMessages = append(exportMessages, ExportMessage{
 			ID:                    msg.ID,
+			ChannelID:             msg.ChannelID,
 			SenderID:              msg.UserID,
 			SenderIdentityID:      strings.TrimSpace(msg.SenderIdentityID),
 			SenderName:            resolveSenderName(msg),
@@ -201,7 +212,7 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 			ContentHTML:           htmlContent,
 			ContentRich:           richContent,
 			WorldClues:            worldClues,
-			WhisperTargets:        extractWhisperTargets(msg, job.ChannelID, identityResolver),
+			WhisperTargets:        extractWhisperTargets(msg, messageChannelID, identityResolver),
 		})
 	}
 

@@ -42,6 +42,9 @@ var supportedExportFormats = map[string]struct{}{
 type ExportJobOptions struct {
 	UserID                    string
 	ChannelID                 string
+	SourceKind                string
+	LogProjectID              string
+	LogDraftVersion           int64
 	Format                    string
 	DisplayName               string
 	IncludeOOC                bool
@@ -63,6 +66,9 @@ type ExportJobOptions struct {
 }
 
 type exportExtraOptions struct {
+	SourceKind                string            `json:"source_kind,omitempty"`
+	LogProjectID              string            `json:"log_project_id,omitempty"`
+	LogDraftVersion           int64             `json:"log_draft_version,omitempty"`
 	DisplaySettings           map[string]any    `json:"display,omitempty"`
 	SliceLimit                int               `json:"slice_limit,omitempty"`
 	MaxConcurrency            int               `json:"max_concurrency,omitempty"`
@@ -230,12 +236,15 @@ func loadMessagesForExport(job *model.MessageExportJobModel) ([]*model.MessageMo
 		return nil, err
 	}
 	extra := parseExportExtraOptions(job.ExtraOptions)
+	return prepareMessagesForExport(messages, job, extra), nil
+}
+
+func prepareMessagesForExport(messages []*model.MessageModel, job *model.MessageExportJobModel, extra *exportExtraOptions) []*model.MessageModel {
 	messages = normalizeMessagesForExportPunctuation(messages, extra.AutoCorrectPunctuation)
 	if job.MergeMessages {
-		return mergeSequentialMessagesForExport(messages, extra, job.IncludeOOC), nil
+		return mergeSequentialMessagesForExport(messages, extra, job.IncludeOOC)
 	}
-	messages = filterMessagesForExport(messages, extra, job.IncludeOOC)
-	return messages, nil
+	return filterMessagesForExport(messages, extra, job.IncludeOOC)
 }
 
 func normalizeMessagesForExportPunctuation(messages []*model.MessageModel, enabled bool) []*model.MessageModel {
@@ -646,6 +655,9 @@ func buildExportExtraOptions(opts *ExportJobOptions) (string, error) {
 		return "", nil
 	}
 	extra := exportExtraOptions{
+		SourceKind:                opts.SourceKind,
+		LogProjectID:              opts.LogProjectID,
+		LogDraftVersion:           opts.LogDraftVersion,
 		SliceLimit:                opts.SliceLimit,
 		MaxConcurrency:            opts.MaxConcurrency,
 		TextColorizeBBCode:        opts.TextColorizeBBCode,
@@ -659,7 +671,7 @@ func buildExportExtraOptions(opts *ExportJobOptions) (string, error) {
 	if len(opts.DisplaySettings) > 0 {
 		extra.DisplaySettings = opts.DisplaySettings
 	}
-	if extra.DisplaySettings == nil &&
+	if extra.SourceKind == "" && extra.DisplaySettings == nil &&
 		extra.SliceLimit == 0 &&
 		extra.MaxConcurrency == 0 &&
 		!extra.TextColorizeBBCode &&
@@ -899,9 +911,17 @@ func RetryMessageExportJob(job *model.MessageExportJobModel) (*model.MessageExpo
 		return nil, fmt.Errorf("任务不存在")
 	}
 	extra := parseExportExtraOptions(job.ExtraOptions)
+	if extra.SourceKind == "log" {
+		if _, err := loadLogProjectForExport(job.UserID, extra); err != nil {
+			return nil, err
+		}
+	}
 	opts := &ExportJobOptions{
 		UserID:                 job.UserID,
 		ChannelID:              job.ChannelID,
+		SourceKind:             extra.SourceKind,
+		LogProjectID:           extra.LogProjectID,
+		LogDraftVersion:        extra.LogDraftVersion,
 		Format:                 job.Format,
 		DisplayName:            job.DisplayName,
 		IncludeOOC:             job.IncludeOOC,

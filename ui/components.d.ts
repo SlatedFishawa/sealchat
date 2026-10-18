@@ -54,6 +54,7 @@ declare module 'vue' {
     KeywordSuggestPanel: typeof import('./src/components/chat/KeywordSuggestPanel.vue')['default']
     MentionSuggestPanel: typeof import('./src/components/chat/MentionSuggestPanel.vue')['default']
     MessageImageEditor: typeof import('./src/components/chat/MessageImageEditor.vue')['default']
+    NA: typeof import('naive-ui')['NA']
     NAlert: typeof import('naive-ui')['NAlert']
     NAvatar: typeof import('naive-ui')['NAvatar']
     NButton: typeof import('naive-ui')['NButton']
