@@ -130,6 +130,18 @@ func BindTTSRoutes(auth fiber.Router) {
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})
+	r.Post("/voices/:id/refresh", func(c *fiber.Ctx) error {
+		if err := service.TTSRefreshVoice(c.UserContext(), getCurUser(c).ID, c.Params("id")); err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(fiber.Map{"ok": true})
+	})
+	r.Post("/voices/:id/force-delete", func(c *fiber.Ctx) error {
+		if err := service.TTSForceDeleteVoice(c.UserContext(), getCurUser(c).ID, c.Params("id")); err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(fiber.Map{"ok": true})
+	})
 	r.Delete("/voices/:id", func(c *fiber.Ctx) error {
 		if err := service.TTSDeleteVoice(getCurUser(c).ID, c.Params("id")); err != nil {
 			return ttsError(c, err)

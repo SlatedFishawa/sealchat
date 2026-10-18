@@ -188,6 +188,151 @@ func TTSResolveCloneSource(jobID, expiresRaw, token string) (*model.AttachmentMo
 	return ttsCloneSourceAttachment(&job)
 }
 
+func ttsProviderVoiceNotFound(err error) bool {
+	var providerErr *ttsprovider.ProviderError
+	return errors.As(err, &providerErr) && strings.EqualFold(strings.TrimSpace(providerErr.Code), "BadRequest.VoiceNotFound")
+}
+
+func ttsReconcileVoice(parent context.Context, db *gorm.DB, speech *utils.SpeechConfig, v model.TTSVoice, forceDelete bool) error {
+	if db == nil || speech == nil {
+		return ErrTTSDisabled
+	}
+	if v.ProviderVoiceID == "" {
+		if v.Lifecycle != "delete_pending" {
+			return nil
+		}
+		var refs int64
+		if err := db.Model(&model.TTSJob{}).Where("voice_id = ? AND status IN ?", v.ID, []string{"queued", "running", "usage_unknown"}).Count(&refs).Error; err != nil {
+			return err
+		}
+		if refs != 0 {
+			return nil
+		}
+		r := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now()})
+		if r.Error != nil {
+			return r.Error
+		}
+		if r.RowsAffected == 1 && v.Kind == "clone" {
+			_ = ttsCleanupCloneSource(parent, v.SourceResourceID)
+		}
+		return nil
+	}
+
+	var provider *utils.SpeechProviderConfig
+	for _, p := range speech.Providers {
+		if p.ID == v.ProviderID && p.CredentialScope == v.CredentialScope && p.Region == v.Region && p.Workspace == v.Workspace {
+			cp := p
+			provider = &cp
+			break
+		}
+	}
+	if provider == nil {
+		return TTSValidationError("音色对应的供应商配置已不可用")
+	}
+
+	cleanupSourceID := ""
+	if v.Lifecycle == "delete_pending" {
+		var refs int64
+		if err := db.Model(&model.TTSJob{}).Where("voice_id = ? AND status IN ?", v.ID, []string{"queued", "running", "usage_unknown"}).Count(&refs).Error; err != nil {
+			return err
+		}
+		if refs != 0 {
+			return nil
+		}
+
+		readyToDelete := true
+		remoteGone := false
+		if v.ProviderStatus == "DEPLOYING" {
+			queryCtx, cancel := context.WithTimeout(parent, 10*time.Second)
+			queried, queryErr := ttsProviderQueryVoice(queryCtx, *provider, v.ProviderVoiceID)
+			cancel()
+			readyToDelete = false
+			if ttsProviderVoiceNotFound(queryErr) {
+				remoteGone = true
+			} else if queryErr != nil {
+				return queryErr
+			} else if queried.Output.TargetModel == v.TargetModel {
+				status := queried.Output.Status
+				if status != "" {
+					if err := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").UpdateColumn("provider_status", status).Error; err != nil {
+						return err
+					}
+				}
+				readyToDelete = forceDelete || status == "OK" || status == "UNDEPLOYED"
+			}
+		}
+		if readyToDelete && !remoteGone {
+			deleteCtx, cancel := context.WithTimeout(parent, 10*time.Second)
+			_, deleteErr := ttsProviderDeleteVoice(deleteCtx, *provider, v.ProviderVoiceID)
+			cancel()
+			if deleteErr != nil && !ttsProviderVoiceNotFound(deleteErr) {
+				if forceDelete {
+					var providerErr *ttsprovider.ProviderError
+					if errors.As(deleteErr, &providerErr) && strings.TrimSpace(providerErr.Code) != "" {
+						return TTSValidationError("供应商暂时拒绝删除此音色（" + providerErr.Code + "），请稍后重试")
+					}
+					return TTSValidationError("供应商暂时拒绝删除此音色，请稍后重试")
+				}
+				return deleteErr
+			}
+			remoteGone = true
+		}
+		if remoteGone {
+			r := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now()})
+			if r.Error != nil {
+				return r.Error
+			}
+			if r.RowsAffected == 1 && v.Kind == "clone" {
+				cleanupSourceID = v.SourceResourceID
+			}
+		}
+	} else if v.ProviderStatus != "OK" {
+		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+		r, err := ttsProviderQueryVoice(ctx, *provider, v.ProviderVoiceID)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if r.Output.TargetModel != v.TargetModel {
+			return ErrTTSConflict
+		}
+		updates := map[string]any{"provider_status": r.Output.Status}
+		if r.Output.Status == "OK" || r.Output.Status == "UNDEPLOYED" {
+			updates["lifecycle"] = "preview"
+		}
+		updated := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle IN ?", v.ID, []string{"creating", "preview"}).Updates(updates)
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 1 && v.Kind == "clone" && (r.Output.Status == "OK" || r.Output.Status == "UNDEPLOYED") {
+			cleanupSourceID = v.SourceResourceID
+		}
+	}
+	if cleanupSourceID != "" {
+		_ = ttsCleanupCloneSource(parent, cleanupSourceID)
+	}
+	return nil
+}
+
+func TTSRefreshVoice(parent context.Context, userID, voiceID string) error {
+	if userID == "" || voiceID == "" {
+		return ErrTTSDenied
+	}
+	db := model.GetDB()
+	var voice model.TTSVoice
+	if err := db.Where("id = ? AND owner_user_id = ? AND deleted_at IS NULL", voiceID, userID).First(&voice).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrTTSDenied
+		}
+		return err
+	}
+	cfg := utils.GetConfig()
+	if cfg == nil || cfg.AI.Speech == nil {
+		return ErrTTSDisabled
+	}
+	return ttsReconcileVoice(parent, db, cfg.AI.Speech, voice, true)
+}
+
 var ttsMaintenanceAt time.Time
 
 func ttsMaintainVoices(parent context.Context) {
@@ -214,60 +359,7 @@ func ttsMaintainVoices(parent context.Context) {
 			_ = TTSExpirePreviews(db, v.OwnerUserID, time.Now())
 			continue
 		}
-		if v.ProviderVoiceID == "" {
-			if v.Lifecycle == "delete_pending" {
-				var refs int64
-				err := db.Model(&model.TTSJob{}).Where("voice_id = ? AND status IN ?", v.ID, []string{"queued", "running", "usage_unknown"}).Count(&refs).Error
-				if err == nil && refs == 0 {
-					r := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now()})
-					if r.Error == nil && r.RowsAffected == 1 && v.Kind == "clone" {
-						_ = ttsCleanupCloneSource(parent, v.SourceResourceID)
-					}
-				}
-			}
-			continue
-		}
-		var provider *utils.SpeechProviderConfig
-		for _, p := range cfg.AI.Speech.Providers {
-			if p.ID == v.ProviderID && p.CredentialScope == v.CredentialScope && p.Region == v.Region && p.Workspace == v.Workspace {
-				cp := p
-				provider = &cp
-				break
-			}
-		}
-		if provider == nil {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-		cleanupSourceID := ""
-		if v.Lifecycle == "delete_pending" {
-			var refs int64
-			err := db.Model(&model.TTSJob{}).Where("voice_id = ? AND status IN ?", v.ID, []string{"queued", "running", "usage_unknown"}).Count(&refs).Error
-			if err == nil && refs == 0 {
-				if _, err = ttsProviderDeleteVoice(ctx, *provider, v.ProviderVoiceID); err == nil {
-					r := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now()})
-					if r.Error == nil && r.RowsAffected == 1 && v.Kind == "clone" {
-						cleanupSourceID = v.SourceResourceID
-					}
-				}
-			}
-		} else if v.ProviderStatus != "OK" {
-			r, err := ttsProviderQueryVoice(ctx, *provider, v.ProviderVoiceID)
-			if err == nil && r.Output.TargetModel == v.TargetModel {
-				updates := map[string]any{"provider_status": r.Output.Status}
-				if r.Output.Status == "OK" || r.Output.Status == "UNDEPLOYED" {
-					updates["lifecycle"] = "preview"
-				}
-				updated := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle IN ?", v.ID, []string{"creating", "preview"}).Updates(updates)
-				if updated.Error == nil && updated.RowsAffected == 1 && v.Kind == "clone" && (r.Output.Status == "OK" || r.Output.Status == "UNDEPLOYED") {
-					cleanupSourceID = v.SourceResourceID
-				}
-			}
-		}
-		cancel()
-		if cleanupSourceID != "" {
-			_ = ttsCleanupCloneSource(parent, cleanupSourceID)
-		}
+		_ = ttsReconcileVoice(parent, db, cfg.AI.Speech, v, false)
 	}
 }
 
@@ -455,6 +547,50 @@ func TTSDeleteVoice(userID, id string) error {
 		}
 		return nil
 	})
+}
+
+func TTSForceDeleteVoice(parent context.Context, userID, id string) error {
+	if userID == "" || id == "" {
+		return ErrTTSDenied
+	}
+	db := model.GetDB()
+	var voice model.TTSVoice
+	if err := db.Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND deleted_at IS NULL", id, userID, "delete_pending").First(&voice).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrTTSDenied
+		}
+		return err
+	}
+
+	// Force delete is explicitly local-first semantics from the user's point of
+	// view. Try the cloud deletion once, but never let a stuck provider prevent
+	// the local record from being retired.
+	if voice.ProviderVoiceID != "" {
+		if cfg := utils.GetConfig(); cfg != nil && cfg.AI.Speech != nil {
+			for _, p := range cfg.AI.Speech.Providers {
+				if p.ID == voice.ProviderID && p.CredentialScope == voice.CredentialScope && p.Region == voice.Region && p.Workspace == voice.Workspace {
+					ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+					_, _ = ttsProviderDeleteVoice(ctx, p, voice.ProviderVoiceID)
+					cancel()
+					break
+				}
+			}
+		}
+	}
+
+	r := db.Model(&model.TTSVoice{}).
+		Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND deleted_at IS NULL", id, userID, "delete_pending").
+		Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now(), "is_public": false, "revision": gorm.Expr("revision + 1")})
+	if r.Error != nil {
+		return r.Error
+	}
+	if r.RowsAffected != 1 {
+		return ErrTTSConflict
+	}
+	if voice.Kind == "clone" {
+		_ = ttsCleanupCloneSource(parent, voice.SourceResourceID)
+	}
+	return nil
 }
 
 func TTSSetPolicy(userID string, input model.TTSUserPolicy) error {

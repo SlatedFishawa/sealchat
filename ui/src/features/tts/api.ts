@@ -52,6 +52,8 @@ export const speechAPI = {
   async systemPreview(jobId: string) { return (await api.get<SystemPreviewJob>(`${root}/system-previews/${id(jobId)}`)).data },
   async save(voiceId: string, replaceId = '') { await api.post(`${root}/voices/${id(voiceId)}/save`, { replaceId }) },
   async update(voice: SpeechVoice) { await api.patch(`${root}/voices/${id(voice.id)}`, voice) },
+  async refreshVoice(voiceId: string) { await api.post(`${root}/voices/${id(voiceId)}/refresh`) },
+  async forceDeleteVoice(voiceId: string) { await api.post(`${root}/voices/${id(voiceId)}/force-delete`) },
   async remove(voiceId: string) { await api.delete(`${root}/voices/${id(voiceId)}`) },
   async role(identityId: string) { return (await api.get<RoleSpeechConfig>(`${root}/roles/${id(identityId)}`)).data },
   async saveRole(identityId: string, value: RoleSpeechConfig) { await api.put(`${root}/roles/${id(identityId)}`, value) },
