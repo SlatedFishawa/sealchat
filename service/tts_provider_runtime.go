@@ -45,6 +45,18 @@ func ttsTencentSynthesize(ctx context.Context, client *ttsprovider.TencentClient
 	return client.Synthesize(ctx, snapshot.Provider.Model, snapshot.Input, sink)
 }
 
+func ttsProviderValidateCloneTransport(provider utils.SpeechProviderConfig) error {
+	spec, ok := ttsprovider.LookupModel(provider.EffectiveProviderKind(), provider.Model)
+	if !ok {
+		return errTTSUnsupportedProvider
+	}
+	if spec.Runtime != ttsprovider.RuntimeAliyunQwen {
+		return nil
+	}
+	_, err := ttsClonePublicBaseURL()
+	return err
+}
+
 func ttsProviderCreateVoice(ctx context.Context, provider utils.SpeechProviderConfig, job *model.TTSJob, snapshot TTSSnapshot) (ttsprovider.VoiceResult, error) {
 	switch provider.EffectiveProviderKind() {
 	case ttsprovider.ProviderAliyun:

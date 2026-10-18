@@ -557,6 +557,7 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 	}
 	if err != nil {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "error_code": ttsProviderErrorCode(err, "provider_or_spool_failed")}).Error
+		_ = ttsRetireFailedCreationVoice(db, j, time.Now())
 		_ = os.Remove(j.SpoolPath)
 		ttsMessageStatus(j, "failed", nil)
 		return
@@ -568,6 +569,7 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 	}
 	if canonicalCode != "" {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "error_code": canonicalCode}).Error
+		_ = ttsRetireFailedCreationVoice(db, j, time.Now())
 		_ = os.Remove(j.SpoolPath)
 		ttsMessageStatus(j, "failed", nil)
 		return
@@ -683,6 +685,7 @@ func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *u
 	db := model.GetDB()
 	if !TTSValidateSpool(j.SpoolPath) {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "error_code": "invalid_spool"}).Error
+		_ = ttsRetireFailedCreationVoice(db, j, time.Now())
 		ttsMessageStatus(j, "failed", nil)
 		return
 	}
@@ -693,12 +696,16 @@ func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *u
 			status = "failed"
 		}
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": status, "error_code": "spool_unavailable"}).Error
+		if status == "failed" {
+			_ = ttsRetireFailedCreationVoice(db, j, time.Now())
+		}
 		ttsMessageStatus(j, status, nil)
 		return
 	}
 	media, err := ttsprovider.InspectMedia(b)
 	if err != nil {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "error_code": "unsupported_or_incomplete_media"}).Error
+		_ = ttsRetireFailedCreationVoice(db, j, time.Now())
 		_ = os.Remove(j.SpoolPath)
 		ttsMessageStatus(j, "failed", nil)
 		return

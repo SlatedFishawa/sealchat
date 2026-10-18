@@ -93,6 +93,28 @@ func TTSSaveVoice(db *gorm.DB, userID, voiceID, replaceID string, defaultSlots i
 	})
 }
 
+func ttsRetireFailedCreationVoice(db *gorm.DB, job *model.TTSJob, now time.Time) error {
+	if job == nil || job.VoiceID == "" || (job.Operation != "design" && job.Operation != "clone") {
+		return nil
+	}
+	var voice model.TTSVoice
+	err := db.Select("id", "provider_voice_id").Where("id = ? AND lifecycle = ? AND deleted_at IS NULL", job.VoiceID, "creating").First(&voice).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	updates := map[string]any{"is_public": false, "revision": gorm.Expr("revision + 1")}
+	if voice.ProviderVoiceID == "" {
+		updates["lifecycle"] = "deleted"
+		updates["deleted_at"] = now
+	} else {
+		updates["lifecycle"] = "delete_pending"
+	}
+	return db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ? AND deleted_at IS NULL", voice.ID, "creating").Updates(updates).Error
+}
+
 // Claim expiry under the same user lock as Save. Never automatically GC saved
 // voices, and retain cloud IDs until upstream deletion is confirmed.
 func TTSExpirePreviews(db *gorm.DB, userID string, now time.Time) error {

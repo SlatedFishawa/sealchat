@@ -555,6 +555,9 @@ func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {
 		if model.GetDB().Where("id = ? AND user_id = ? AND root_id_type = ? AND parent_id_type = ? AND deleted_at IS NULL", r.SourceResourceID, userID, "tts", "clone_source").First(&a).Error != nil {
 			return nil, ErrTTSDenied
 		}
+		if err := ttsProviderValidateCloneTransport(s.Provider); err != nil {
+			return nil, err
+		}
 	}
 	if operation == "audition" && s.Translation != nil {
 		auditionFingerprint := ttsAuditionFingerprint(s)

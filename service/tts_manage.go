@@ -90,22 +90,30 @@ func ttsCloneSourceAttachment(job *model.TTSJob) (*model.AttachmentModel, error)
 	return &a, nil
 }
 
-func TTSCloneReadURL(job *model.TTSJob) (string, error) {
-	if _, err := ttsCloneSourceAttachment(job); err != nil {
-		return "", err
-	}
+func ttsClonePublicBaseURL() (*url.URL, error) {
 	cfg := utils.GetConfig()
 	if cfg == nil {
-		return "", TTSValidationError("复刻样本读取需要配置公开 HTTPS Domain")
+		return nil, TTSValidationError("声音复刻需要配置可公网访问的 HTTPS Domain")
 	}
 	base, err := url.Parse(utils.PrimaryDomain(cfg.Domain))
 	if err != nil || base.Scheme != "https" || base.Host == "" || base.Hostname() == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" {
-		return "", TTSValidationError("复刻样本读取需要配置公开 HTTPS Domain")
+		return nil, TTSValidationError("声音复刻需要配置可公网访问的 HTTPS Domain")
 	}
 	base.Path = strings.TrimRight(base.Path, "/")
 	webRoot := strings.Trim(cfg.WebUrl, "/")
 	if webRoot != "" {
 		base.Path += "/" + webRoot
+	}
+	return base, nil
+}
+
+func TTSCloneReadURL(job *model.TTSJob) (string, error) {
+	if _, err := ttsCloneSourceAttachment(job); err != nil {
+		return "", err
+	}
+	base, err := ttsClonePublicBaseURL()
+	if err != nil {
+		return "", err
 	}
 	base.Path += "/api/v1/tts/clone-source/" + job.ID
 	base.RawPath = ""
@@ -442,7 +450,10 @@ func TTSResolveUnknown(actor, jobID, action, note string, units int64, tokenUsag
 		} else {
 			return ErrTTSConflict
 		}
-		return tx.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "audit_actor": actor, "audit_note": note, "error_code": "admin_resolved"}).Error
+		if err := tx.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "audit_actor": actor, "audit_note": note, "error_code": "admin_resolved"}).Error; err != nil {
+			return err
+		}
+		return ttsRetireFailedCreationVoice(tx, &j, time.Now())
 	})
 }
 
