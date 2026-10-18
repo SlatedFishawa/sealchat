@@ -44,6 +44,7 @@ export interface SpeechVoice {
   lifecycle: string
   providerStatus: string
   supported?: boolean
+  speechLanguages?: string[]
   revision: number
   previewExpiresAt?: string
   previewResourceId?: string

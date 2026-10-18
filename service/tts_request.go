@@ -299,9 +299,13 @@ func ttsSnapshotForOperation(userID string, r TTSRequest, scope string, automati
 	}
 	if operation != "design" && operation != "clone" && r.SpeechLanguage != "" {
 		if voice != nil {
-			return s, TTSValidationError("个人音色暂不支持指定朗读语言，请选择跟随原文")
-		}
-		if !slices.Contains(ttsSystemVoiceSpeechLanguages(s.Provider, s.Provider.Model, v), r.SpeechLanguage) {
+			if voice.Kind != "clone" {
+				return s, TTSValidationError("个人音色暂不支持指定朗读语言，请选择跟随原文")
+			}
+			if !slices.Contains(ttsPersonalVoiceSpeechLanguages(s.Provider, *voice), r.SpeechLanguage) {
+				return s, TTSValidationError("当前克隆音色不支持此朗读语言")
+			}
+		} else if !slices.Contains(ttsSystemVoiceSpeechLanguages(s.Provider, s.Provider.Model, v), r.SpeechLanguage) {
 			return s, TTSValidationError("当前音色不支持此朗读语言")
 		}
 	}

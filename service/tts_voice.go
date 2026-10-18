@@ -19,9 +19,18 @@ func PersonalVoiceSupported(provider utils.SpeechProviderConfig, voice model.TTS
 		voice.Region == provider.Region && voice.Workspace == provider.Workspace && voice.TargetModel == provider.Model
 }
 
+func ttsPersonalVoiceSpeechLanguages(provider utils.SpeechProviderConfig, voice model.TTSVoice) []string {
+	if voice.Kind != "clone" || !PersonalVoiceSupported(provider, voice) {
+		return nil
+	}
+	spec, _ := ttsprovider.LookupModel(provider.EffectiveProviderKind(), voice.TargetModel)
+	return append([]string(nil), spec.CloneLanguages...)
+}
+
 type TTSPersonalVoice struct {
 	model.TTSVoice
-	Supported bool `json:"supported"`
+	Supported       bool     `json:"supported"`
+	SpeechLanguages []string `json:"speechLanguages,omitempty"`
 }
 
 func TTSPersonalVoiceResponse(voice model.TTSVoice) TTSPersonalVoice {
@@ -30,6 +39,7 @@ func TTSPersonalVoiceResponse(voice model.TTSVoice) TTSPersonalVoice {
 		for _, p := range utils.NormalizeSpeechConfig(cfg.AI.Speech).Providers {
 			if p.Enabled && PersonalVoiceSupported(p, voice) {
 				item.Supported = true
+				item.SpeechLanguages = ttsPersonalVoiceSpeechLanguages(p, voice)
 				break
 			}
 		}

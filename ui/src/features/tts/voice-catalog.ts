@@ -191,7 +191,7 @@ export function personalVoiceItem(voice: SpeechVoice, userId: string): VoiceCata
     presetSource: '',
     models: [voice.targetModel], modelId: voice.targetModel, name: voice.name, description: voice.description || undefined,
     tags: splitTags(voice.tags), languages: [], kind: voice.kind,
-    speechLanguages: [],
+    speechLanguages: voice.speechLanguages ?? [],
     ownership: voice.ownerUserId === userId ? 'mine' : 'public',
     visibility: voice.isPublic ? 'public' : 'private',
     available: voice.lifecycle === 'saved' && voice.providerStatus === 'OK' && voice.supported !== false,
