@@ -9,6 +9,8 @@ export const useSpeechStore = defineStore('tts', () => {
   const visible = ref(false)
   const scopeChannel = ref('')
   const messageStates = ref<Record<string, MessageSpeech | null>>({})
+  const messageFallbackSuppressedChannel = ref('')
+  const messageFallbackSuppressed = computed(() => !!messageFallbackSuppressedChannel.value && messageFallbackSuppressedChannel.value === scopeChannel.value)
   const quota = ref<SpeechQuota | null>(null)
   const canSynthesize = computed(() => !!quota.value?.enabled && (quota.value.pricingMode === 'token'
     ? quota.value.inputTokenPrice != null && quota.value.outputTokenPrice != null
@@ -24,6 +26,7 @@ export const useSpeechStore = defineStore('tts', () => {
     scopeChannel.value = ''
     quota.value = null
     messageStates.value = {}
+    messageFallbackSuppressedChannel.value = ''
     temporary.value = {}
     speechPlayer.stop()
   }
@@ -31,6 +34,7 @@ export const useSpeechStore = defineStore('tts', () => {
     if (quotaChannel !== channelId) {
       quota.value = null
       visible.value = false
+      messageFallbackSuppressedChannel.value = ''
     }
     quotaChannel = channelId
     scopeChannel.value = channelId
@@ -60,9 +64,12 @@ export const useSpeechStore = defineStore('tts', () => {
       visible.value = true
     }
   }
+  function suppressMessageFallback(channelId: string) {
+    messageFallbackSuppressedChannel.value = channelId
+  }
   function setTemporary(channelId: string, enabled: boolean) {
     temporary.value[channelId] = enabled
     if (window.parent !== window) window.parent.postMessage({ type: 'sealchat:tts-intent', action: 'temporary', channelId, enabled, userId: useUserStore().info.id }, window.location.origin)
   }
-  return { visible, quota, canSynthesize, temporary, messageStates, scopeChannel, reset, refresh, optIn, open, setTemporary }
+  return { visible, quota, canSynthesize, temporary, messageStates, messageFallbackSuppressed, scopeChannel, reset, refresh, optIn, open, suppressMessageFallback, setTemporary }
 })

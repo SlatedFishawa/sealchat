@@ -5,6 +5,25 @@ export interface MessageSpeech {
   format?: string
   messageRevision: number
 }
+export interface SpeechStorageAmount { files: number; bytes: number }
+export type SpeechCleanupCategory = 'invalidatedMessages' | 'deletedMessages' | 'expiredPreviews'
+export type SpeechCleanupSelection = Record<SpeechCleanupCategory, boolean>
+export interface SpeechStorageScope extends SpeechStorageAmount {
+  id: string
+  name: string
+  messages: number
+  channels?: number
+}
+export interface SpeechStorageSummary {
+  total: SpeechStorageAmount
+  local: SpeechStorageAmount
+  s3: SpeechStorageAmount
+  reclaimable: Record<SpeechCleanupCategory | 'total', SpeechStorageAmount>
+  channel: SpeechStorageScope
+  world: SpeechStorageScope
+}
+export type SpeechCleanupResult = SpeechStorageAmount
+export interface SpeechPurgeResult extends SpeechStorageAmount { messages: number }
 export interface VoiceContext {
   providerKind: string
   providerId: string

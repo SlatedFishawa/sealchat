@@ -61,6 +61,41 @@ func BindTTSPublicRoutes(v1 fiber.Router) {
 }
 func BindTTSRoutes(auth fiber.Router) {
 	r := auth.Group("/tts")
+	r.Get("/storage", func(c *fiber.Ctx) error {
+		result, err := service.TTSStorage(getCurUser(c).ID, c.Query("channelId"))
+		if err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(result)
+	})
+	r.Post("/storage/cleanup", func(c *fiber.Ctx) error {
+		var body service.TTSCleanupSelection
+		if err := ttsStorageBody(c, &body); err != nil {
+			return ttsError(c, err)
+		}
+		if strings.TrimSpace(body.ChannelID) == "" || !body.InvalidatedMessages && !body.DeletedMessages && !body.ExpiredPreviews {
+			return ttsError(c, service.TTSValidationError("需要 channelId 和至少一种清理分类"))
+		}
+		result, err := service.TTSCleanupStorage(c.UserContext(), getCurUser(c).ID, body)
+		if err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(result)
+	})
+	r.Post("/storage/purge", func(c *fiber.Ctx) error {
+		var body service.TTSStoragePurgeRequest
+		if err := ttsStorageBody(c, &body); err != nil {
+			return ttsError(c, err)
+		}
+		if strings.TrimSpace(body.ChannelID) == "" || body.Scope != "channel" && body.Scope != "world" {
+			return ttsError(c, service.TTSValidationError("需要 channelId，scope 只支持 channel/world"))
+		}
+		result, err := service.TTSPurgeStorage(c.UserContext(), getCurUser(c).ID, body)
+		if err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(result)
+	})
 	r.Get("/me", func(c *fiber.Ctx) error {
 		q, err := service.TTSQuotaForChannel(getCurUser(c).ID, c.Query("channelId"))
 		if err != nil {
@@ -263,6 +298,27 @@ func BindTTSRoutes(auth fiber.Router) {
 	})
 	service.TTSSetCallbacks(ttsBroadcastReady, ttsBroadcastCancel, ttsBroadcastLive, ttsBroadcastLocalPlayback)
 	service.TTSSetMessageStateCallback(ttsBroadcastMessageState)
+}
+
+func ttsStorageBody(c *fiber.Ctx, body any) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(c.Body(), &fields); err != nil || fields == nil {
+		return service.TTSValidationError("请求必须是 JSON 对象")
+	}
+	for _, value := range fields {
+		if strings.TrimSpace(string(value)) == "null" {
+			return service.TTSValidationError("请求字段不能为 null")
+		}
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(c.Body())))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(body); err != nil {
+		return service.TTSValidationError("无效的存储清理请求")
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return service.TTSValidationError("请求必须是单个 JSON 对象")
+	}
+	return nil
 }
 
 func ttsBroadcastMessageState(messageID string) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -136,6 +137,37 @@ func ttsResourceBackend(a *model.AttachmentModel) (storage.BackendType, error) {
 	default:
 		return "", ErrTTSDenied
 	}
+}
+
+// Delete only archived job audio. Clone samples, spool and regular attachments
+// are outside this helper's authority. No database transaction spans storage I/O.
+func ttsDeleteJobAudio(ctx context.Context, a *model.AttachmentModel) (bool, error) {
+	if a == nil || !a.IsTTSManaged() || a.RootIDType != "tts" || a.ParentIDType != "job_audio" || !strings.HasPrefix(a.ObjectKey, "tts-private/resources/") || path.Clean(a.ObjectKey) != a.ObjectKey || strings.Contains(a.ObjectKey, `\`) {
+		return false, ErrTTSDenied
+	}
+	backend, err := ttsResourceBackend(a)
+	if err != nil {
+		return false, err
+	}
+	m := GetStorageManager()
+	if m == nil || backend == storage.BackendS3 && !m.HasRemote() {
+		return false, ErrTTSDisabled
+	}
+	deleteCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := m.Delete(deleteCtx, backend, a.ObjectKey); err != nil {
+		return false, err
+	}
+	var deleted bool
+	err = model.GetDB().Transaction(func(tx *gorm.DB) error {
+		r := tx.Model(&model.AttachmentModel{}).Where("id = ? AND deleted_at IS NULL AND root_id_type = ? AND parent_id_type = ?", a.ID, "tts", "job_audio").UpdateColumn("deleted_at", time.Now())
+		if r.Error != nil {
+			return r.Error
+		}
+		deleted = r.RowsAffected == 1
+		return tx.Where("resource_id = ?", a.ID).Delete(&model.TTSCache{}).Error
+	})
+	return deleted && err == nil, err
 }
 
 func TTSResourceExists(ctx context.Context, a *model.AttachmentModel) (bool, error) {

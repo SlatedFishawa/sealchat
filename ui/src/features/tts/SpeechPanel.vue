@@ -9,6 +9,7 @@ import { useChatStore } from '@/stores/chat'
 import { useUserStore } from '@/stores/user'
 import type { SpeechJob, SpeechVoice, VoiceCreationProvider, VoiceDirectory } from './types'
 import SpeechQuotaSummary from './SpeechQuotaSummary.vue'
+import SpeechStorageCleanup from './SpeechStorageCleanup.vue'
 import VoicePicker from './VoicePicker.vue'
 import { providerDisplayName, requestVoiceFields, voiceKindLabel, type VoiceSelection } from './voice-catalog'
 
@@ -27,12 +28,13 @@ async function loadQueue() {
   const value = await speechAPI.queue(channelId)
   if (alive && revision === queueRevision && currentChannel.value === channelId) queue.value = value
 }
-type PanelTab = 'catalog' | 'create' | 'mine' | 'settings'
+type PanelTab = 'catalog' | 'create' | 'mine' | 'settings' | 'cleanup'
 const tabs: ReadonlyArray<{ value: PanelTab; label: string }> = [
   { value: 'catalog', label: '音色目录' },
   { value: 'create', label: '创建音色' },
   { value: 'mine', label: '我的音色' },
   { value: 'settings', label: '朗读设置' },
+  { value: 'cleanup', label: '存储清理' },
 ]
 const lifecycleLabels: Readonly<Record<string, string>> = { creating: '创建中', preview: '预览', saved: '已保存', delete_pending: '删除中' }
 const tab = ref<PanelTab>('catalog')
@@ -383,6 +385,8 @@ onBeforeUnmount(() => { alive = false; serial++; replaceSerial++; clearTimeout(t
           </template>
         </div>
       </div>
+
+      <SpeechStorageCleanup v-if="tab === 'cleanup'" :channel-id="currentChannel || ''" />
 
       <footer v-if="job" class="sp-foot">
         <span>任务：{{ job.status }} {{ job.errorCode }}</span>

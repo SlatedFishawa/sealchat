@@ -122,6 +122,9 @@ func ttsReserveJob(db *gorm.DB, cfg *utils.SpeechConfig, job *model.TTSJob, prov
 			return err
 		}
 		if job.UsageStatus == "cached" && job.ResourceID != "" && job.Operation == "audition" {
+			if err := ttsLockJobAudio(tx, job.ResourceID); err != nil {
+				return err
+			}
 			job.Status = "succeeded"
 			return tx.Create(job).Error
 		}
@@ -150,6 +153,9 @@ func ttsReserveJob(db *gorm.DB, cfg *utils.SpeechConfig, job *model.TTSJob, prov
 			}
 		}
 		if job.UsageStatus == "cached" && job.ResourceID != "" && job.Operation == "message_synthesis" {
+			if err := ttsLockJobAudio(tx, job.ResourceID); err != nil {
+				return err
+			}
 			job.Status = "queued"
 			return tx.Create(job).Error
 		}

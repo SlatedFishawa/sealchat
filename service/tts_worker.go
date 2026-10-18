@@ -408,9 +408,6 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 				return
 			}
 		}
-		if err := db.Model(&model.TTSJob{}).Where("id = ? AND status = ?", j.ID, "running").Update("status", "succeeded").Error; err != nil {
-			return
-		}
 		ttsPublishMessage(parent, j, s, &resource, media, path)
 		return
 	}
@@ -698,9 +695,14 @@ func ttsAdoptAuditionAsVoicePreview(db *gorm.DB, j *model.TTSJob, s TTSSnapshot,
 	if db == nil || j == nil || j.Operation != "audition" || !s.AdoptAsVoicePreview || s.VoiceID == "" || resourceID == "" {
 		return
 	}
-	_ = db.Model(&model.TTSVoice{}).
-		Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND provider_status = ? AND deleted_at IS NULL AND (preview_resource_id = ? OR preview_resource_id IS NULL)", s.VoiceID, j.PayerUserID, "saved", "OK", "").
-		Update("preview_resource_id", resourceID).Error
+	_ = db.Transaction(func(tx *gorm.DB) error {
+		if err := ttsLockJobAudio(tx, resourceID); err != nil {
+			return err
+		}
+		return tx.Model(&model.TTSVoice{}).
+			Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND provider_status = ? AND deleted_at IS NULL AND (preview_resource_id = ? OR preview_resource_id IS NULL)", s.VoiceID, j.PayerUserID, "saved", "OK", "").
+			Update("preview_resource_id", resourceID).Error
+	})
 }
 
 func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *utils.SpeechConfig) {
@@ -755,20 +757,24 @@ func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *u
 	meta, _ := json.Marshal(media)
 	j.ResourceID = a.ID
 	j.MediaJSON = string(meta)
-	if err = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "succeeded", "resource_id": a.ID, "media_json": string(meta), "error_code": ""}).Error; err != nil {
-		return
-	}
 	if j.Operation == "design" || j.Operation == "clone" {
 		_ = db.Model(&model.TTSVoice{}).Where("id = ?", j.VoiceID).Update("preview_resource_id", a.ID).Error
 	}
 	ttsAdoptAuditionAsVoicePreview(db, j, s, a.ID)
 	if j.Operation == "audition" || j.Operation == "message_synthesis" {
-		cache := model.TTSCache{Fingerprint: s.Fingerprint, ResourceID: a.ID, Metadata: string(meta), Complete: true, ExpiresAt: time.Now().Add(30 * time.Minute)}
+		cache := model.TTSCache{Fingerprint: s.Fingerprint, ResourceID: a.ID, Metadata: string(meta), Complete: true, ExpiresAt: time.Now().Add(ttsAudioCacheTTL)}
 		// Expiry drops reuse eligibility, never the durable attachment reference.
 		_ = db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "fingerprint"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_id", "metadata", "complete", "expires_at"})}).Create(&cache).Error
 	}
+	// Keep the job nonterminal until ready metadata is published. This protects
+	// the publication gap even if the optional cache write failed.
+	if err = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"resource_id": a.ID, "media_json": string(meta), "error_code": ""}).Error; err != nil {
+		return
+	}
 	// Publish from this validated local spool even when the archive is remote.
-	ttsPublishMessageWithLocal(ctx, j, s, a, media, j.SpoolPath, local)
+	if !ttsPublishMessageWithLocal(ctx, j, s, a, media, j.SpoolPath, local) {
+		return
+	}
 	if local != nil {
 		local.wait()
 	}
@@ -779,13 +785,16 @@ func ttsPublishMessage(ctx context.Context, j *model.TTSJob, s TTSSnapshot, a *m
 	ttsPublishMessageWithLocal(ctx, j, s, a, media, archiveLocalPath, nil)
 }
 
-func ttsPublishMessageWithLocal(ctx context.Context, j *model.TTSJob, s TTSSnapshot, a *model.AttachmentModel, media ttsprovider.Media, archiveLocalPath string, local *ttsCompletedPlayback) {
-	if j.MessageID != "" && ttsMessageCurrent(j, s) {
-		if !ttsMessageStatus(j, "ready", &protocol.MessageTTS{Status: "ready", AudioResourceID: a.ID, DurationMS: media.DurationMS, Format: media.Container, MessageRevision: int(j.MessageRevision)}) {
-			return
-		}
+func ttsPublishMessageWithLocal(ctx context.Context, j *model.TTSJob, s TTSSnapshot, a *model.AttachmentModel, media ttsprovider.Media, archiveLocalPath string, local *ttsCompletedPlayback) bool {
+	ready := j.MessageID != "" && ttsMessageCurrent(j, s) && ttsMessageStatus(j, "ready", &protocol.MessageTTS{Status: "ready", AudioResourceID: a.ID, DurationMS: media.DurationMS, Format: media.Container, MessageRevision: int(j.MessageRevision)})
+	// Ready metadata now protects the resource. Preserve the existing guarantee
+	// that playback callbacks see a durable succeeded job as well as the file.
+	if err := model.GetDB().Model(&model.TTSJob{}).Where("id = ?", j.ID).Update("status", "succeeded").Error; err != nil {
+		return false
+	}
+	if ready {
 		if j.Status == "storage_pending" {
-			return // Storage recovery publishes metadata without repeating playback.
+			return true // Storage recovery publishes metadata without repeating playback.
 		}
 		if local != nil {
 			local.start()
@@ -796,7 +805,7 @@ func ttsPublishMessageWithLocal(ctx context.Context, j *model.TTSJob, s TTSSnaps
 				if fn != nil {
 					fn(*j, media, "", true)
 				}
-				return
+				return true
 			}
 		}
 		stop := make(chan struct{})
@@ -826,6 +835,7 @@ func ttsPublishMessageWithLocal(ctx context.Context, j *model.TTSJob, s TTSSnaps
 		}
 		ttsTimelines.Unlock()
 	}
+	return true
 }
 func ttsReleaseMessageJob(db *gorm.DB, j *model.TTSJob, status string) {
 	if ttsReleaseJob(db, j.ID) == nil {
@@ -844,8 +854,18 @@ func ttsMessageStatusWithDB(db *gorm.DB, j *model.TTSJob, status string, data *p
 		b, _ := json.Marshal(data)
 		updates["tts_data"] = string(b)
 	}
-	r := db.Model(&model.MessageModel{}).Where("id = ? AND edit_count = ? AND tts_intent = ? AND deleted_at IS NULL AND is_deleted = ? AND (is_revoked = ? OR is_revoked IS NULL)", j.MessageID, j.MessageRevision, j.Snapshot, false, false).Updates(updates)
-	if r.Error != nil || r.RowsAffected != 1 {
+	var changed bool
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if data != nil && data.AudioResourceID != "" {
+			if err := ttsLockJobAudio(tx, data.AudioResourceID); err != nil {
+				return err
+			}
+		}
+		r := tx.Model(&model.MessageModel{}).Where("id = ? AND edit_count = ? AND tts_intent = ? AND deleted_at IS NULL AND is_deleted = ? AND (is_revoked = ? OR is_revoked IS NULL)", j.MessageID, j.MessageRevision, j.Snapshot, false, false).Updates(updates)
+		changed = r.RowsAffected == 1
+		return r.Error
+	})
+	if err != nil || !changed {
 		return false
 	}
 	ttsNotifyMessageState(j.MessageID)

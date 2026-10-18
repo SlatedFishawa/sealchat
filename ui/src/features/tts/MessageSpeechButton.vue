@@ -17,9 +17,14 @@ const autoplayRevision = ref<number | null>(null)
 const revision = computed(() => props.message.editCount ?? props.message.tts?.messageRevision ?? 0)
 const metadata = computed(() => {
   const current = props.message.tts
-  const polled = speech.messageStates[props.message.id]
-  if (polled === null) return null
-  if (polled?.messageRevision === revision.value) return polled
+  const states = speech.messageStates
+  const hasPolled = Object.prototype.hasOwnProperty.call(states, props.message.id)
+  const polled = states[props.message.id]
+  if (hasPolled) {
+    if (polled === null) return null
+    if (polled?.messageRevision === revision.value) return polled
+  }
+  if (speech.messageFallbackSuppressed) return null
   return current?.messageRevision === revision.value ? current : null
 })
 const ready = computed(() => metadata.value?.status === 'ready' && !!metadata.value.audioResourceId)

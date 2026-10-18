@@ -70,6 +70,13 @@ func TTSSaveVoice(db *gorm.DB, userID, voiceID, replaceID string, defaultSlots i
 		if voice.Lifecycle != "preview" || voice.ProviderStatus != "OK" || voice.PreviewExpiresAt == nil || !now.Before(*voice.PreviewExpiresAt) {
 			return ErrTTSConflict
 		}
+		// Promotion can race expiry/cleanup. Serialize the new saved reference
+		// with the audio claim rather than saving a preview already being deleted.
+		if voice.PreviewResourceID != "" {
+			if err := ttsLockJobAudio(tx, voice.PreviewResourceID); err != nil {
+				return err
+			}
+		}
 		if replaceID != "" {
 			r := tx.Model(&model.TTSVoice{}).Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND deleted_at IS NULL", replaceID, userID, "saved").Updates(map[string]any{"lifecycle": "delete_pending", "is_public": false, "revision": gorm.Expr("revision + 1")})
 			if r.Error != nil {

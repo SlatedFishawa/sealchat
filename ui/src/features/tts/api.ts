@@ -1,6 +1,7 @@
 import { api } from '@/stores/_config'
 import type { AdminAIUsageLogListResult } from '@/types'
 import { SpeechRequestKeys } from './runtime'
+import type { SpeechCleanupResult, SpeechCleanupSelection, SpeechPurgeResult, SpeechStorageSummary } from './types'
 import type { AdminSpeechWorld, AdminSpeechWorldList, SpeechWorldPatch, MessageSpeech, ResolvedSpeechModel, ResolvedSpeechProvider, RoleSpeechConfig, SpeechConfig, SpeechJob, SpeechPolicy, SpeechProviderResolveRequest, SpeechQuota, SpeechRequest, SpeechVoice, SystemPreviewJob, UnknownSpeechUsage, VoiceCreationProvider, VoiceDirectory, VoiceDirectoryQuery } from './types'
 
 const root = 'api/v1/tts'
@@ -8,6 +9,9 @@ const id = encodeURIComponent
 const submissionKeys = new SpeechRequestKeys()
 export function clearSpeechSubmissionKeys() { submissionKeys.clear() }
 export const speechAPI = {
+  async storage(channelId: string) { return (await api.get<SpeechStorageSummary>(`${root}/storage`, { params: { channelId } })).data },
+  async cleanupStorage(channelId: string, selection: SpeechCleanupSelection) { return (await api.post<SpeechCleanupResult>(`${root}/storage/cleanup`, { channelId, ...selection })).data },
+  async purgeStorage(channelId: string, scope: 'channel' | 'world') { return (await api.post<SpeechPurgeResult>(`${root}/storage/purge`, { channelId, scope })).data },
   async queue(channelId: string) { return (await api.get<{ items: { id: string; messageId: string; status: string }[]; canControl: boolean }>(`${root}/channels/${id(channelId)}/queue`)).data },
   async control(channelId: string, action: 'skip' | 'stop' | 'clear') { await api.post(`${root}/channels/${id(channelId)}/control`, { action }) },
   async logs(params: Record<string, string | number | undefined>) { return api.get<AdminAIUsageLogListResult>('api/v1/admin/ai/usage-logs', { params: { ...params, quotaKind: 'speech' } }) },
