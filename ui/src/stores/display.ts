@@ -134,7 +134,7 @@ export interface DisplaySettings {
   worldKeywordQuickInputTrigger: string   // 术语快捷输入触发字符，默认 /
   identityQuickSwitchTrigger: string      // 角色快捷切换触发字符，默认 /
   identityVariantQuickSwitchTrigger: string // 身份差分快捷切换触发字符，默认 =
-  identityQuickBarEnabled: boolean        // 输入框旁快速角色栏，默认关闭
+  identityQuickBarEnabled: boolean        // 输入框旁快速角色栏，默认开启
   identityQuickBarLimit: number           // 快速角色栏最多显示角色数
   emojiInputHintEnabled: boolean          // 输入内容命中表情备注时在输入框上方提示，默认开启
   identityVariantInputHintEnabled: boolean // 输入内容命中当前角色差分关键词时提示，默认开启
@@ -625,7 +625,7 @@ export const createDefaultDisplaySettings = (): DisplaySettings => ({
   worldKeywordQuickInputTrigger: '/',
   identityQuickSwitchTrigger: '/',
   identityVariantQuickSwitchTrigger: '=',
-  identityQuickBarEnabled: false,
+  identityQuickBarEnabled: true,
   identityQuickBarLimit: IDENTITY_QUICK_BAR_LIMIT_DEFAULT,
   emojiInputHintEnabled: true,
   identityVariantInputHintEnabled: true,
@@ -961,7 +961,7 @@ const parseStoredSettingsInternal = (
       worldKeywordQuickInputTrigger: coerceQuickInputTrigger((parsed as any)?.worldKeywordQuickInputTrigger),
       identityQuickSwitchTrigger: coerceQuickInputTrigger((parsed as any)?.identityQuickSwitchTrigger),
       identityVariantQuickSwitchTrigger: coerceQuickInputTrigger((parsed as any)?.identityVariantQuickSwitchTrigger || '='),
-      identityQuickBarEnabled: coerceBoolean((parsed as any)?.identityQuickBarEnabled ?? false),
+      identityQuickBarEnabled: coerceBoolean((parsed as any)?.identityQuickBarEnabled ?? true),
       identityQuickBarLimit: coerceNumberInRange(
         (parsed as any)?.identityQuickBarLimit,
         IDENTITY_QUICK_BAR_LIMIT_DEFAULT,
