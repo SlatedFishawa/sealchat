@@ -169,9 +169,13 @@ func logMessagesGet(c *fiber.Ctx) error {
 				messageData.Member.User = messageData.User
 			}
 		}
-		items = append(items, fiber.Map{"message": messageData, "version": m.Version, "capabilities": fiber.Map{
+		item := fiber.Map{"message": messageData, "version": m.Version, "capabilities": fiber.Map{
 			"edit": edit, "changeIdentity": edit, "reorder": !m.IsDeleted && (own || reorderAll), "revoke": !m.IsDeleted && !m.IsRevoked && own, "remove": !m.IsDeleted && (own || systemAdmin || moderate), "editAppearance": edit,
-		}})
+		}}
+		if p := window.Presentations[m.ID]; p != nil {
+			item["presentation"] = p
+		}
+		items = append(items, item)
 	}
 	data := fiber.Map{"items": items, "sourceVersion": window.SourceVersion}
 	if c.Params("messageId") == "" {

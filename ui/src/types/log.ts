@@ -146,10 +146,32 @@ export interface LogProtocolMessage {
   sender_member_name?: string;
 }
 
+/** 悄悄话收件人：key 对每个收件人稳定（设计态为用户 ID，发布版为公开哈希）。 */
+export interface LogWhisperTarget {
+  key: string;
+  name: string;
+}
+
+export interface LogQuotePresentation {
+  speakerName: string;
+  text: string;
+}
+
+/**
+ * 服务端展示投影（与发布版同源，只读）：message.content 仍是唯一可编辑原文。
+ * embed 仅当整条消息都是站内嵌入链接时出现；whisper 与消息类型正交。
+ */
+export interface LogMessagePresentation {
+  embed?: { kind: 'stickyNote' | 'worldClue' | string; bodyHtml: string; plainText: string };
+  whisper?: { targets: LogWhisperTarget[] };
+  quote?: LogQuotePresentation;
+}
+
 export interface LogDesignMessage {
   message: LogProtocolMessage;
   version: number;
   capabilities: LogMessageCapabilities;
+  presentation?: LogMessagePresentation;
 }
 
 export interface LogMessageWindow {
@@ -238,6 +260,12 @@ export interface LogPublicMessageNode {
   plainText: string;
   createdAt: string | null;
   quoteNodeId: string | null;
+  /** 由公开读取接口按引用目标的当前可见性填充；旧客户端忽略。 */
+  quote?: LogQuotePresentation | null;
+  /** 整条消息是站内嵌入（便签/线索）时的种类；正文已是展开内容。 */
+  embed?: string | null;
+  /** 发布版不收录悄悄话；字段为结构兼容保留。 */
+  whisper?: { targets: LogWhisperTarget[] } | null;
 }
 
 export interface LogPublicElementNode {

@@ -20,6 +20,8 @@ type LogMessageWindow struct {
 	World         *model.WorldModel
 	NextCursor    *string
 	SourceVersion int64
+	// Presentations holds the read-only display projection by message ID.
+	Presentations map[string]*LogMessagePresentation
 }
 type logMessageCursor struct {
 	ProjectID     string    `json:"p"`
@@ -199,6 +201,9 @@ func QueryLogMessages(projectID, sectionID, userID, cursor, targetID string, lim
 			m.TTSData = nil
 		}
 		m.Quote = quotes[m.QuoteID]
+	}
+	if window.Presentations, err = logDesignPresentations(userID, window.Messages); err != nil {
+		return nil, err
 	}
 	if err := logVerifyWindow(p, s.Source.ChannelID, version); err != nil {
 		return nil, err

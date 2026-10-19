@@ -131,10 +131,8 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 		includeImages = extra.IncludeImages
 		includeDiceCommand = extra.IncludeDiceCommand
 	}
-	identityResolver := newIdentityResolver(job.ChannelID)
+	display := newMessageDisplayResolver(job.ChannelID, job.UserID, messageDisplayViewer)
 	imageLayoutResolver := newExportImageLayoutResolver(job.ChannelID)
-	stickyNoteResolver := newStickyNoteExportResolver(job.ChannelID)
-	worldClueResolver := newWorldClueExportResolver(job.ChannelID, job.UserID)
 	messageChannelID := job.ChannelID
 	exportMessages := make([]ExportMessage, 0, len(messages))
 	for _, msg := range messages {
@@ -144,24 +142,19 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 		// Jobs without a channel still resolve embedded content in each message's real channel.
 		if job.ChannelID == "" && msg.ChannelID != messageChannelID {
 			messageChannelID = msg.ChannelID
-			identityResolver = newIdentityResolver(messageChannelID)
+			display = display.forChannel(messageChannelID)
 			imageLayoutResolver = newExportImageLayoutResolver(messageChannelID)
-			stickyNoteResolver = newStickyNoteExportResolver(messageChannelID)
-			worldClueResolver = newWorldClueExportResolver(messageChannelID, job.UserID)
 		}
 		originalContent := msg.Content
 		exportContent := originalContent
 		var htmlContent string
 		var richContent *AgentRichDocument
 		var worldClues []WorldClueExportBlock
-		if expanded, ok := stickyNoteResolver.render(originalContent, includeImages, isDocx); ok {
+		if expanded, ok := display.expandEmbed(originalContent, includeImages, isDocx); ok {
 			exportContent = expanded.Plain
 			htmlContent = expanded.HTML
 			richContent = expanded.Rich
-		} else if expanded, ok := worldClueResolver.render(originalContent, includeImages); ok {
-			exportContent = expanded.Plain
-			htmlContent = expanded.HTML
-			worldClues = expanded.Blocks
+			worldClues = expanded.WorldClues
 		}
 		if isDocx {
 			htmlContent = ""
@@ -212,7 +205,7 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 			ContentHTML:           htmlContent,
 			ContentRich:           richContent,
 			WorldClues:            worldClues,
-			WhisperTargets:        extractWhisperTargets(msg, messageChannelID, identityResolver),
+			WhisperTargets:        display.whisperTargetNames(msg),
 		})
 	}
 
@@ -266,6 +259,8 @@ type stickyNoteExportRender struct {
 type stickyNoteExportResolver struct {
 	channelID string
 	cache     map[string]*model.StickyNoteModel
+	// publicOnly expands only notes visible to every channel member.
+	publicOnly bool
 }
 
 type stickyNoteEmbedTarget struct {
@@ -355,7 +350,7 @@ func (r *stickyNoteExportResolver) render(content string, includeImages bool, ri
 			return stickyNoteExportRender{}, false
 		}
 		note := r.load(target.NoteID)
-		if note == nil || strings.TrimSpace(note.ChannelID) != r.channelID {
+		if note == nil || strings.TrimSpace(note.ChannelID) != r.channelID || (r.publicOnly && !CanViewStickyNote(note, "")) {
 			return stickyNoteExportRender{}, false
 		}
 		adapter := resolveStickyNoteExportAdapter(note.NoteType)

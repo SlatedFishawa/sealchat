@@ -8,17 +8,20 @@ import type {
   LogPublicDocument,
   LogPublicNode,
   LogPublicStylePackage,
+  LogQuotePresentation,
   LogStylePackage,
   LogStyleRule,
   LogTokenValue,
+  LogWhisperTarget,
 } from '@/types/log';
-import { renderMessageBody, attachmentToken } from './logContent';
+import { normalizeMentionClasses, renderMessageBody, renderPresentedBody, attachmentToken } from './logContent';
 import {
   buildTemplateLibrary,
   fragmentToHtml,
   instantiateTemplate,
   isSafeTokenValue,
   sanitizeBodyHtml,
+  templateUsesField,
   type TemplateData,
   type TemplateLibrary,
 } from './logTemplateCompiler';
@@ -39,6 +42,11 @@ export interface RenderMessageNode {
   createdAt: string;
   movable: boolean;
   assets: string[];
+  /** 正文为展开后的站内嵌入时的种类（stickyNote / worldClue）。 */
+  embed: string | null;
+  /** 悄悄话收件人；与 messageType 正交（IC/OOC/骰子都可能是悄悄话）。 */
+  whisper: { targets: LogWhisperTarget[] } | null;
+  quote: LogQuotePresentation | null;
 }
 
 export interface RenderElementNode {
@@ -134,9 +142,31 @@ export const resolveDesignMessageType = (m: LogDesignMessage['message']) => {
 export const resolveDesignSpeakerName = (m: LogDesignMessage['message']) =>
   m.identity?.displayName || m.sender_member_name || m.member?.nick || m.member?.name || m.user?.nick || m.user?.name || m.user?.username || '匿名';
 
+const whisperOf = (value: { targets?: LogWhisperTarget[] } | null | undefined) => {
+  const targets = (value?.targets || []).filter((t) => t && typeof t.name === 'string' && t.name.trim());
+  return targets.length ? { targets: targets.map((t) => ({ key: String(t.key || t.name), name: t.name.trim() })) } : null;
+};
+
+const quoteOf = (value: LogQuotePresentation | null | undefined): LogQuotePresentation | null =>
+  value && typeof value.text === 'string' && value.text.trim() ? { speakerName: String(value.speakerName || ''), text: value.text } : null;
+
+/** 模板字段 whisper.targets：收件人显示名以「、」连接，与传统导出「对 A、B」一致。 */
+export const whisperTargetsText = (whisper: RenderMessageNode['whisper']) => (whisper ? whisper.targets.map((t) => t.name).join('、') : '');
+
+/** 收件人集合不同的相邻悄悄话不能合并，否则被隐藏的头部会吞掉新的收件人。 */
+export const whisperMergeKey = (whisper: RenderMessageNode['whisper']) =>
+  whisper ? whisper.targets.map((t) => t.key).sort().join('\u0001') : '';
+
+/** 引用属于单条消息，带引用的消息总是另起一组，合并不会隐藏引用。 */
+export const canMergeMessageNodes = (prev: RenderMessageNode | null, node: RenderMessageNode) =>
+  !!prev && !node.quote && prev.speakerKey === node.speakerKey && prev.variantKey === node.variantKey && prev.messageType === node.messageType &&
+  prev.speakerName === node.speakerName && whisperMergeKey(prev.whisper) === whisperMergeKey(node.whisper);
+
 export const designMessageToNode = (item: LogDesignMessage): RenderMessageNode => {
   const m = item.message;
-  const body = renderMessageBody(m.content);
+  const presented = item.presentation?.embed;
+  // 展开内容只用于展示；编辑仍操作 message.content 原文。
+  const body = presented ? renderPresentedBody(presented.bodyHtml, presented.plainText) : renderMessageBody(m.content);
   const avatar = m.identity?.avatarAttachment ? attachmentToken(m.identity.avatarAttachment) : '';
   const color = m.identity?.color && HEX.test(m.identity.color) ? m.identity.color : null;
   return {
@@ -154,6 +184,9 @@ export const designMessageToNode = (item: LogDesignMessage): RenderMessageNode =
     createdAt: formatTime(m.createdAt),
     movable: item.capabilities.reorder,
     assets: avatar ? [...body.assets, avatar] : body.assets,
+    embed: presented ? String(presented.kind || 'embed') : null,
+    whisper: whisperOf(item.presentation?.whisper),
+    quote: quoteOf(item.presentation?.quote),
   };
 };
 
@@ -212,6 +245,7 @@ export const publicHtmlToBody = (html: string): { html: string; assets: string[]
       assets.push(token);
     }
   });
+  normalizeMentionClasses(holder.content);
   const box = document.createElement('div');
   box.appendChild(holder.content);
   return { html: box.innerHTML, assets };
@@ -236,6 +270,9 @@ export const publicNodeToRender = (node: LogPublicNode): RenderNode => {
       createdAt: formatTime(node.createdAt),
       movable: false,
       assets: avatar ? [...body.assets, avatar] : body.assets,
+      embed: typeof node.embed === 'string' && node.embed ? node.embed : null,
+      whisper: whisperOf(node.whisper),
+      quote: quoteOf(node.quote),
     };
   }
   const content = node.content || {};
@@ -295,6 +332,20 @@ const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', 
 const fallbackMessageHtml = (n: RenderMessageNode) =>
   `<article class="log-fallback-message"><header class="log-speaker">${escapeHtml(n.speakerName)}</header><div class="log-body">${sanitizeBodyHtml(n.bodyHtml)}</div></article>`;
 
+/** 样式模板未引用新字段时的默认呈现（旧样式包、模板缺失时的兜底），保证语义不丢失。 */
+const fallbackMetaHtml = (n: RenderMessageNode, lib: TemplateLibrary | null, templateId: string | null) => {
+  const uses = (field: string) => !!(lib && templateId && templateUsesField(lib, templateId, field));
+  let html = '';
+  if (n.quote && !uses('quote.text')) {
+    const who = n.quote.speakerName ? `<span class="log-quote-fallback__who">${escapeHtml(n.quote.speakerName)}</span>` : '';
+    html += `<div class="log-quote-fallback">${who}<span class="log-quote-fallback__text">${escapeHtml(n.quote.text)}</span></div>`;
+  }
+  if (n.whisper && !uses('whisper.targets')) {
+    html += `<div class="log-whisper-fallback"><span class="log-whisper-fallback__label">悄悄话</span>对 <span class="log-whisper-fallback__targets">${escapeHtml(whisperTargetsText(n.whisper))}</span></div>`;
+  }
+  return html;
+};
+
 const styleVars = (style: Record<string, unknown>) => {
   const vars: Record<string, string> = {};
   const classes: string[] = [];
@@ -341,7 +392,7 @@ export const buildFrameDocument = (opts: BuildOptions): BuildResult => {
   for (const node of opts.nodes) {
     if (node.kind === 'message') {
       node.assets.forEach((a) => assets.add(a));
-      const merged = !!(merge && prev && prev.speakerKey === node.speakerKey && prev.variantKey === node.variantKey && prev.messageType === node.messageType && prev.speakerName === node.speakerName);
+      const merged = merge && canMergeMessageNodes(prev, node);
       const templateId = library ? pickTemplate(opts.style!.rules, library, node) : null;
       let html = '';
       if (templateId && library) {
@@ -353,6 +404,9 @@ export const buildFrameDocument = (opts: BuildOptions): BuildResult => {
             createdAt: node.createdAt,
             'section.title': opts.sectionTitle,
             title: opts.title,
+            'whisper.targets': whisperTargetsText(node.whisper),
+            'quote.speaker': node.quote?.speakerName || '',
+            'quote.text': node.quote?.text || '',
           },
           assets: node.avatarToken ? { 'speaker.avatarUrl': node.avatarToken } : {},
           bodyHtml: node.bodyHtml,
@@ -360,12 +414,17 @@ export const buildFrameDocument = (opts: BuildOptions): BuildResult => {
         const frag = instantiateTemplate(library, templateId, data);
         html = frag ? fragmentToHtml(frag) : '';
       }
+      const fromTemplate = !!html;
       if (!html) html = fallbackMessageHtml(node);
+      html = fallbackMetaHtml(node, fromTemplate ? library : null, templateId) + html;
       const attrs: Record<string, string> = {
         'data-log-type': node.messageType,
         'data-log-speaker': node.speakerKey,
       };
       if (node.variantKey) attrs['data-log-variant'] = node.variantKey;
+      if (node.whisper) attrs['data-log-whisper'] = String(node.whisper.targets.length);
+      if (node.quote) attrs['data-log-quote'] = '1';
+      if (node.embed) attrs['data-log-embed'] = node.embed;
       if (merged) attrs['data-log-merged'] = '1';
       if (node.movable) attrs['data-log-movable'] = '1';
       blocks.push({
@@ -474,13 +533,19 @@ export interface SectionComposition {
  * 以源消息顺序组装章节：sectionStart → (before, 消息, after)* → sectionEnd。
  * 无法解析的消息锚点不静默移动到章节末尾；完整加载后标记为 orphaned。
  */
+export interface DesignNodeCacheEntry {
+  key: string;
+  presentation: LogDesignMessage['presentation'];
+  node: RenderMessageNode;
+}
+
 export const composeDesignSection = (
   sectionId: string,
   sectionTitle: string,
   messages: LogDesignMessage[],
   elements: LogElement[],
   complete: boolean,
-  nodeCache: Map<string, { key: string; node: RenderMessageNode }>,
+  nodeCache: Map<string, DesignNodeCacheEntry>,
 ): SectionComposition => {
   const own = elements.filter((e) => e.anchor.sectionId === sectionId).slice().sort((a, b) => a.order - b.order);
   const byAnchor = new Map<string, LogElement[]>();
@@ -507,8 +572,9 @@ export const composeDesignSection = (
     pushElements(`${item.message.id}:before`);
     const cacheKey = `${item.version}:${item.capabilities.reorder ? 1 : 0}`;
     let cached = nodeCache.get(item.message.id);
-    if (!cached || cached.key !== cacheKey) {
-      cached = { key: cacheKey, node: designMessageToNode(item) };
+    // 展示投影（便签/线索内容、引用）可在原消息版本不变时变化；重载后按对象身份失效。
+    if (!cached || cached.key !== cacheKey || cached.presentation !== item.presentation) {
+      cached = { key: cacheKey, presentation: item.presentation, node: designMessageToNode(item) };
       nodeCache.set(item.message.id, cached);
     }
     nodes.push(cached.node);

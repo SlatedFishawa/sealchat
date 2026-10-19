@@ -158,14 +158,28 @@ func logVisiblePublicNodes(s *logPublicScope, rows []model.LogReleaseNodeModel) 
 			quoteIDs = append(quoteIDs, n.QuoteMessageID)
 		}
 	}
-	quotes := map[string]string{}
+	type quoteNode struct {
+		id    string
+		quote *LogMessageQuote
+	}
+	quotes := map[string]quoteNode{}
 	if len(quoteIDs) > 0 {
 		var nodes []model.LogReleaseNodeModel
-		if err := model.GetDB().Select("id, message_id").Where("release_id = ? AND message_id IN ?", s.Release.ID, quoteIDs).Order("ordinal").Find(&nodes).Error; err != nil {
+		if err := model.GetDB().Select("id, message_id, node_json").Where("release_id = ? AND message_id IN ?", s.Release.ID, quoteIDs).Order("ordinal").Find(&nodes).Error; err != nil {
 			return nil, err
 		}
 		for _, n := range nodes {
-			quotes[n.MessageID] = n.ID
+			var quoted struct {
+				Speaker struct {
+					Name string `json:"name"`
+				} `json:"speaker"`
+				PlainText string `json:"plainText"`
+			}
+			if err := json.Unmarshal([]byte(n.NodeJSON), &quoted); err != nil {
+				return nil, err
+			}
+			// The excerpt comes from the quoted node itself, so it is exactly as public as that node.
+			quotes[n.MessageID] = quoteNode{id: n.ID, quote: logQuoteOf(quoted.Speaker.Name, quoted.PlainText)}
 		}
 	}
 	out := []map[string]any{}
@@ -179,8 +193,12 @@ func logVisiblePublicNodes(s *logPublicScope, rows []model.LogReleaseNodeModel) 
 		}
 		if n.MessageID != "" {
 			data["quoteNodeId"] = nil
-			if q := quotes[n.QuoteMessageID]; q != "" {
-				data["quoteNodeId"] = q
+			data["quote"] = nil
+			if q, ok := quotes[n.QuoteMessageID]; ok {
+				data["quoteNodeId"] = q.id
+				if q.quote != nil {
+					data["quote"] = q.quote
+				}
 			}
 		}
 		out = append(out, data)

@@ -213,7 +213,7 @@ func ResolveLogLayout(slug, userID string) (*LogProjectContext, error) {
 
 func defaultLogDraft(title string) string {
 	b, _ := json.Marshal(map[string]any{
-		"schemaVersion": 1, "title": title, "sections": []any{}, "elements": []any{}, "stylePackageId": "sealchat-starter", "stylePackageVersion": "1.0.0", "themeTokens": map[string]any{},
+		"schemaVersion": 1, "title": title, "sections": []any{}, "elements": []any{}, "stylePackageId": logDefaultStyleID, "stylePackageVersion": logDefaultStyleVersion, "themeTokens": map[string]any{},
 		"page": map[string]any{"preset": "a5", "widthMm": 148, "heightMm": 210, "marginsMm": map[string]any{"top": 15, "right": 15, "bottom": 15, "left": 15}, "gutterMm": 0, "columns": 1, "backgroundColor": "#ffffff", "backgroundAssetId": nil, "fontFamily": "sans-serif", "fontSizePt": 12, "lineHeight": 1.5, "headerTemplateId": nil, "footerTemplateId": nil, "showPageNumbers": true, "mergeNeighbors": true},
 	})
 	return string(b)

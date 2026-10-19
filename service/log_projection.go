@@ -52,11 +52,8 @@ func logSnapshotAttachment(ctx context.Context, r *model.LogReleaseModel, m *mod
 	if attachmentID == "" {
 		return "", nil
 	}
-	a, err := ResolveAttachmentAccessible(m.UserID, m.UserID, m.ChannelID, attachmentID)
-	if err != nil {
-		return "", nil
-	}
-	if a == nil || a.IsTTSManaged() || a.Size > 20<<20 {
+	a := logPublishableAttachment(m, attachmentID)
+	if a == nil {
 		return "", nil
 	}
 	key := logPublicKey(r.ID, "attachment", a.ID)
@@ -107,63 +104,22 @@ func logSnapshotAttachment(ctx context.Context, r *model.LogReleaseModel, m *mod
 	return key, nil
 }
 
-func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, section string, m *model.MessageModel, ordinal int64) error {
+func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, display *messageDisplayResolver, section string, m *model.MessageModel, ordinal int64) error {
 	id := utils.NewID()
-	doc := buildRichDocumentForExport(m.Content, true)
-	var walk func([]AgentRichNode, int) error
-	count := 0
-	walk = func(nodes []AgentRichNode, depth int) error {
-		if depth > 32 {
-			return logError("TOO_LARGE", "正文嵌套超限")
+	body := logMessageBodyOf(display, m)
+	err := logResolveBody(&body.Doc, func(attachment string) (string, error) {
+		key, err := logSnapshotAttachment(ctx, r, m, id, attachment)
+		if key == "" || err != nil {
+			return "", err
 		}
-		for i := range nodes {
-			n := &nodes[i]
-			marks := n.Marks[:0]
-			for _, mark := range n.Marks {
-				if mark.Type == "link" {
-					u, err := url.Parse(mark.Value)
-					if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
-						continue
-					}
-				}
-				marks = append(marks, mark)
-			}
-			n.Marks = marks
-			count++
-			if count > 10000 {
-				return logError("TOO_LARGE", "正文节点超限")
-			}
-			if n.Type == "image" {
-				attachment := n.Attrs["attachment_id"]
-				// Only explicit registered attachment references may become public assets.
-				key, err := logSnapshotAttachment(ctx, r, m, id, attachment)
-				if err != nil {
-					return err
-				}
-				n.Attrs = map[string]string{}
-				if key != "" {
-					n.Attrs["src"] = "/__log_asset/" + key
-				}
-			}
-			if err := walk(n.Children, depth+1); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if err := walk(doc.Blocks, 0); err != nil {
+		return "/__log_asset/" + key, nil
+	})
+	if err != nil {
 		return err
 	}
 	avatar, err := logSnapshotAttachment(ctx, r, m, id, m.SenderIdentityAvatarID)
 	if err != nil {
 		return err
-	}
-	name := m.SenderIdentityName
-	if name == "" {
-		name = m.SenderMemberName
-	}
-	if name == "" {
-		name = "匿名"
 	}
 	speakerID := m.SenderIdentityID
 	if speakerID == "" {
@@ -179,22 +135,24 @@ func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, section stri
 	if m.SenderIdentityVariantID != "" {
 		variant = logPublicKey(r.ID, "variant", m.SenderIdentityVariantID)
 	}
-	typ := "ic"
-	if m.ICMode == "ooc" {
-		typ = "ooc"
+	plain := body.plainText()
+	node := map[string]any{"id": id, "kind": "message", "sectionId": section, "messageType": logMessageType(m), "speaker": map[string]any{"key": logPublicKey(r.ID, "speaker", speakerID), "name": logSpeakerName(m), "color": color, "avatarAssetKey": avatarValue, "variantKey": variant}, "bodyHtml": body.html(), "plainText": plain, "createdAt": m.CreatedAt.UTC(), "quoteNodeId": nil}
+	if body.EmbedKind != "" {
+		node["embed"] = body.EmbedKind
 	}
-	if m.User != nil && m.User.IsBot {
-		typ = "bot"
+	// Releases only take non-whisper messages; should that change, recipients still never leave as raw IDs.
+	if m.IsWhisper {
+		targets := []MessageWhisperTarget{}
+		for _, t := range display.forChannel(m.ChannelID).whisperTargets(m) {
+			targets = append(targets, MessageWhisperTarget{Key: logPublicKey(r.ID, "whisper", t.Key), Name: t.Name})
+		}
+		node["whisper"] = map[string]any{"targets": targets}
 	}
-	if m.DiceVisualJSON != "" {
-		typ = "dice"
-	}
-	node := map[string]any{"id": id, "kind": "message", "sectionId": section, "messageType": typ, "speaker": map[string]any{"key": logPublicKey(r.ID, "speaker", speakerID), "name": name, "color": color, "avatarAssetKey": avatarValue, "variantKey": variant}, "bodyHtml": RenderAgentRichDocumentHTML(doc, true), "plainText": AgentRichDocumentPlainText(doc), "createdAt": m.CreatedAt.UTC(), "quoteNodeId": nil}
 	b, err := json.Marshal(node)
 	if err != nil {
 		return err
 	}
-	row := model.LogReleaseNodeModel{ID: id, ReleaseID: r.ID, SectionID: section, Ordinal: ordinal, MessageID: m.ID, ChannelID: m.ChannelID, SourceVersion: m.Version, NodeJSON: string(b), SearchText: AgentRichDocumentPlainText(doc), QuoteMessageID: m.QuoteID}
+	row := model.LogReleaseNodeModel{ID: id, ReleaseID: r.ID, SectionID: section, Ordinal: ordinal, MessageID: m.ID, ChannelID: m.ChannelID, SourceVersion: m.Version, NodeJSON: string(b), SearchText: plain, QuoteMessageID: m.QuoteID}
 	return model.GetDB().Create(&row).Error
 }
 func logBuildElement(r *model.LogReleaseModel, e LogElement, ordinal int64) error {

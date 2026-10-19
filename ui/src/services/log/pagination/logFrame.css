@@ -56,6 +56,14 @@ body {
 .log-link { text-decoration: underline; }
 .log-fallback-message { margin: 0 0 0.8em; }
 .log-fallback-message .log-speaker { font-weight: 700; }
+/* 消息语义的默认呈现：样式包未声明时兜底，样式包 CSS 在其后注入可覆盖。 */
+.log-embed { margin: 0.2em 0; padding: 0.45em 0.75em; border-left: 3px solid rgba(0, 0, 0, 0.18); background: rgba(0, 0, 0, 0.03); }
+.log-embed > p:first-child strong { font-weight: 700; }
+.log-whisper-fallback, .log-quote-fallback { margin: 0 0 0.25em; font-size: 0.78em; line-height: 1.45; color: #6b6b6b; overflow-wrap: anywhere; }
+.log-whisper-fallback__label { display: inline-block; margin-right: 0.45em; padding: 0 0.4em; border: 1px dashed currentColor; border-radius: 0.6em; }
+.log-whisper-fallback__targets { font-weight: 600; }
+.log-quote-fallback { padding-left: 0.6em; border-left: 2px solid rgba(0, 0, 0, 0.15); }
+.log-quote-fallback__who { margin-right: 0.4em; font-weight: 600; }
 .log-element-placeholder { padding: 0.6em; border: 1px dashed #aaa; color: #666; font-size: 0.85em; }
 .log-toc-list { list-style: none; padding: 0; margin: 0; }
 .log-toc-item { display: flex; gap: 0.5em; align-items: baseline; }

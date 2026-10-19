@@ -38,6 +38,9 @@ type worldClueExportResolver struct {
 	worldID   string
 	cache     map[string]*WorldClueExportBlock
 	userNames map[string]string
+	// publicOnly expands only published clues that world members see by default,
+	// without any member's private section.
+	publicOnly bool
 }
 
 type worldClueEmbedTarget struct {
@@ -129,6 +132,9 @@ func (r *worldClueExportResolver) load(target worldClueEmbedTarget, includeImage
 	if err != nil || detail == nil {
 		return nil
 	}
+	if r.publicOnly && (detail.Status != model.WorldClueStatusPublished || !oneOf(detail.DefaultAccess, model.WorldClueAccessView, model.WorldClueAccessEdit)) {
+		return nil
+	}
 
 	content := strings.TrimSpace(detail.Content)
 	if content == "" {
@@ -157,16 +163,19 @@ func (r *worldClueExportResolver) load(target worldClueEmbedTarget, includeImage
 		appendWorldClueImage(&block.Public, block.ImageAttachmentID, block.ImageURL)
 	}
 
-	db := model.GetDB()
-	role, roleErr := worldClueRole(db, target.WorldID, r.userID)
-	if roleErr == nil && worldClueIsAdminRole(role) {
-		r.loadWorldCluePrivateSections(block, target.WorldID, target.ClueID, includeImages)
-	} else if privateContent := r.memberPrivateContent(target, detail); privateContent != "" {
-		name := r.userDisplayName(r.userID)
-		block.Private = append(block.Private, WorldClueExportPrivateSection{
-			MemberName: name,
-			Content:    buildRichDocumentForExport(privateContent, includeImages),
-		})
+	// Private sections belong to individual members and never reach a shared audience.
+	if !r.publicOnly {
+		db := model.GetDB()
+		role, roleErr := worldClueRole(db, target.WorldID, r.userID)
+		if roleErr == nil && worldClueIsAdminRole(role) {
+			r.loadWorldCluePrivateSections(block, target.WorldID, target.ClueID, includeImages)
+		} else if privateContent := r.memberPrivateContent(target, detail); privateContent != "" {
+			name := r.userDisplayName(r.userID)
+			block.Private = append(block.Private, WorldClueExportPrivateSection{
+				MemberName: name,
+				Content:    buildRichDocumentForExport(privateContent, includeImages),
+			})
+		}
 	}
 
 	r.cache[key] = block
@@ -476,6 +485,61 @@ func renderWorldClueHTML(block WorldClueExportBlock, includeImages bool) string 
 	}
 	builder.WriteString(`</section>`)
 	return builder.String()
+}
+
+// worldClueRichDocument is renderWorldCluePlain as rich content, for outputs that
+// render a clue as part of a message body.
+func worldClueRichDocument(block WorldClueExportBlock, includeImages bool) AgentRichDocument {
+	title := strings.TrimSpace(block.Title)
+	if title == "" {
+		title = "未命名线索"
+	}
+	kind := strings.TrimSpace(block.Kind)
+	if kind == "" {
+		kind = model.WorldClueKindText
+	}
+	heading := "[线索: " + title + "]"
+	if kind != model.WorldClueKindText {
+		heading = "[线索: " + title + " · " + worldClueExportKindLabel(kind) + "]"
+	}
+	paragraph := func(children ...AgentRichNode) AgentRichNode {
+		return AgentRichNode{Type: "paragraph", Children: children}
+	}
+	text := func(value string, marks ...AgentRichMark) AgentRichNode {
+		return AgentRichNode{Type: "text", Text: value, Marks: marks}
+	}
+	sourceLine := func(label, href string) AgentRichNode {
+		return paragraph(text(label), text(href, AgentRichMark{Type: "link", Value: href}))
+	}
+	doc := AgentRichDocument{Type: "document", Blocks: []AgentRichNode{paragraph(text(heading, AgentRichMark{Type: "bold"}))}}
+	body, media := splitWorldCluePublicDocument(block.Public)
+	if includeImages {
+		doc.Blocks = append(doc.Blocks, media.Blocks...)
+	}
+	if !richDocumentHasContent(&body) && (!includeImages || len(media.Blocks) == 0) {
+		body.Blocks = []AgentRichNode{paragraph(text("（空线索）"))}
+	}
+	doc.Blocks = append(doc.Blocks, body.Blocks...)
+	if kind == model.WorldClueKindIframe && block.IframeSourceURL != "" {
+		doc.Blocks = append(doc.Blocks, sourceLine("网页线索/来源: ", block.IframeSourceURL))
+	}
+	if includeImages && worldClueImageAttachmentToken(block) == "" && block.ImageURL != "" {
+		if imageURL := safeExportHTTPURL(block.ImageURL); imageURL != "" {
+			doc.Blocks = append(doc.Blocks, sourceLine("图片来源: ", imageURL))
+		}
+	}
+	for _, section := range block.Private {
+		if !richDocumentHasContent(&section.Content) {
+			continue
+		}
+		name := strings.TrimSpace(section.MemberName)
+		if name == "" {
+			name = "成员"
+		}
+		doc.Blocks = append(doc.Blocks, paragraph(text("[专属信息: "+name+"]", AgentRichMark{Type: "bold"})))
+		doc.Blocks = append(doc.Blocks, section.Content.Blocks...)
+	}
+	return doc
 }
 
 func worldClueExportKindLabel(kind string) string {

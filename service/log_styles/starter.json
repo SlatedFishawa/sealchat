@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "id": "sealchat-starter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "基础排版",
   "license": "MIT",
-  "minRendererVersion": "1.0.0",
+  "minRendererVersion": "1.1.0",
   "tokens": {},
   "templates": {
-    "message": "<article class=\"log-message\"><header data-log-text=\"speaker.name\"></header><div data-log-slot=\"body\"></div></article>",
+    "message": "<article class=\"log-message\"><header data-log-text=\"speaker.name\"></header><p class=\"log-whisper\" data-log-if=\"whisper.targets\">悄悄话 → <span data-log-text=\"whisper.targets\"></span></p><blockquote class=\"log-quote\" data-log-if=\"quote.text\"><span data-log-text=\"quote.speaker\"></span>：<span data-log-text=\"quote.text\"></span></blockquote><div data-log-slot=\"body\"></div></article>",
     "heading": "<h2 data-log-text=\"text\"></h2>",
     "cover": "<section class=\"log-cover\"><h1 data-log-text=\"title\"></h1><p data-log-text=\"subtitle\"></p></section>",
     "body": "<section><div data-log-slot=\"body\"></div></section>",
@@ -16,7 +16,7 @@
     "imagePlate": "<figure><img data-log-bind-src=\"assetUrl\"><figcaption data-log-text=\"caption\"></figcaption></figure>",
     "toc": "<section class=\"log-toc\"></section>"
   },
-  "css": ".log-message { margin-bottom: 1em; } .log-message header { font-weight: bold; } .log-cover { break-after: page; text-align: center; } .log-page-break { break-after: page; }",
+  "css": ".log-message { margin-bottom: 1em; } .log-message header { font-weight: bold; } .log-whisper { margin: 0 0 0.2em; font-size: 0.8em; color: #6b6b6b; } .log-quote { margin: 0 0 0.3em; padding-left: 0.6em; border-left: 2px solid #ccc; font-size: 0.8em; color: #6b6b6b; } .log-cover { break-after: page; text-align: center; } .log-page-break { break-after: page; }",
   "rules": [{"templateId": "message"}],
   "settingsSchema": {},
   "assets": []

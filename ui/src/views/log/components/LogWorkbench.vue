@@ -48,7 +48,7 @@ import {
   composeDesignSection,
   designStyleFromPackage,
   LOG_ELEMENT_LABELS,
-  type RenderMessageNode,
+  type DesignNodeCacheEntry,
 } from '@/services/log/logRenderer';
 import type { FrameDocument, FrameEvent, FrameLayoutResult } from '@/services/log/pagination/logFrameHost';
 import type { LogAnchor, LogDesignMessage, LogElementType, LogProjectContext, LogProtocolMessage, LogSection, LogStylePackage } from '@/types/log';
@@ -168,7 +168,7 @@ watch(() => (activePkg.value ? `${activePkg.value.id}@${activePkg.value.version}
 });
 
 // ---- 组装与预览文档 ----
-const nodeCache = new Map<string, { key: string; node: RenderMessageNode }>();
+const nodeCache = new Map<string, DesignNodeCacheEntry>();
 const composition = computed(() => {
   const sec = querySection.value;
   if (!sec) return null;

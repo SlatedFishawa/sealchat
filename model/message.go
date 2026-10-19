@@ -381,14 +381,16 @@ func (m *MessageModel) buildWhisperMeta() *protocol.WhisperMeta {
 	return meta
 }
 
-func (m *MessageModel) ResolveWhisperTargetDisplayNames() []string {
+// WhisperTargetUserIDs lists the whisper recipients in the order ResolveWhisperTargetDisplayNames names them.
+func (m *MessageModel) WhisperTargetUserIDs() []string {
 	if m == nil || !m.IsWhisper {
 		return nil
 	}
-	if len(m.WhisperTargetDisplayNames) > 0 {
-		return append([]string{}, normalizeWhisperDisplayNames(m.WhisperTargetDisplayNames)...)
-	}
+	ids, _ := m.whisperTargetCandidates()
+	return ids
+}
 
+func (m *MessageModel) whisperTargetCandidates() ([]string, map[string]*UserModel) {
 	userMap := make(map[string]*UserModel, len(m.WhisperTargets)+1)
 	orderedIDs := make([]string, 0, len(m.WhisperTargets)+1)
 	seenIDs := map[string]struct{}{}
@@ -419,7 +421,18 @@ func (m *MessageModel) ResolveWhisperTargetDisplayNames() []string {
 	for _, id := range splitWhisperTargetIDs(m.WhisperTo) {
 		addID(id, nil)
 	}
+	return orderedIDs, userMap
+}
 
+func (m *MessageModel) ResolveWhisperTargetDisplayNames() []string {
+	if m == nil || !m.IsWhisper {
+		return nil
+	}
+	if len(m.WhisperTargetDisplayNames) > 0 {
+		return append([]string{}, normalizeWhisperDisplayNames(m.WhisperTargetDisplayNames)...)
+	}
+
+	orderedIDs, userMap := m.whisperTargetCandidates()
 	displayNames := make([]string, 0, len(orderedIDs))
 	for _, id := range orderedIDs {
 		name := ResolveChannelMappedIdentityDisplayName(m.ChannelID, id, m.ICMode)

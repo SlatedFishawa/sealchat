@@ -15,6 +15,12 @@ import (
 	"sealchat/model"
 )
 
+// New projects and releases without a bound style use this shipped builtin version.
+const (
+	logDefaultStyleID      = "sealchat-starter"
+	logDefaultStyleVersion = "1.1.0"
+)
+
 // Canonical source artifacts: frontend reads the registered versions through REST.
 //
 //go:embed log_styles

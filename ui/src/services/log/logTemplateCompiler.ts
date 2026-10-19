@@ -2,7 +2,7 @@
 // 客户端校验用于即时反馈与安全预览，权威校验由服务端 ValidateLogStyle 执行。
 import DOMPurify from 'dompurify';
 
-export const LOG_RENDERER_VERSION = '1.0.0';
+export const LOG_RENDERER_VERSION = '1.1.0';
 
 const ALLOWED_TAGS = new Set([
   'div', 'span', 'p', 'section', 'article', 'header', 'footer', 'main', 'aside', 'figure', 'figcaption', 'img',
@@ -14,6 +14,8 @@ export const LOG_TEMPLATE_FIELDS = [
   'speaker.name', 'speaker.color', 'speaker.avatarUrl', 'body', 'plainText', 'createdAt',
   'title', 'subtitle', 'caption', 'label', 'text', 'pageNumber', 'section.title',
   'assetUrl', 'content.assetUrl', 'content.title', 'content.subtitle', 'content.caption', 'content.label', 'content.text',
+  // 1.1.0：悄悄话收件人（「、」连接的显示名）与引用摘要；非悄悄话/无引用时为空，配合 data-log-if 使用。
+  'whisper.targets', 'quote.speaker', 'quote.text',
 ] as const;
 const BASE_FIELDS = new Set<string>(LOG_TEMPLATE_FIELDS);
 const SRC_FIELDS = new Set(['speaker.avatarUrl', 'assetUrl', 'content.assetUrl']);
@@ -37,6 +39,8 @@ interface ParsedTemplate {
   fragment: DocumentFragment;
   parts: string[];
   bodySlots: number;
+  /** data-log-text / data-log-if 引用的字段。 */
+  fields: Set<string>;
 }
 
 export interface TemplateLibrary {
@@ -68,6 +72,7 @@ const parseTemplate = (templateId: string, src: string, customFields: Set<string
   const holder = document.createElement('template');
   holder.innerHTML = src;
   const parts: string[] = [];
+  const fields = new Set<string>();
   let bodySlots = 0;
   let count = 0;
   let ok = true;
@@ -100,6 +105,7 @@ const parseTemplate = (templateId: string, src: string, customFields: Set<string
           case 'data-log-text':
           case 'data-log-if':
             if (!BASE_FIELDS.has(value) && !customFields.has(value)) fail(`未声明字段 ${value}`);
+            fields.add(value);
             break;
           case 'data-log-bind-src':
             if (tag !== 'img' || !SRC_FIELDS.has(value)) fail('data-log-bind-src 只能用于 img，且只接受 speaker.avatarUrl / assetUrl / content.assetUrl');
@@ -124,7 +130,7 @@ const parseTemplate = (templateId: string, src: string, customFields: Set<string
   };
   holder.content.childNodes.forEach((child) => walk(child, 0));
   if (!ok) return null;
-  return { fragment: holder.content, parts, bodySlots };
+  return { fragment: holder.content, parts, bodySlots, fields };
 };
 
 /** 解析并校验整个模板库：标签/属性白名单、片段有向无环与深度。 */
@@ -193,6 +199,13 @@ export const sanitizeBodyHtml = (html: string): string => {
   const box = document.createElement('div');
   box.appendChild(clean);
   return box.innerHTML;
+};
+
+/** 模板（含展开的片段）是否引用了某个字段；旧模板不认识新字段时由渲染器补默认呈现。 */
+export const templateUsesField = (lib: TemplateLibrary, id: string, field: string, depth = 0): boolean => {
+  const t = lib.templates.get(id);
+  if (!t || depth > 8) return false;
+  return t.fields.has(field) || t.parts.some((part) => templateUsesField(lib, part, field, depth + 1));
 };
 
 const hasValue = (data: TemplateData, field: string) =>

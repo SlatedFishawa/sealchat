@@ -61,8 +61,8 @@ func QueueLogRelease(projectID, userID string, input LogReleaseInput) (map[strin
 		return nil, err
 	}
 	if d.StylePackageID == "" && d.StylePackageVersion == "" {
-		d.StylePackageID = "sealchat-starter"
-		d.StylePackageVersion = "1.0.0"
+		d.StylePackageID = logDefaultStyleID
+		d.StylePackageVersion = logDefaultStyleVersion
 	}
 	if err := validateLogDraftStyle(&d, userID); err != nil {
 		return nil, err
@@ -303,6 +303,8 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 	sort.SliceStable(elements, func(i, k int) bool { return elements[i].Order < elements[k].Order })
 	ordinal := int64(0)
 	used := map[string]bool{}
+	// The publishing actor's reads, limited to what any public reader may see.
+	display := newMessageDisplayResolver("", j.ActorID, messageDisplayPublic)
 	for _, section := range d.Sections {
 		addElements := func(kind, messageID, side string) error {
 			for _, e := range elements {
@@ -342,7 +344,8 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 				if ordinal > 1000000 {
 					return logError("TOO_LARGE", "发布节点超过上限")
 				}
-				if err := logBuildMessage(ctx, &release, section.ID, m, ordinal); err != nil {
+				display = display.forChannel(m.ChannelID)
+				if err := logBuildMessage(ctx, &release, display, section.ID, m, ordinal); err != nil {
 					return err
 				}
 				if err := addElements("message", m.ID, "after"); err != nil {

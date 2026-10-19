@@ -123,9 +123,13 @@ export const useLogMessageWindow = (projectId: Ref<string>, section: Ref<LogSect
     const version = typeof message.version === 'number' ? message.version : prev.version + 1;
     if (version < prev.version) return;
     const next = items.value.slice();
-    next[idx] = { ...prev, message: { ...prev.message, ...message }, version };
+    // 嵌入展开由服务端按原文投影：原文变化后旧展开作废，可能成为嵌入（站内链接含 #/）时重载取新投影。
+    const contentChanged = typeof message.content === 'string' && message.content !== prev.message.content;
+    const presentation = contentChanged && prev.presentation?.embed ? { ...prev.presentation, embed: undefined } : prev.presentation;
+    next[idx] = { ...prev, message: { ...prev.message, ...message }, version, presentation };
     items.value = next;
     ownWrites.set(message.id, version);
+    if (contentChanged && (prev.presentation?.embed || message.content!.includes('#/'))) scheduleReload();
   };
 
   const removeLocal = (id: string) => {

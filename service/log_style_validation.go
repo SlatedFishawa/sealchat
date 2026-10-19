@@ -216,7 +216,7 @@ func logValidateHTML(src string, customFields map[string]bool) ([]string, error)
 	parts := []string{}
 	count := 0
 	fields := map[string]bool{"speaker.name": true, "speaker.color": true, "speaker.avatarUrl": true, "body": true, "plainText": true, "createdAt": true, "title": true, "subtitle": true, "caption": true, "label": true, "text": true, "pageNumber": true, "section.title": true}
-	for _, name := range []string{"assetUrl", "content.assetUrl", "content.title", "content.subtitle", "content.caption", "content.label", "content.text"} {
+	for _, name := range []string{"assetUrl", "content.assetUrl", "content.title", "content.subtitle", "content.caption", "content.label", "content.text", "whisper.targets", "quote.speaker", "quote.text"} {
 		fields[name] = true
 	}
 	for name := range customFields {

@@ -57,6 +57,43 @@ const renderLegacy = (content: string): string => {
   }
 };
 
+const BODY_FORBID_TAGS = ['style', 'script', 'iframe', 'svg', 'math', 'form', 'input', 'button', 'video', 'audio', 'source'];
+const ATTACHMENT_SRC = /^\/api\/v1\/attachment\/[A-Za-z0-9_-]{4,128}$/;
+
+/** 聊天 TipTap、旧格式与服务端 AgentRich 的提及类名统一补上 log-mention，样式只需认一个类。 */
+export const normalizeMentionClasses = (root: ParentNode) => {
+  root.querySelectorAll('span.mention, span.mention-capsule').forEach((el) => el.classList.add('log-mention'));
+};
+
+/**
+ * 清洗并收集资源：图片只认资源标记或站内附件路径（转为 att: 令牌），其余替换为占位。
+ * src 不经 DOMPurify 的 URI 白名单（log-asset: 会被剥掉）；清洗后所有 src 都会被移除或转换。
+ */
+const finalizeBody = (html: string, plainText: string): RenderedBody => {
+  const assets = new Set<string>();
+  const frag = DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true, FORBID_TAGS: BODY_FORBID_TAGS, ADD_URI_SAFE_ATTR: ['src'] }) as DocumentFragment;
+  frag.querySelectorAll('img').forEach((img) => {
+    const src = img.getAttribute('src') || '';
+    img.removeAttribute('src');
+    img.removeAttribute('srcset');
+    const token = src.startsWith(ASSET_SCHEME) ? src.slice(ASSET_SCHEME.length) : ATTACHMENT_SRC.test(src) ? attachmentToken(src) : '';
+    if (token) {
+      img.setAttribute('data-log-asset', token);
+      assets.add(token);
+    } else {
+      const holder = document.createElement('span');
+      holder.className = 'log-img-missing';
+      holder.textContent = '外链图片未嵌入';
+      img.replaceWith(holder);
+    }
+  });
+  normalizeMentionClasses(frag);
+  const box = document.createElement('div');
+  box.appendChild(frag);
+  if (!plainText) plainText = (box.textContent || '').replace(/\s+/g, ' ').trim();
+  return { html: box.innerHTML, plainText, assets: Array.from(assets) };
+};
+
 /** 将正文渲染为白名单 HTML，并收集需要的资源令牌。 */
 export const renderMessageBody = (content: string): RenderedBody => {
   const raw = String(content || '');
@@ -72,28 +109,11 @@ export const renderMessageBody = (content: string): RenderedBody => {
   } else {
     html = renderLegacy(raw);
   }
-  const assets = new Set<string>();
-  const frag = DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true, FORBID_TAGS: ['style', 'script', 'iframe', 'svg', 'math', 'form', 'input', 'button', 'video', 'audio', 'source'] }) as DocumentFragment;
-  frag.querySelectorAll('img').forEach((img) => {
-    const src = img.getAttribute('src') || '';
-    img.removeAttribute('src');
-    img.removeAttribute('srcset');
-    if (src.startsWith(ASSET_SCHEME)) {
-      const token = src.slice(ASSET_SCHEME.length);
-      img.setAttribute('data-log-asset', token);
-      assets.add(token);
-    } else {
-      const holder = document.createElement('span');
-      holder.className = 'log-img-missing';
-      holder.textContent = '外链图片未嵌入';
-      img.replaceWith(holder);
-    }
-  });
-  const box = document.createElement('div');
-  box.appendChild(frag);
-  if (!plainText) plainText = (box.textContent || '').replace(/\s+/g, ' ').trim();
-  return { html: box.innerHTML, plainText, assets: Array.from(assets) };
+  return finalizeBody(html, plainText);
 };
+
+/** 服务端展示投影（便签/线索展开）的正文：与发布版同一渲染，只在这里转换资源令牌。 */
+export const renderPresentedBody = (html: string, plainText: string): RenderedBody => finalizeBody(String(html || ''), String(plainText || ''));
 
 /** 编辑器模式：TipTap JSON 使用富文本编辑器，其他内容按原格式在文本框中编辑。 */
 export const detectContentFormat = (content: string): 'tiptap' | 'plain' => (isTipTapJson(String(content || '')) ? 'tiptap' : 'plain');
