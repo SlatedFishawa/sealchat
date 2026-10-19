@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "sealchat-starter",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "name": "基础排版",
   "license": "MIT",
-  "minRendererVersion": "1.1.0",
+  "minRendererVersion": "1.2.0",
   "tokens": {},
   "templates": {
     "message": "<article class=\"log-message\"><header data-log-text=\"speaker.name\"></header><p class=\"log-whisper\" data-log-if=\"whisper.targets\">悄悄话 → <span data-log-text=\"whisper.targets\"></span></p><blockquote class=\"log-quote\" data-log-if=\"quote.text\"><span data-log-text=\"quote.speaker\"></span>：<span data-log-text=\"quote.text\"></span></blockquote><div data-log-slot=\"body\"></div></article>",
@@ -16,7 +16,7 @@
     "imagePlate": "<figure><img data-log-bind-src=\"assetUrl\"><figcaption data-log-text=\"caption\"></figcaption></figure>",
     "toc": "<section class=\"log-toc\"></section>"
   },
-  "css": ".log-message { margin-bottom: 1em; } .log-message header { font-weight: bold; } .log-whisper { margin: 0 0 0.2em; font-size: 0.8em; color: #6b6b6b; } .log-quote { margin: 0 0 0.3em; padding-left: 0.6em; border-left: 2px solid #ccc; font-size: 0.8em; color: #6b6b6b; } .log-cover { break-after: page; text-align: center; } .log-page-break { break-after: page; }",
+  "css": ".log-message { margin-bottom: 1em; } .log-message header { font-weight: bold; } .log-whisper { margin: 0 0 0.2em; font-size: 0.8em; color: #6b6b6b; } .log-quote { margin: 0 0 0.3em; padding-left: 0.6em; border-left: 2px solid #ccc; font-size: 0.8em; color: #6b6b6b; } .log-cover { break-after: page; text-align: center; } .log-page-break { break-after: page; } .log-embed--world-clue { padding: 0; border: 0; background: none; } .log-clue { margin: 0.3em 0; padding: 0.5em 0.75em; border: 1px solid #cccccc; border-radius: 4px; } .log-clue__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2em 0.5em; break-after: avoid; } .log-clue__label, .log-clue__kind { padding: 0; border: 0; font-size: 0.75em; color: #6b6b6b; } .log-clue__title { font-weight: bold; } .log-clue__media img { display: block; max-width: 100%; max-height: 20em; margin: 0.3em 0; } .log-clue__body--empty { color: #6b6b6b; } .log-clue__source { font-size: 0.8em; color: #6b6b6b; overflow-wrap: anywhere; }",
   "rules": [{"templateId": "message"}],
   "settingsSchema": {},
   "assets": []

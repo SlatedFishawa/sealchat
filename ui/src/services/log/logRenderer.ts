@@ -13,6 +13,7 @@ import type {
   LogStyleRule,
   LogTokenValue,
   LogWhisperTarget,
+  LogWorldClue,
 } from '@/types/log';
 import { normalizeMentionClasses, renderMessageBody, renderPresentedBody, attachmentToken, bodyAssetToken } from './logContent';
 import {
@@ -44,6 +45,8 @@ export interface RenderMessageNode {
   assets: string[];
   /** 正文为展开后的站内嵌入时的种类（stickyNote / worldClue）。 */
   embed: string | null;
+  /** embed 为 worldClue 时的线索展示语义（按正文顺序）；与 messageType 正交。 */
+  clues: LogWorldClue[];
   /** 悄悄话收件人；与 messageType 正交（IC/OOC/骰子都可能是悄悄话）。 */
   whisper: { targets: LogWhisperTarget[] } | null;
   quote: LogQuotePresentation | null;
@@ -150,6 +153,35 @@ const whisperOf = (value: { targets?: LogWhisperTarget[] } | null | undefined) =
 const quoteOf = (value: LogQuotePresentation | null | undefined): LogQuotePresentation | null =>
   value && typeof value.text === 'string' && value.text.trim() ? { speakerName: String(value.speakerName || ''), text: value.text } : null;
 
+const CLUE_KINDS = new Set(['text', 'image', 'iframe']);
+
+/** 只接受服务端线索投影中的公开展示字段；未知类型按文本线索处理。 */
+const cluesOf = (embed: string | null, value: unknown): LogWorldClue[] => {
+  if (embed !== 'worldClue' || !Array.isArray(value)) return [];
+  const out: LogWorldClue[] = [];
+  for (const raw of value.slice(0, 64)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const c = raw as Record<string, unknown>;
+    const title = typeof c.title === 'string' ? c.title.trim() : '';
+    if (!title) continue;
+    const kind = typeof c.kind === 'string' && CLUE_KINDS.has(c.kind) ? c.kind : 'text';
+    const kindLabel = typeof c.kindLabel === 'string' && c.kindLabel.trim() ? c.kindLabel.trim() : kind;
+    const source = typeof c.source === 'string' && /^https?:\/\//i.test(c.source) ? c.source : '';
+    out.push(source ? { title, kind, kindLabel, source } : { title, kind, kindLabel });
+  }
+  return out;
+};
+
+const uniqueJoin = (values: string[], sep: string) => Array.from(new Set(values.filter(Boolean))).join(sep);
+
+/** 线索模板字段：单条线索即其值；多条线索按正文顺序以「、」连接（kind 以空格连接，可用于 CSS ~=）。 */
+export const clueTemplateFields = (clues: LogWorldClue[]) => ({
+  'clue.title': clues.map((c) => c.title).join('、'),
+  'clue.kind': uniqueJoin(clues.map((c) => c.kind), ' '),
+  'clue.kindLabel': uniqueJoin(clues.map((c) => c.kindLabel), '、'),
+  'clue.source': uniqueJoin(clues.map((c) => c.source || ''), '、'),
+});
+
 /** 模板字段 whisper.targets：收件人显示名以「、」连接，与传统导出「对 A、B」一致。 */
 export const whisperTargetsText = (whisper: RenderMessageNode['whisper']) => (whisper ? whisper.targets.map((t) => t.name).join('、') : '');
 
@@ -189,6 +221,7 @@ export const designMessageToNode = (item: LogDesignMessage): RenderMessageNode =
     movable: item.capabilities.reorder,
     assets: avatar ? [...body.assets, avatar] : body.assets,
     embed: presented ? String(presented.kind || 'embed') : null,
+    clues: presented ? cluesOf(String(presented.kind || ''), presented.clues) : [],
     whisper: whisperOf(item.presentation?.whisper),
     quote: quoteOf(item.presentation?.quote),
   };
@@ -275,6 +308,7 @@ export const publicNodeToRender = (node: LogPublicNode): RenderNode => {
       movable: false,
       assets: avatar ? [...body.assets, avatar] : body.assets,
       embed: typeof node.embed === 'string' && node.embed ? node.embed : null,
+      clues: cluesOf(typeof node.embed === 'string' ? node.embed : null, node.clues),
       whisper: whisperOf(node.whisper),
       quote: quoteOf(node.quote),
     };
@@ -411,6 +445,7 @@ export const buildFrameDocument = (opts: BuildOptions): BuildResult => {
             'whisper.targets': whisperTargetsText(node.whisper),
             'quote.speaker': node.quote?.speakerName || '',
             'quote.text': node.quote?.text || '',
+            ...clueTemplateFields(node.clues),
           },
           assets: node.avatarToken ? { 'speaker.avatarUrl': node.avatarToken } : {},
           bodyHtml: node.bodyHtml,
@@ -429,6 +464,7 @@ export const buildFrameDocument = (opts: BuildOptions): BuildResult => {
       if (node.whisper) attrs['data-log-whisper'] = String(node.whisper.targets.length);
       if (node.quote) attrs['data-log-quote'] = '1';
       if (node.embed) attrs['data-log-embed'] = node.embed;
+      if (node.clues.length) attrs['data-log-clue-kind'] = clueTemplateFields(node.clues)['clue.kind'];
       if (merged) attrs['data-log-merged'] = '1';
       if (node.movable) attrs['data-log-movable'] = '1';
       blocks.push({

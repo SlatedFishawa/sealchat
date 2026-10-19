@@ -123,6 +123,9 @@ func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, display *mes
 	if body.EmbedKind != "" {
 		node["embed"] = body.EmbedKind
 	}
+	if clues := body.worldClues(); len(clues) > 0 {
+		node["clues"] = clues
+	}
 	// Releases only take non-whisper messages; should that change, recipients still never leave as raw IDs.
 	if m.IsWhisper {
 		targets := []MessageWhisperTarget{}

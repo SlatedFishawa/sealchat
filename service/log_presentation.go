@@ -9,9 +9,10 @@ import (
 	"sealchat/protocol"
 )
 
-// LOG reads messages through the shared display semantics with the public
-// audience, in the design window and in the published release alike. The raw
-// message.content stays the only editable source; nothing here is written back.
+// LOG reads messages through the shared display semantics. The clue itself keeps
+// the public audience boundary, while the archival projection may include
+// member-private clue sections for an authorized viewer. The raw message.content
+// stays the only editable source; nothing here is written back.
 
 // LogMessagePresentation is the read-only projection a design window adds to a raw message.
 type LogMessagePresentation struct {
@@ -27,6 +28,21 @@ type LogMessageEmbed struct {
 	Kind      string `json:"kind"`
 	BodyHTML  string `json:"bodyHtml"`
 	PlainText string `json:"plainText"`
+	// Clues lists the expanded world clues in body order (worldClue embeds only).
+	Clues []LogWorldClue `json:"clues,omitempty"`
+}
+
+// LogWorldClue is the stable bindable display semantics of one expanded world
+// clue. Member-private sections are rendered inside bodyHtml instead of being
+// flattened into template fields; manager notes, access, folders, read state and
+// the clue box's own presentation settings never reach LOG.
+type LogWorldClue struct {
+	Title string `json:"title"`
+	// Kind is text, image or iframe (web clue).
+	Kind      string `json:"kind"`
+	KindLabel string `json:"kindLabel"`
+	// Source is a web clue's http(s) address, for display only.
+	Source string `json:"source,omitempty"`
 }
 
 // LogMessageWhisper is orthogonal to the message type: an IC, OOC or dice message may be a whisper.
@@ -48,6 +64,9 @@ type logMessageBody struct {
 	Doc       AgentRichDocument
 	EmbedKind string
 	Assets    map[string]LogBodyAssetRef
+	// Clues keeps each expanded world clue as display parts so styles can target
+	// its title, kind, media, body, source and archival private sections; Doc stays empty for them.
+	Clues []worldClueDisplay
 }
 
 func logMessageBodyOf(display *messageDisplayResolver, m *model.MessageModel) logMessageBody {
@@ -60,7 +79,18 @@ func logMessageBodyOf(display *messageDisplayResolver, m *model.MessageModel) lo
 		switch expanded.Kind {
 		case messageEmbedWorldClue:
 			for _, block := range expanded.WorldClues {
-				body.appendDocument(m, worldClueRichDocument(block, true), LogBodyAssetRef{Kind: logBodyWorldClue, WorldID: block.WorldID, ClueID: block.ClueID})
+				source := LogBodyAssetRef{Kind: logBodyWorldClue, WorldID: block.WorldID, ClueID: block.ClueID}
+				clue := worldClueDisplayOf(block, true)
+				clue.Media = body.markDocument(m, clue.Media, source)
+				clue.Body = body.markDocument(m, clue.Body, source)
+				for _, section := range block.Private {
+					if !richDocumentHasContent(&section.Content) {
+						continue
+					}
+					section.Content = body.markDocument(m, section.Content, source)
+					clue.Private = append(clue.Private, section)
+				}
+				body.Clues = append(body.Clues, clue)
 			}
 		case messageEmbedStickyNote:
 			for _, part := range expanded.StickyNotes {
@@ -75,18 +105,125 @@ func logMessageBodyOf(display *messageDisplayResolver, m *model.MessageModel) lo
 
 // html renders the body; an expanded embed gets a wrapper that styles can target.
 func (b logMessageBody) html() string {
-	out := RenderAgentRichDocumentHTML(b.Doc, true)
 	switch b.EmbedKind {
 	case messageEmbedStickyNote:
-		return `<div class="log-embed log-embed--sticky-note">` + out + `</div>`
+		return `<div class="log-embed log-embed--sticky-note">` + RenderAgentRichDocumentHTML(b.Doc, true) + `</div>`
 	case messageEmbedWorldClue:
-		return `<div class="log-embed log-embed--world-clue">` + out + `</div>`
+		var out strings.Builder
+		out.WriteString(`<div class="log-embed log-embed--world-clue">`)
+		for _, clue := range b.Clues {
+			out.WriteString(logWorldClueHTML(clue))
+		}
+		out.WriteString(`</div>`)
+		return out.String()
+	}
+	return RenderAgentRichDocumentHTML(b.Doc, true)
+}
+
+// document is the flattened body; clues keep the export's text form.
+func (b logMessageBody) document() AgentRichDocument {
+	if len(b.Clues) == 0 {
+		return b.Doc
+	}
+	doc := AgentRichDocument{Type: "document"}
+	for _, clue := range b.Clues {
+		part := clue.richDocument()
+		doc.Blocks = append(doc.Blocks, part.Blocks...)
+		for _, section := range clue.Private {
+			if !richDocumentHasContent(&section.Content) {
+				continue
+			}
+			name := strings.TrimSpace(section.MemberName)
+			if name == "" {
+				name = "成员"
+			}
+			doc.Blocks = append(doc.Blocks, AgentRichNode{Type: "paragraph", Children: []AgentRichNode{{Type: "text", Text: "[专属信息: " + name + "]", Marks: []AgentRichMark{{Type: "bold"}}}}})
+			doc.Blocks = append(doc.Blocks, section.Content.Blocks...)
+		}
+	}
+	return doc
+}
+
+func (b logMessageBody) plainText() string {
+	return AgentRichDocumentPlainText(b.document())
+}
+
+// worldClues is the clue metadata a style may bind; nil for other bodies.
+func (b logMessageBody) worldClues() []LogWorldClue {
+	if b.EmbedKind != messageEmbedWorldClue || len(b.Clues) == 0 {
+		return nil
+	}
+	out := make([]LogWorldClue, 0, len(b.Clues))
+	for _, clue := range b.Clues {
+		kind := logWorldClueKind(clue.Kind)
+		out = append(out, LogWorldClue{Title: clue.Title, Kind: kind, KindLabel: worldClueExportKindLabel(kind), Source: clue.SourceURL})
 	}
 	return out
 }
 
-func (b logMessageBody) plainText() string {
-	return AgentRichDocumentPlainText(b.Doc)
+// logWorldClueKind keeps the class/attribute vocabulary closed to the known clue kinds.
+func logWorldClueKind(kind string) string {
+	switch kind = strings.ToLower(strings.TrimSpace(kind)); kind {
+	case model.WorldClueKindImage, model.WorldClueKindIframe:
+		return kind
+	}
+	return model.WorldClueKindText
+}
+
+// logWorldClueHTML renders one clue with stable classes inside the body sanitizer's
+// whitelist (div/span/strong/p/a/img + class): .log-clue--<kind>, __head, __label,
+// __title, __kind, __media, __body, __source and __private*. A web clue's source
+// is a plain link that the LOG frame never navigates or embeds.
+func logWorldClueHTML(clue worldClueDisplay) string {
+	kind := logWorldClueKind(clue.Kind)
+	var out strings.Builder
+	out.WriteString(`<div class="log-clue log-clue--` + kind + `">`)
+	out.WriteString(`<div class="log-clue__head"><span class="log-clue__label">线索</span><strong class="log-clue__title">` + htmlEscape(clue.Title) + `</strong><span class="log-clue__kind">` + htmlEscape(worldClueExportKindLabel(kind)) + `</span></div>`)
+	if media := RenderAgentRichDocumentHTML(clue.Media, true); strings.TrimSpace(media) != "" {
+		class := "log-clue__media"
+		if !logDocumentHasImage(clue.Media.Blocks) {
+			class += " log-clue__media--missing"
+		}
+		out.WriteString(`<div class="` + class + `">` + media + `</div>`)
+	}
+	if clue.Empty {
+		out.WriteString(`<div class="log-clue__body log-clue__body--empty"><p>（空线索）</p></div>`)
+	} else if body := RenderAgentRichDocumentHTML(clue.Body, true); strings.TrimSpace(body) != "" {
+		out.WriteString(`<div class="log-clue__body">` + body + `</div>`)
+	}
+	source := func(modifier, label, href string) {
+		if href == "" {
+			return
+		}
+		out.WriteString(`<div class="log-clue__source` + modifier + `"><span class="log-clue__source-label">` + label + `</span><a href="` + htmlEscape(href) + `">` + htmlEscape(href) + `</a></div>`)
+	}
+	source("", "网页来源", clue.SourceURL)
+	source(" log-clue__source--image", "图片来源", clue.ImageSourceURL)
+	if len(clue.Private) > 0 {
+		out.WriteString(`<div class="log-clue__body log-clue__private">`)
+		for _, section := range clue.Private {
+			if !richDocumentHasContent(&section.Content) {
+				continue
+			}
+			name := strings.TrimSpace(section.MemberName)
+			if name == "" {
+				name = "成员"
+			}
+			out.WriteString(`<section class="log-clue__private-section"><div class="log-clue__private-head"><span class="log-clue__private-label">专属信息</span><strong class="log-clue__private-member">` + htmlEscape(name) + `</strong></div><div class="log-clue__private-body">` + RenderAgentRichDocumentHTML(section.Content, true) + `</div></section>`)
+		}
+		out.WriteString(`</div>`)
+	}
+	out.WriteString(`</div>`)
+	return out.String()
+}
+
+func logDocumentHasImage(nodes []AgentRichNode) bool {
+	for _, n := range nodes {
+		if n.Type == "image" || logDocumentHasImage(n.Children) {
+			return true
+		}
+	}
+	return false
 }
 
 // logResolveBody keeps only http(s) links and points every image at resolve's
@@ -139,7 +276,23 @@ func logResolveBody(body *logMessageBody, resolve func(LogBodyAssetRef) (string,
 		}
 		return nil
 	}
-	return walk(body.Doc.Blocks, 0)
+	if err := walk(body.Doc.Blocks, 0); err != nil {
+		return err
+	}
+	for i := range body.Clues {
+		if err := walk(body.Clues[i].Media.Blocks, 0); err != nil {
+			return err
+		}
+		if err := walk(body.Clues[i].Body.Blocks, 0); err != nil {
+			return err
+		}
+		for j := range body.Clues[i].Private {
+			if err := walk(body.Clues[i].Private[j].Content.Blocks, 0); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // logImageAttachmentID accepts only SealChat attachment references (explicit attribute,
@@ -207,7 +360,7 @@ func logDesignPresentations(viewerID, sectionID string, messages []*model.Messag
 	if err := hydrateWhisperTargetsForExport(messages); err != nil {
 		return nil, err
 	}
-	display := newMessageDisplayResolver("", viewerID, messageDisplayPublic)
+	display := newMessageDisplayResolver("", viewerID, messageDisplayLogArchive)
 	out := map[string]*LogMessagePresentation{}
 	for _, m := range messages {
 		display = display.forChannel(m.ChannelID)
@@ -226,7 +379,7 @@ func logDesignPresentations(viewerID, sectionID string, messages []*model.Messag
 			if err != nil {
 				return nil, err
 			}
-			p.Embed = &LogMessageEmbed{Kind: body.EmbedKind, BodyHTML: body.html(), PlainText: body.plainText()}
+			p.Embed = &LogMessageEmbed{Kind: body.EmbedKind, BodyHTML: body.html(), PlainText: body.plainText(), Clues: body.worldClues()}
 		}
 		if m.SenderIdentityAvatarID != "" {
 			token := ""

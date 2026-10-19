@@ -161,8 +161,18 @@ export interface LogQuotePresentation {
  * 服务端展示投影（与发布版同源，只读）：message.content 仍是唯一可编辑原文。
  * embed 仅当整条消息都是站内嵌入链接时出现；whisper 与消息类型正交。
  */
+/** 一条展开线索的公开展示语义；不含专属信息、管理备注、权限或线索箱 presentation。 */
+export interface LogWorldClue {
+  title: string;
+  /** text / image / iframe（网页线索）。 */
+  kind: string;
+  kindLabel: string;
+  /** 网页线索的 http(s) 来源，仅作展示文字。 */
+  source?: string;
+}
+
 export interface LogMessagePresentation {
-  embed?: { kind: 'stickyNote' | 'worldClue' | string; bodyHtml: string; plainText: string };
+  embed?: { kind: 'stickyNote' | 'worldClue' | string; bodyHtml: string; plainText: string; clues?: LogWorldClue[] };
   /** 空字符串表示服务端无法安全解析历史头像。 */
   avatarToken?: string;
   whisper?: { targets: LogWhisperTarget[] };
@@ -266,6 +276,8 @@ export interface LogPublicMessageNode {
   quote?: LogQuotePresentation | null;
   /** 整条消息是站内嵌入（便签/线索）时的种类；正文已是展开内容。 */
   embed?: string | null;
+  /** embed 为 worldClue 时按正文顺序列出各线索；旧发布节点没有该字段。 */
+  clues?: LogWorldClue[] | null;
   /** 发布版不收录悄悄话；字段为结构兼容保留。 */
   whisper?: { targets: LogWhisperTarget[] } | null;
 }

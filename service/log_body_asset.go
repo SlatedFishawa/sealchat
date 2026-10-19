@@ -46,6 +46,12 @@ func (b *logMessageBody) addAsset(m *model.MessageModel, ref LogBodyAssetRef) Lo
 // appendDocument copies the cached export document before marking image nodes.
 // Provenance is assigned while the embed's source is still known, never inferred from HTML.
 func (b *logMessageBody) appendDocument(m *model.MessageModel, doc AgentRichDocument, source LogBodyAssetRef) {
+	b.Doc.Type = "document"
+	b.Doc.Blocks = append(b.Doc.Blocks, b.markDocument(m, doc, source).Blocks...)
+}
+
+// markDocument returns a copy of doc whose SealChat images carry body asset keys.
+func (b *logMessageBody) markDocument(m *model.MessageModel, doc AgentRichDocument, source LogBodyAssetRef) AgentRichDocument {
 	var copyNodes func([]AgentRichNode) []AgentRichNode
 	copyNodes = func(nodes []AgentRichNode) []AgentRichNode {
 		out := make([]AgentRichNode, len(nodes))
@@ -70,8 +76,8 @@ func (b *logMessageBody) appendDocument(m *model.MessageModel, doc AgentRichDocu
 		}
 		return out
 	}
-	b.Doc.Type = "document"
-	b.Doc.Blocks = append(b.Doc.Blocks, copyNodes(doc.Blocks)...)
+	doc.Blocks = copyNodes(doc.Blocks)
+	return doc
 }
 
 func logAvatarAsset(m *model.MessageModel) LogBodyAssetRef {
@@ -240,7 +246,9 @@ func GetLogBodyAsset(ctx context.Context, projectID, sectionID, messageID, key, 
 	if len(key) != 32 || logSourceQuery(p, s, userID).Where("id = ? AND is_revoked = ?", messageID, false).Take(&m).Error != nil {
 		return nil, logBodyAssetNotFound()
 	}
-	display := newMessageDisplayResolver(m.ChannelID, userID, messageDisplayPublic)
+	// Rebuild the same archival projection used by the design window so images
+	// inside authorized World Clue private sections resolve from the manifest too.
+	display := newMessageDisplayResolver(m.ChannelID, userID, messageDisplayLogArchive)
 	body := logMessageBodyOf(display, &m)
 	if m.SenderIdentityAvatarID != "" {
 		body.addAsset(&m, logAvatarAsset(&m))

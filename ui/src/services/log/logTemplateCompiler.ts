@@ -2,7 +2,7 @@
 // 客户端校验用于即时反馈与安全预览，权威校验由服务端 ValidateLogStyle 执行。
 import DOMPurify from 'dompurify';
 
-export const LOG_RENDERER_VERSION = '1.1.0';
+export const LOG_RENDERER_VERSION = '1.2.0';
 
 const ALLOWED_TAGS = new Set([
   'div', 'span', 'p', 'section', 'article', 'header', 'footer', 'main', 'aside', 'figure', 'figcaption', 'img',
@@ -16,6 +16,8 @@ export const LOG_TEMPLATE_FIELDS = [
   'assetUrl', 'content.assetUrl', 'content.title', 'content.subtitle', 'content.caption', 'content.label', 'content.text',
   // 1.1.0：悄悄话收件人（「、」连接的显示名）与引用摘要；非悄悄话/无引用时为空，配合 data-log-if 使用。
   'whisper.targets', 'quote.speaker', 'quote.text',
+  // 1.2.0：整条消息为线索嵌入时的线索标题、类型（text/image/iframe）、类型名与网页来源；多条线索按正文顺序以「、」连接。
+  'clue.title', 'clue.kind', 'clue.kindLabel', 'clue.source',
 ] as const;
 const BASE_FIELDS = new Set<string>(LOG_TEMPLATE_FIELDS);
 const SRC_FIELDS = new Set(['speaker.avatarUrl', 'assetUrl', 'content.assetUrl']);

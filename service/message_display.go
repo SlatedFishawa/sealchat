@@ -25,9 +25,12 @@ type messageDisplayAudience int
 const (
 	// messageDisplayViewer expands everything the viewer may read (private exports).
 	messageDisplayViewer messageDisplayAudience = iota
-	// messageDisplayPublic expands only content every reader may see. LOG design
-	// and publication use it, so a published page never shows more than its preview.
+	// messageDisplayPublic expands only content every reader may see.
 	messageDisplayPublic
+	// messageDisplayLogArchive keeps the public embed boundary, but lets an
+	// authorized LOG viewer include World Clue member-private sections in the
+	// design/release snapshot. It must not broaden sticky-note visibility.
+	messageDisplayLogArchive
 )
 
 const (
@@ -44,11 +47,14 @@ func newMessageDisplayResolver(channelID, viewerID string, audience messageDispl
 		sticky:    newStickyNoteExportResolver(channelID),
 		clue:      newWorldClueExportResolver(channelID, viewerID),
 	}
-	if audience == messageDisplayPublic {
+	if audience == messageDisplayPublic || audience == messageDisplayLogArchive {
 		if r.sticky != nil {
 			r.sticky.publicOnly = true
 		}
 		r.clue.publicOnly = true
+		if audience == messageDisplayLogArchive {
+			r.clue.includePrivateSections = true
+		}
 	}
 	return r
 }

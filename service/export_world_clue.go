@@ -40,9 +40,12 @@ type worldClueExportResolver struct {
 	worldID   string
 	cache     map[string]*WorldClueExportBlock
 	userNames map[string]string
-	// publicOnly expands only published clues that world members see by default,
-	// without any member's private section.
+	// publicOnly expands only published clues that world members see by default.
 	publicOnly bool
+	// includePrivateSections is used by LOG archival projection: the clue itself
+	// still obeys publicOnly, while authorized viewers may include member-private
+	// sections in the generated snapshot.
+	includePrivateSections bool
 }
 
 type worldClueEmbedTarget struct {
@@ -172,8 +175,9 @@ func (r *worldClueExportResolver) load(target worldClueEmbedTarget, includeImage
 		appendWorldClueImage(&block.Public, block.ImageAttachmentID, block.ImageURL)
 	}
 
-	// Private sections belong to individual members and never reach a shared audience.
-	if !r.publicOnly {
+	// Private sections normally follow private-export semantics. LOG archival
+	// projection may opt into them without relaxing the public clue boundary.
+	if !r.publicOnly || r.includePrivateSections {
 		db := model.GetDB()
 		role, roleErr := worldClueRole(db, target.WorldID, r.userID)
 		if roleErr == nil && worldClueIsAdminRole(role) {
@@ -496,20 +500,52 @@ func renderWorldClueHTML(block WorldClueExportBlock, includeImages bool) string 
 	return builder.String()
 }
 
-// worldClueRichDocument is renderWorldCluePlain as rich content, for outputs that
-// render a clue as part of a message body.
-func worldClueRichDocument(block WorldClueExportBlock, includeImages bool) AgentRichDocument {
-	title := strings.TrimSpace(block.Title)
-	if title == "" {
-		title = "未命名线索"
+// worldClueDisplay is one clue's LOG display parts. Public fields stay separate
+// from optional archival member-private sections; clue-box management data is excluded.
+type worldClueDisplay struct {
+	Title string
+	Kind  string
+	// Media is the clue's main image; empty when images are excluded.
+	Media AgentRichDocument
+	Body  AgentRichDocument
+	// Empty marks a clue with neither public content nor shown media.
+	Empty bool
+	// SourceURL is the web clue's safe http(s) address, shown only as text.
+	SourceURL string
+	// ImageSourceURL is an external main image address that cannot be embedded.
+	ImageSourceURL string
+	// Private contains member-specific archival sections when the caller opted in.
+	Private []WorldClueExportPrivateSection
+}
+
+func worldClueDisplayOf(block WorldClueExportBlock, includeImages bool) worldClueDisplay {
+	d := worldClueDisplay{Title: strings.TrimSpace(block.Title), Kind: strings.TrimSpace(block.Kind)}
+	if d.Title == "" {
+		d.Title = "未命名线索"
 	}
-	kind := strings.TrimSpace(block.Kind)
-	if kind == "" {
-		kind = model.WorldClueKindText
+	if d.Kind == "" {
+		d.Kind = model.WorldClueKindText
 	}
-	heading := "[线索: " + title + "]"
-	if kind != model.WorldClueKindText {
-		heading = "[线索: " + title + " · " + worldClueExportKindLabel(kind) + "]"
+	body, media := splitWorldCluePublicDocument(block.Public)
+	d.Body = body
+	if includeImages {
+		d.Media = media
+	}
+	d.Empty = !richDocumentHasContent(&body) && len(d.Media.Blocks) == 0
+	if d.Kind == model.WorldClueKindIframe {
+		d.SourceURL = block.IframeSourceURL
+	}
+	if includeImages && worldClueImageAttachmentToken(block) == "" && block.ImageURL != "" {
+		d.ImageSourceURL = safeExportHTTPURL(block.ImageURL)
+	}
+	return d
+}
+
+// richDocument flattens the display parts into one public rich document.
+func (d worldClueDisplay) richDocument() AgentRichDocument {
+	heading := "[线索: " + d.Title + "]"
+	if d.Kind != model.WorldClueKindText {
+		heading = "[线索: " + d.Title + " · " + worldClueExportKindLabel(d.Kind) + "]"
 	}
 	paragraph := func(children ...AgentRichNode) AgentRichNode {
 		return AgentRichNode{Type: "paragraph", Children: children}
@@ -521,22 +557,28 @@ func worldClueRichDocument(block WorldClueExportBlock, includeImages bool) Agent
 		return paragraph(text(label), text(href, AgentRichMark{Type: "link", Value: href}))
 	}
 	doc := AgentRichDocument{Type: "document", Blocks: []AgentRichNode{paragraph(text(heading, AgentRichMark{Type: "bold"}))}}
-	body, media := splitWorldCluePublicDocument(block.Public)
-	if includeImages {
-		doc.Blocks = append(doc.Blocks, media.Blocks...)
+	doc.Blocks = append(doc.Blocks, d.Media.Blocks...)
+	if d.Empty {
+		doc.Blocks = append(doc.Blocks, paragraph(text("（空线索）")))
+	} else {
+		doc.Blocks = append(doc.Blocks, d.Body.Blocks...)
 	}
-	if !richDocumentHasContent(&body) && (!includeImages || len(media.Blocks) == 0) {
-		body.Blocks = []AgentRichNode{paragraph(text("（空线索）"))}
+	if d.SourceURL != "" {
+		doc.Blocks = append(doc.Blocks, sourceLine("网页线索/来源: ", d.SourceURL))
 	}
-	doc.Blocks = append(doc.Blocks, body.Blocks...)
-	if kind == model.WorldClueKindIframe && block.IframeSourceURL != "" {
-		doc.Blocks = append(doc.Blocks, sourceLine("网页线索/来源: ", block.IframeSourceURL))
+	if d.ImageSourceURL != "" {
+		doc.Blocks = append(doc.Blocks, sourceLine("图片来源: ", d.ImageSourceURL))
 	}
-	if includeImages && worldClueImageAttachmentToken(block) == "" && block.ImageURL != "" {
-		if imageURL := safeExportHTTPURL(block.ImageURL); imageURL != "" {
-			doc.Blocks = append(doc.Blocks, sourceLine("图片来源: ", imageURL))
-		}
+	return doc
+}
+
+// worldClueRichDocument is renderWorldCluePlain as rich content, for outputs that
+// render a clue as part of a message body.
+func worldClueRichDocument(block WorldClueExportBlock, includeImages bool) AgentRichDocument {
+	paragraph := func(children ...AgentRichNode) AgentRichNode {
+		return AgentRichNode{Type: "paragraph", Children: children}
 	}
+	doc := worldClueDisplayOf(block, includeImages).richDocument()
 	for _, section := range block.Private {
 		if !richDocumentHasContent(&section.Content) {
 			continue
@@ -545,7 +587,7 @@ func worldClueRichDocument(block WorldClueExportBlock, includeImages bool) Agent
 		if name == "" {
 			name = "成员"
 		}
-		doc.Blocks = append(doc.Blocks, paragraph(text("[专属信息: "+name+"]", AgentRichMark{Type: "bold"})))
+		doc.Blocks = append(doc.Blocks, paragraph(AgentRichNode{Type: "text", Text: "[专属信息: " + name + "]", Marks: []AgentRichMark{{Type: "bold"}}}))
 		doc.Blocks = append(doc.Blocks, section.Content.Blocks...)
 	}
 	return doc

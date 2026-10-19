@@ -124,4 +124,42 @@ const whisper = (...targets) => ({ whisper: { targets: targets.map(([key, name])
   assert.equal(legacy.quote, null)
 }
 
+// 线索：设计态与发布态读出同样的公开展示语义；只收 text/image/iframe 与 http(s) 来源，非线索嵌入不带线索字段。
+{
+  const clues = [
+    { title: '旧照片', kind: 'image', kindLabel: '图片' },
+    { title: '港口地图', kind: 'iframe', kindLabel: '网页', source: 'https://maps.example.com/harbor' },
+  ]
+  const html = '<div class="log-embed log-embed--world-clue"><div class="log-clue log-clue--image">…</div><div class="log-clue log-clue--iframe">…</div></div>'
+  const d = design('clue', { embed: { kind: 'worldClue', bodyHtml: html, plainText: '[线索: 旧照片 · 图片]', clues } })
+  const pub = r.publicNodeToRender({
+    kind: 'message', id: 'n-clue', messageType: 'ooc', speaker: { key: 'k', name: '艾丽丝' }, bodyHtml: html, plainText: '', createdAt: '', embed: 'worldClue', clues,
+  })
+  assert.deepEqual(d.clues, clues)
+  assert.deepEqual(pub.clues, d.clues, '设计态与发布态线索语义一致')
+  assert.equal(pub.messageType, 'ooc', '线索与 messageType 正交')
+  assert.deepEqual(r.clueTemplateFields(d.clues), {
+    'clue.title': '旧照片、港口地图', 'clue.kind': 'image iframe', 'clue.kindLabel': '图片、网页', 'clue.source': 'https://maps.example.com/harbor',
+  })
+  assert.deepEqual(r.clueTemplateFields([]), { 'clue.title': '', 'clue.kind': '', 'clue.kindLabel': '', 'clue.source': '' })
+  const odd = design('clue-odd', { embed: { kind: 'worldClue', bodyHtml: '', plainText: '', clues: [
+    { title: '  ', kind: 'text', kindLabel: '文本' },
+    { title: '密信', kind: 'script', kindLabel: '', source: 'javascript:alert(1)', privateContent: '成员专属' },
+  ] } })
+  assert.deepEqual(odd.clues, [{ title: '密信', kind: 'text', kindLabel: 'text' }], '未知类型按文本处理，非 http(s) 来源与额外字段被丢弃')
+  assert.deepEqual(design('note', { embed: { kind: 'stickyNote', bodyHtml: '', plainText: '', clues } }).clues, [], '便签不带线索字段')
+  assert.deepEqual(r.publicNodeToRender({ kind: 'message', id: 'old', messageType: 'ic', speaker: { key: 'k', name: 'x' }, bodyHtml: '', plainText: '', createdAt: '', embed: 'worldClue' }).clues, [], '旧发布节点没有 clues 字段')
+
+  // 旧样式（无模板库/模板不认识新字段）仍完整显示正文；节点带 data-log-embed / data-log-clue-kind 供 CSS 选择。
+  const page = { mergeNeighbors: true, backgroundColor: '#ffffff', fontFamily: 'sans-serif', fontSizePt: 12, lineHeight: 1.5, headerTemplateId: null, footerTemplateId: null, showPageNumbers: false }
+  const built = r.buildFrameDocument({ style: null, page, title: 'T', sectionTitle: 'S', nodes: [d, design('clue-next', { embed: { kind: 'worldClue', bodyHtml: html, plainText: '', clues } })], toc: [], backgroundToken: null })
+  const [first, second] = built.doc.blocks
+  assert.ok(first.html.includes(html), '兜底模板保留完整线索正文')
+  assert.equal(first.attrs['data-log-embed'], 'worldClue')
+  assert.equal(first.attrs['data-log-clue-kind'], 'image iframe')
+  assert.equal(second.attrs['data-log-merged'], '1')
+  assert.ok(second.html.includes('log-clue--iframe'), '合并只隐藏发言者，线索标题/类型/来源仍在正文中')
+  assert.equal(r.buildFrameDocument({ style: null, page, title: 'T', sectionTitle: 'S', nodes: [design('plain-2')], toc: [], backgroundToken: null }).doc.blocks[0].attrs['data-log-clue-kind'], undefined)
+}
+
 console.log('log message presentation regression: ok')

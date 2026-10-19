@@ -303,8 +303,9 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 	sort.SliceStable(elements, func(i, k int) bool { return elements[i].Order < elements[k].Order })
 	ordinal := int64(0)
 	used := map[string]bool{}
-	// The publishing actor's reads, limited to what any public reader may see.
-	display := newMessageDisplayResolver("", j.ActorID, messageDisplayPublic)
+	// Keep the public clue boundary, but archive member-private clue sections that
+	// the publishing actor is authorized to read into the release snapshot.
+	display := newMessageDisplayResolver("", j.ActorID, messageDisplayLogArchive)
 	for _, section := range d.Sections {
 		addElements := func(kind, messageID, side string) error {
 			for _, e := range elements {
