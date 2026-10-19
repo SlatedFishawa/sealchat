@@ -176,6 +176,10 @@ const BODY_PURIFY = {
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'a', 'img', 'ruby', 'rt', 'rp', 'sub', 'sup', 'mark', 'div', 'table', 'thead', 'tbody', 'tr', 'td', 'th'],
   ALLOWED_ATTR: ['class', 'title', 'alt', 'href', 'data-log-asset', 'data-log-missing', 'colspan', 'rowspan', 'width', 'height'],
   ALLOW_DATA_ATTR: false,
+  // data-log-asset carries an opaque body:/att:/style:/pub: token. Without this,
+  // DOMPurify applies ALLOWED_URI_REGEXP to the explicitly allowed attribute and
+  // strips every non-http token before the iframe can bind its Blob URL.
+  ADD_URI_SAFE_ATTR: ['data-log-asset'],
   ALLOWED_URI_REGEXP: /^(?:https?:)/i,
 };
 

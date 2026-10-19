@@ -1,5 +1,5 @@
 // 原消息内容 → 设计预览正文。复用聊天现有的 TipTap / satori 元素解析，
-// 但图片只转换为资源令牌（att:<附件ID>），由外层带权限取字节后交给隔离 iframe。
+// 但图片只转换为资源令牌，由外层带权限取字节后交给隔离 iframe。
 import DOMPurify from 'dompurify';
 import Element from '@satorijs/element';
 import { normalizeAttachmentId } from '@/composables/useAttachmentResolver';
@@ -8,6 +8,10 @@ import { isTipTapJson, tiptapJsonToHtml, tiptapJsonToPlainText } from '@/utils/t
 import { contentEscape } from '@/utils/tools';
 
 const ASSET_SCHEME = 'log-asset:';
+const BODY_CONTEXT = /^[A-Za-z0-9_-]{1,100}\/[A-Za-z0-9_-]{1,100}\/[a-f0-9]{32}$/;
+
+/** 上下文只包含 LOG 来源片段、消息和不透明资源 key，不包含业务资源类型。 */
+export const bodyAssetToken = (context: string): string => BODY_CONTEXT.test(context) ? `body:${context}` : '';
 
 export const attachmentToken = (value: string): string => {
   const id = normalizeAttachmentId(String(value || '').trim());
@@ -76,7 +80,8 @@ const finalizeBody = (html: string, plainText: string): RenderedBody => {
     const src = img.getAttribute('src') || '';
     img.removeAttribute('src');
     img.removeAttribute('srcset');
-    const token = src.startsWith(ASSET_SCHEME) ? src.slice(ASSET_SCHEME.length) : ATTACHMENT_SRC.test(src) ? attachmentToken(src) : '';
+    const token = src.startsWith('/__log_body_asset/') ? bodyAssetToken(src.slice('/__log_body_asset/'.length))
+      : src.startsWith(ASSET_SCHEME) ? src.slice(ASSET_SCHEME.length) : ATTACHMENT_SRC.test(src) ? attachmentToken(src) : '';
     if (token) {
       img.setAttribute('data-log-asset', token);
       assets.add(token);

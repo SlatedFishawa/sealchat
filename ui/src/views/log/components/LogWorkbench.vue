@@ -147,6 +147,7 @@ const styleOverride = shallowRef<LogStylePackage | null>(null);
 const styleError = ref('');
 const activePkg = computed(() => styleOverride.value || stylePkg.value);
 const assets = useLogAssets({
+  projectId: () => projectId.value,
   stylePackage: () => (activePkg.value ? { id: activePkg.value.id, version: activePkg.value.version } : null),
 });
 let styleSeq = 0;

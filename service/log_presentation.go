@@ -19,6 +19,8 @@ type LogMessagePresentation struct {
 	Embed   *LogMessageEmbed   `json:"embed,omitempty"`
 	Whisper *LogMessageWhisper `json:"whisper,omitempty"`
 	Quote   *LogMessageQuote   `json:"quote,omitempty"`
+	// A present empty token explicitly suppresses an unsafe/unavailable avatar.
+	AvatarToken *string `json:"avatarToken,omitempty"`
 }
 
 type LogMessageEmbed struct {
@@ -38,20 +40,37 @@ type LogMessageQuote struct {
 }
 
 func (p *LogMessagePresentation) empty() bool {
-	return p.Embed == nil && p.Whisper == nil && p.Quote == nil
+	return p.Embed == nil && p.Whisper == nil && p.Quote == nil && p.AvatarToken == nil
 }
 
 // logMessageBody is a message's LOG body before its image references are resolved.
 type logMessageBody struct {
 	Doc       AgentRichDocument
 	EmbedKind string
+	Assets    map[string]LogBodyAssetRef
 }
 
 func logMessageBodyOf(display *messageDisplayResolver, m *model.MessageModel) logMessageBody {
-	if expanded, ok := display.forChannel(m.ChannelID).expandEmbed(m.Content, true, true); ok {
-		return logMessageBody{Doc: expanded.document(true), EmbedKind: expanded.Kind}
+	body := logMessageBody{}
+	if m.IsDeleted || m.IsRevoked {
+		return body
 	}
-	return logMessageBody{Doc: buildRichDocumentForExport(m.Content, true)}
+	if expanded, ok := display.forChannel(m.ChannelID).expandEmbed(m.Content, true, true); ok {
+		body.EmbedKind = expanded.Kind
+		switch expanded.Kind {
+		case messageEmbedWorldClue:
+			for _, block := range expanded.WorldClues {
+				body.appendDocument(m, worldClueRichDocument(block, true), LogBodyAssetRef{Kind: logBodyWorldClue, WorldID: block.WorldID, ClueID: block.ClueID})
+			}
+		case messageEmbedStickyNote:
+			for _, part := range expanded.StickyNotes {
+				body.appendDocument(m, part.Doc, LogBodyAssetRef{Kind: logBodyStickyNote, NoteID: part.NoteID})
+			}
+		}
+		return body
+	}
+	body.appendDocument(m, buildRichDocumentForExport(m.Content, true), LogBodyAssetRef{Kind: logBodyMessage})
+	return body
 }
 
 // html renders the body; an expanded embed gets a wrapper that styles can target.
@@ -71,8 +90,9 @@ func (b logMessageBody) plainText() string {
 }
 
 // logResolveBody keeps only http(s) links and points every image at resolve's
-// source; images without a resolvable SealChat attachment are dropped.
-func logResolveBody(doc *AgentRichDocument, resolve func(attachmentID string) (string, error)) error {
+// source; unavailable and external images become plain placeholders. Internal
+// source attributes are cleared before any HTML leaves the service.
+func logResolveBody(body *logMessageBody, resolve func(LogBodyAssetRef) (string, error)) error {
 	count := 0
 	var walk func([]AgentRichNode, int) error
 	walk = func(nodes []AgentRichNode, depth int) error {
@@ -98,15 +118,19 @@ func logResolveBody(doc *AgentRichDocument, resolve func(attachmentID string) (s
 			}
 			if n.Type == "image" {
 				src := ""
-				if id := logImageAttachmentID(*n); id != "" {
+				missingText := "外链图片未嵌入"
+				if ref, ok := body.Assets[n.Attrs[logBodyAssetAttr]]; ok {
+					missingText = "图片不可用"
 					var err error
-					if src, err = resolve(id); err != nil {
+					if src, err = resolve(ref); err != nil {
 						return err
 					}
 				}
 				n.Attrs = map[string]string{}
 				if src != "" {
 					n.Attrs["src"] = src
+				} else {
+					n.Type, n.Text = "text", missingText
 				}
 			}
 			if err := walk(n.Children, depth+1); err != nil {
@@ -115,7 +139,7 @@ func logResolveBody(doc *AgentRichDocument, resolve func(attachmentID string) (s
 		}
 		return nil
 	}
-	return walk(doc.Blocks, 0)
+	return walk(body.Doc.Blocks, 0)
 }
 
 // logImageAttachmentID accepts only SealChat attachment references (explicit attribute,
@@ -134,7 +158,7 @@ func logImageAttachmentID(n AgentRichNode) string {
 // logPublishableAttachment is the attachment a release may snapshot for the message, or nil.
 func logPublishableAttachment(m *model.MessageModel, attachmentID string) *model.AttachmentModel {
 	a, err := ResolveAttachmentAccessible(m.UserID, m.UserID, m.ChannelID, attachmentID)
-	if err != nil || a == nil || a.IsTTSManaged() || a.Size > 20<<20 {
+	if err != nil || a == nil || a.RootIDType == "world_clue" || a.IsTTSManaged() || a.Size > 20<<20 {
 		return nil
 	}
 	return a
@@ -179,7 +203,7 @@ func logQuoteOf(speakerName, plainText string) *LogMessageQuote {
 
 // logDesignPresentations projects one design window. The window was loaded through the
 // section query, so the viewer may already read every whisper and quote in it.
-func logDesignPresentations(viewerID string, messages []*model.MessageModel) (map[string]*LogMessagePresentation, error) {
+func logDesignPresentations(viewerID, sectionID string, messages []*model.MessageModel) (map[string]*LogMessagePresentation, error) {
 	if err := hydrateWhisperTargetsForExport(messages); err != nil {
 		return nil, err
 	}
@@ -188,11 +212,14 @@ func logDesignPresentations(viewerID string, messages []*model.MessageModel) (ma
 	for _, m := range messages {
 		display = display.forChannel(m.ChannelID)
 		p := &LogMessagePresentation{}
-		if body := logMessageBodyOf(display, m); body.EmbedKind != "" {
-			// Mirrors the release: only attachments it could snapshot are shown.
-			err := logResolveBody(&body.Doc, func(id string) (string, error) {
-				if a := logPublishableAttachment(m, id); a != nil {
-					return "/api/v1/attachment/" + url.PathEscape(a.ID), nil
+		body := logMessageBodyOf(display, m)
+		// Only server-expanded embeds replace the design body. Ordinary messages keep
+		// the chat frontend's full TipTap renderer; otherwise merely containing an
+		// image would downgrade unrelated marks/nodes to AgentRich's export subset.
+		if body.EmbedKind != "" {
+			err := logResolveBody(&body, func(ref LogBodyAssetRef) (string, error) {
+				if logResolveBodyAsset(display, m, ref) != nil {
+					return "/__log_body_asset/" + sectionID + "/" + url.PathEscape(m.ID) + "/" + ref.Key, nil
 				}
 				return "", nil
 			})
@@ -200,6 +227,14 @@ func logDesignPresentations(viewerID string, messages []*model.MessageModel) (ma
 				return nil, err
 			}
 			p.Embed = &LogMessageEmbed{Kind: body.EmbedKind, BodyHTML: body.html(), PlainText: body.plainText()}
+		}
+		if m.SenderIdentityAvatarID != "" {
+			token := ""
+			ref := body.addAsset(m, logAvatarAsset(m))
+			if logResolveBodyAsset(display, m, ref) != nil {
+				token = "body:" + sectionID + "/" + m.ID + "/" + ref.Key
+			}
+			p.AvatarToken = &token
 		}
 		if m.IsWhisper {
 			if targets := display.whisperTargets(m); len(targets) > 0 {

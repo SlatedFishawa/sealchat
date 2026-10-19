@@ -12,6 +12,8 @@ import (
 // WorldClueExportBlock is export-only metadata. It is deliberately excluded
 // from ExportMessage JSON so the existing export contracts remain unchanged.
 type WorldClueExportBlock struct {
+	WorldID           string
+	ClueID            string
 	Title             string
 	Kind              string
 	Public            AgentRichDocument
@@ -132,8 +134,13 @@ func (r *worldClueExportResolver) load(target worldClueEmbedTarget, includeImage
 	if err != nil || detail == nil {
 		return nil
 	}
-	if r.publicOnly && (detail.Status != model.WorldClueStatusPublished || !oneOf(detail.DefaultAccess, model.WorldClueAccessView, model.WorldClueAccessEdit)) {
-		return nil
+	if r.publicOnly {
+		// The member DTO intentionally omits DefaultAccess. Read the shared
+		// audience boundary from its source after WorldClueGet authorizes the viewer.
+		var public model.WorldClueModel
+		if model.GetDB().Select("id").Where("id = ? AND world_id = ? AND status = ? AND default_access IN ?", target.ClueID, target.WorldID, model.WorldClueStatusPublished, []string{model.WorldClueAccessView, model.WorldClueAccessEdit}).Take(&public).Error != nil {
+			return nil
+		}
 	}
 
 	content := strings.TrimSpace(detail.Content)
@@ -146,6 +153,8 @@ func (r *worldClueExportResolver) load(target worldClueEmbedTarget, includeImage
 		iframeSourceURL = safeExportHTTPURL(detail.EmbedURL)
 	}
 	block := &WorldClueExportBlock{
+		WorldID:           target.WorldID,
+		ClueID:            target.ClueID,
 		Title:             strings.TrimSpace(detail.Title),
 		Kind:              strings.TrimSpace(detail.Kind),
 		Public:            public,

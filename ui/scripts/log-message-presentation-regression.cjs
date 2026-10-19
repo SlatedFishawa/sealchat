@@ -23,6 +23,7 @@ Module._cache[contentStub] = { id: contentStub, filename: contentStub, loaded: t
   renderPresentedBody: (html, plainText) => body(html, plainText),
   normalizeMentionClasses: () => {},
   attachmentToken: (id) => `att:${id}`,
+  bodyAssetToken: (context) => /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[a-f0-9]{32}$/.test(context) ? `body:${context}` : '',
 } }
 Module._cache[compilerStub] = { id: compilerStub, filename: compilerStub, loaded: true, exports: {
   buildTemplateLibrary: () => null, fragmentToHtml: () => '', instantiateTemplate: () => null,
@@ -48,6 +49,22 @@ const design = (id, presentation, extra = {}) => r.designMessageToNode({
   presentation,
 })
 const whisper = (...targets) => ({ whisper: { targets: targets.map(([key, name]) => ({ key, name })) } })
+
+// 普通正文即使服务端残留旧 body 投影，也必须继续走聊天原始内容渲染；
+// 这样“高级 TipTap 格式 + 图片”不会因为图片存在而切到精简的 AgentRich 渲染器。
+// 历史头像仍可独立使用通用 body: 资源域，空头像投影不能回退成 att:。
+{
+  const token = `body:section/message/${'a'.repeat(32)}`
+  const content = 'client-tip-tap-with-spoiler-ruby-performance-smart-link-and-image'
+  const n = design('image', { body: { bodyHtml: '<p>server simplified body</p>', plainText: 'server simplified body' }, avatarToken: token }, { content })
+  assert.equal(n.bodyHtml, `<p>${content}</p>`)
+  assert.equal(n.plainText, content)
+  assert.equal(n.embed, null)
+  assert.equal(n.avatarToken, token)
+  assert.deepEqual(n.assets, [token])
+  assert.equal(design('missing-avatar', { avatarToken: '' }).avatarToken, null)
+  assert.equal(design('unsafe-avatar', { avatarToken: 'https://example.com/avatar.png' }).avatarToken, null)
+}
 
 // 普通消息不带任何投影，行为与旧版一致。
 {

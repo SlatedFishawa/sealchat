@@ -254,6 +254,13 @@ type stickyNoteExportRender struct {
 	Plain string
 	HTML  string
 	Rich  *AgentRichDocument
+	Parts []stickyNoteRichPart
+}
+
+// Parts preserves each rich expansion's source without adding metadata to export HTML.
+type stickyNoteRichPart struct {
+	NoteID string
+	Doc    AgentRichDocument
 }
 
 type stickyNoteExportResolver struct {
@@ -342,6 +349,7 @@ func (r *stickyNoteExportResolver) render(content string, includeImages bool, ri
 	plainParts := make([]string, 0, len(targets))
 	htmlParts := make([]string, 0, len(targets))
 	var richParts []AgentRichDocument
+	var parts []stickyNoteRichPart
 	if richOnlyMode {
 		richParts = make([]AgentRichDocument, 0, len(targets))
 	}
@@ -379,7 +387,9 @@ func (r *stickyNoteExportResolver) render(content string, includeImages bool, ri
 					richSource = "[便签: " + title + "]\n" + raw
 				}
 			}
-			richParts = append(richParts, buildRichDocumentForExport(richSource, includeImages))
+			doc := buildRichDocumentForExport(richSource, includeImages)
+			richParts = append(richParts, doc)
+			parts = append(parts, stickyNoteRichPart{NoteID: note.ID, Doc: doc})
 		}
 	}
 	var mergedRich *AgentRichDocument
@@ -391,6 +401,7 @@ func (r *stickyNoteExportResolver) render(content string, includeImages bool, ri
 		Plain: strings.Join(plainParts, "\n\n"),
 		HTML:  strings.Join(htmlParts, ""),
 		Rich:  mergedRich,
+		Parts: parts,
 	}, true
 }
 

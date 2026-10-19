@@ -213,6 +213,15 @@ export const fetchAttachmentBytes = async (attachmentId: string, signal?: AbortS
   return { data: resp.data as ArrayBuffer, mime: String(resp.headers['content-type'] || '') };
 };
 
+export const fetchLogBodyAssetBytes = async (projectId: string, context: string, signal?: AbortSignal) => {
+  const [sectionId, messageId, assetKey, extra] = context.split('/');
+  if (extra !== undefined || !/^[A-Za-z0-9_-]{1,100}$/.test(sectionId || '') || !/^[A-Za-z0-9_-]{1,100}$/.test(messageId || '') || !/^[a-f0-9]{32}$/.test(assetKey || '')) {
+    throw new LogDomainError('INVALID_INPUT', '资源标识无效');
+  }
+  const resp = await api.get(`api/v1/log/projects/${seg(projectId)}/sections/${seg(sectionId)}/messages/${seg(messageId)}/assets/${seg(assetKey)}`, { responseType: 'arraybuffer', signal, timeout: 30000 });
+  return { data: resp.data as ArrayBuffer, mime: String(resp.headers['content-type'] || '') };
+};
+
 // ---- 消息领域任务读取（外观批量） ----
 
 export const fetchMutationJob = (jobId: string) =>

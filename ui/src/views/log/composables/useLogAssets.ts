@@ -1,8 +1,9 @@
 // 资源令牌 → 字节：外层按权限获取后交给隔离 iframe（转为 iframe 内的 Blob URL）。
-// 令牌：att:<附件ID>（设计态聊天附件）、style:<资源ID>（样式包资源）、pub:<assetKey>（公开资源）。
+// 令牌：att:（历史聊天附件）、body:（LOG 正文）、style:（样式包）、pub:（公开快照）。
 import { onBeforeUnmount } from 'vue';
 import {
   fetchAttachmentBytes,
+  fetchLogBodyAssetBytes,
   fetchLogStyleAssetBytes,
   fetchPublicAssetBytes,
   publicAssetPath,
@@ -12,6 +13,8 @@ import type { FrameAsset } from '@/services/log/pagination/logFrameHost';
 const MAX_PARALLEL = 6;
 
 export interface AssetScope {
+  /** 设计态：服务端生成的正文资源上下文属于当前工程。 */
+  projectId?: () => string;
   /** 设计态：当前样式包（用于 style: 令牌）。 */
   stylePackage?: () => { id: string; version: string } | null;
   /** 公开态：当前展示 slug（用于 pub: 令牌）。 */
@@ -47,6 +50,12 @@ export const useLogAssets = (scope: AssetScope) => {
     try {
       if (kind === 'att' && id) {
         const r = await fetchAttachmentBytes(id, controller.signal);
+        return { token, data: r.data, mime: r.mime };
+      }
+      if (kind === 'body' && id) {
+        const projectId = scope.projectId?.();
+        if (!projectId) return { token, data: null, mime: '' };
+        const r = await fetchLogBodyAssetBytes(projectId, id, controller.signal);
         return { token, data: r.data, mime: r.mime };
       }
       if (kind === 'style' && id) {

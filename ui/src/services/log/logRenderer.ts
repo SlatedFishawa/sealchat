@@ -14,7 +14,7 @@ import type {
   LogTokenValue,
   LogWhisperTarget,
 } from '@/types/log';
-import { normalizeMentionClasses, renderMessageBody, renderPresentedBody, attachmentToken } from './logContent';
+import { normalizeMentionClasses, renderMessageBody, renderPresentedBody, attachmentToken, bodyAssetToken } from './logContent';
 import {
   buildTemplateLibrary,
   fragmentToHtml,
@@ -165,9 +165,13 @@ export const canMergeMessageNodes = (prev: RenderMessageNode | null, node: Rende
 export const designMessageToNode = (item: LogDesignMessage): RenderMessageNode => {
   const m = item.message;
   const presented = item.presentation?.embed;
-  // 展开内容只用于展示；编辑仍操作 message.content 原文。
+  // 只有服务端展开的站内嵌入替换正文；普通消息始终走聊天现有 TipTap 渲染，
+  // 避免仅因含图片就丢失 spoiler / ruby / performance / smart-link 等格式。
   const body = presented ? renderPresentedBody(presented.bodyHtml, presented.plainText) : renderMessageBody(m.content);
-  const avatar = m.identity?.avatarAttachment ? attachmentToken(m.identity.avatarAttachment) : '';
+  const projectedAvatar = item.presentation?.avatarToken;
+  const avatar = projectedAvatar !== undefined
+    ? (projectedAvatar.startsWith('body:') ? bodyAssetToken(projectedAvatar.slice(5)) : '')
+    : m.identity?.avatarAttachment ? attachmentToken(m.identity.avatarAttachment) : '';
   const color = m.identity?.color && HEX.test(m.identity.color) ? m.identity.color : null;
   return {
     kind: 'message',

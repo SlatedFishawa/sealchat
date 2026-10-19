@@ -163,6 +163,8 @@ export interface LogQuotePresentation {
  */
 export interface LogMessagePresentation {
   embed?: { kind: 'stickyNote' | 'worldClue' | string; bodyHtml: string; plainText: string };
+  /** 空字符串表示服务端无法安全解析历史头像。 */
+  avatarToken?: string;
   whisper?: { targets: LogWhisperTarget[] };
   quote?: LogQuotePresentation;
 }

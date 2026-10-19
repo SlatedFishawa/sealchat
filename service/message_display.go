@@ -67,11 +67,12 @@ func (r *messageDisplayResolver) forChannel(channelID string) *messageDisplayRes
 
 // messageEmbedExpansion is the content of a message that consists only of internal embed links.
 type messageEmbedExpansion struct {
-	Kind       string
-	Plain      string
-	HTML       string
-	Rich       *AgentRichDocument
-	WorldClues []WorldClueExportBlock
+	Kind        string
+	Plain       string
+	HTML        string
+	Rich        *AgentRichDocument
+	WorldClues  []WorldClueExportBlock
+	StickyNotes []stickyNoteRichPart
 }
 
 // expandEmbed keeps the existing export boundary: only a message made entirely of
@@ -82,7 +83,7 @@ func (r *messageDisplayResolver) expandEmbed(content string, includeImages, rich
 		return messageEmbedExpansion{}, false
 	}
 	if expanded, ok := r.sticky.render(content, includeImages, richOnly); ok {
-		return messageEmbedExpansion{Kind: messageEmbedStickyNote, Plain: expanded.Plain, HTML: expanded.HTML, Rich: expanded.Rich}, true
+		return messageEmbedExpansion{Kind: messageEmbedStickyNote, Plain: expanded.Plain, HTML: expanded.HTML, Rich: expanded.Rich, StickyNotes: expanded.Parts}, true
 	}
 	if expanded, ok := r.clue.render(content, includeImages); ok {
 		return messageEmbedExpansion{Kind: messageEmbedWorldClue, Plain: expanded.Plain, HTML: expanded.HTML, WorldClues: expanded.Blocks}, true

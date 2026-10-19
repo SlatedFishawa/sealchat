@@ -202,7 +202,7 @@ func QueryLogMessages(projectID, sectionID, userID, cursor, targetID string, lim
 		}
 		m.Quote = quotes[m.QuoteID]
 	}
-	if window.Presentations, err = logDesignPresentations(userID, window.Messages); err != nil {
+	if window.Presentations, err = logDesignPresentations(userID, sectionID, window.Messages); err != nil {
 		return nil, err
 	}
 	if err := logVerifyWindow(p, s.Source.ChannelID, version); err != nil {

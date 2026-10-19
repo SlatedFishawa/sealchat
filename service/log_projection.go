@@ -5,10 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/css"
@@ -48,11 +46,8 @@ func logBuildStyleAssets(r *model.LogReleaseModel, d *LogDraft) error {
 	}
 	return model.GetDB().Model(r).Updates(map[string]any{"asset_bytes": total, "asset_count": len(assets)}).Error
 }
-func logSnapshotAttachment(ctx context.Context, r *model.LogReleaseModel, m *model.MessageModel, nodeID, attachmentID string) (string, error) {
-	if attachmentID == "" {
-		return "", nil
-	}
-	a := logPublishableAttachment(m, attachmentID)
+func logSnapshotBodyAsset(ctx context.Context, r *model.LogReleaseModel, display *messageDisplayResolver, m *model.MessageModel, nodeID string, ref LogBodyAssetRef) (string, error) {
+	a := logResolveBodyAsset(display, m, ref)
 	if a == nil {
 		return "", nil
 	}
@@ -64,25 +59,13 @@ func logSnapshotAttachment(ctx context.Context, r *model.LogReleaseModel, m *mod
 	if existing > 0 {
 		return key, logAssetRef(r.ID, key, nodeID)
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	reader, err := OpenAttachmentRead(ctx, a)
+	asset, err := logReadBodyAsset(ctx, a)
 	if err != nil {
-		return "", err
-	}
-	defer reader.Close()
-	b, err := io.ReadAll(io.LimitReader(reader, (20<<20)+1))
-	if err != nil {
-		return "", err
-	}
-	if len(b) > 20<<20 {
-		return "", logError("TOO_LARGE", "公开资源超过 20MB")
-	}
-	p := LogStylePackage{SchemaVersion: 1, ID: "asset-check", Version: "1.0.0", MinRendererVersion: "1.0.0", Name: "asset", Tokens: map[string]any{}, Rules: []LogStyleRule{}, Templates: map[string]string{"empty": "<div></div>"}, SettingsSchema: map[string]any{}, Assets: []LogStyleAsset{{ID: "asset", Path: "assets/item", MIME: a.MimeType}}}
-	if err := ValidateLogStyle(&p, map[string][]byte{"asset": b}); err != nil {
 		return "", nil
 	}
-	if !strings.HasPrefix(p.Assets[0].MIME, "image/") {
+	b := asset.Data
+	p := LogStylePackage{SchemaVersion: 1, ID: "asset-check", Version: "1.0.0", MinRendererVersion: "1.0.0", Name: "asset", Tokens: map[string]any{}, Rules: []LogStyleRule{}, Templates: map[string]string{"empty": "<div></div>"}, SettingsSchema: map[string]any{}, Assets: []LogStyleAsset{{ID: "asset", Path: "assets/item", MIME: asset.MIME}}}
+	if ValidateLogStyle(&p, map[string][]byte{"asset": b}) != nil || !strings.HasPrefix(p.Assets[0].MIME, "image/") {
 		return "", nil
 	}
 	row := model.LogReleaseAssetModel{ReleaseID: r.ID, AssetKey: key, AttachmentID: a.ID, MIME: p.Assets[0].MIME, Hash: p.Assets[0].SHA256, Data: b}
@@ -107,8 +90,8 @@ func logSnapshotAttachment(ctx context.Context, r *model.LogReleaseModel, m *mod
 func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, display *messageDisplayResolver, section string, m *model.MessageModel, ordinal int64) error {
 	id := utils.NewID()
 	body := logMessageBodyOf(display, m)
-	err := logResolveBody(&body.Doc, func(attachment string) (string, error) {
-		key, err := logSnapshotAttachment(ctx, r, m, id, attachment)
+	err := logResolveBody(&body, func(ref LogBodyAssetRef) (string, error) {
+		key, err := logSnapshotBodyAsset(ctx, r, display, m, id, ref)
 		if key == "" || err != nil {
 			return "", err
 		}
@@ -117,7 +100,7 @@ func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, display *mes
 	if err != nil {
 		return err
 	}
-	avatar, err := logSnapshotAttachment(ctx, r, m, id, m.SenderIdentityAvatarID)
+	avatar, err := logSnapshotBodyAsset(ctx, r, display, m, id, logAvatarAsset(m))
 	if err != nil {
 		return err
 	}
