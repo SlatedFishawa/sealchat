@@ -22,6 +22,7 @@ import {
 	Dice as Dice3DIcon,
   Bulb as ClueBoxIcon,
   LayoutBoard as ClueBoardIcon,
+  Bolt as ShortcutCommandIcon,
 } from '@vicons/tabler'
 import { DocumentTextOutline } from '@vicons/ionicons5'
 import { MailOutline } from '@vicons/ionicons5'
@@ -55,6 +56,7 @@ interface Props {
   galleryActive?: boolean
   displayActive?: boolean
   glassBackgroundActive?: boolean
+  shortcutCommandActive?: boolean
   favoriteActive?: boolean
   channelImagesActive?: boolean
   battleSummaryEnabled?: boolean
@@ -96,6 +98,7 @@ interface Emits {
   (e: 'open-gallery'): void
   (e: 'open-display-settings'): void
   (e: 'open-glass-background'): void
+  (e: 'open-shortcut-command'): void
   (e: 'open-favorites'): void
   (e: 'open-channel-images'): void
   (e: 'open-battle-summary'): void
@@ -247,6 +250,7 @@ const allActionButtons = computed<ActionButton[]>(() => {
   }
   
   buttons.push({ key: 'glass-background', label: '玻璃背景', icon: Palette, emitEvent: 'open-glass-background', activeKey: 'glassBackgroundActive' })
+  buttons.push({ key: 'shortcut-command', label: '快捷命令', icon: ShortcutCommandIcon, emitEvent: 'open-shortcut-command', activeKey: 'shortcutCommandActive' })
   return buttons
 })
 

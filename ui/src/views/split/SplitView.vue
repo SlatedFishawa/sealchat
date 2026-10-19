@@ -1237,6 +1237,7 @@ watch(
               @open-gallery="openPanel('gallery')"
               @open-display-settings="openPanel('display')"
               @open-glass-background="glassBackgroundPanelVisible = true"
+              @open-shortcut-command="openPanel('shortcut-command')"
               @open-favorites="openPanel('favorites')"
               @open-channel-images="openPanel('channel-images')"
               @open-character-remark="openPanel('character-remark')"

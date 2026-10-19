@@ -17,13 +17,21 @@ import VueScrollTo from 'vue-scrollto'
 import ChatInputSwitcher from './components/ChatInputSwitcher.vue'
 import ChannelIdentitySwitcher from './components/ChannelIdentitySwitcher.vue'
 import ChannelIdentityQuickBar from './components/ChannelIdentityQuickBar.vue'
-import ComposerContextHints, { type ComposerEmojiHintView, type ComposerVariantHintView } from './components/ComposerContextHints.vue'
+import ComposerContextHints, { type ComposerEmojiHintView, type ComposerShortcutHintView, type ComposerVariantHintView } from './components/ComposerContextHints.vue'
 import { buildEmojiHintIndex, resolveEmojiInputHints, resolveIdentityVariantHints } from './composerContextHints'
 import GalleryButton from '@/components/gallery/GalleryButton.vue'
 import GalleryPanel from '@/components/gallery/GalleryPanel.vue'
 import ChatIcOocToggle from './components/ChatIcOocToggle.vue'
 import ChatActionRibbon from './components/ChatActionRibbon.vue'
 import GlassBackgroundPanel from './components/GlassBackgroundPanel.vue'
+import ShortcutCommandModal from '@/features/shortcut-command/ShortcutCommandModal.vue'
+import {
+  resolveShortcutComposerHintsFor,
+  resolveShortcutOutgoingDraft,
+  resolveShortcutSendAliasesFor,
+  scheduleShortcutCommandAutoDelete,
+} from '@/features/shortcut-command/composerIntegration'
+import { executeChatMessageAction } from '@/utils/chatMessageActionExecutor'
 import { buildBackgroundImageStyle, buildBackgroundOverlayStyle } from '@/utils/backgroundPresentation'
 import InlineChatSplitWindow from './components/InlineChatSplitWindow.vue'
 import ChatAiPolishDock from './components/ChatAiPolishDock.vue'
@@ -116,6 +124,7 @@ import { INPUT_AREA_HEIGHT_LIMITS } from '@/stores/display';
 import { renderQuickFormatHtmlFromEscaped, restoreQuickFormatTextFromHtml, serializePlainTextFromDomNode } from '@/utils/plainQuickFormat';
 import { isSmartLinkNode, smartLinkToPlainText } from '@/utils/tiptapSmartLink';
 import { isBotCommandLikeContent, renderBotCommandTextAsHtml } from '@/utils/botCommand';
+import { COMPOSER_INSERT_TEXT_EVENT, insertTextIntoRichEditor, replaceRichEditorText, spliceTextAtSelection } from '@/utils/composerTextInsert';
 import { shouldAttemptCharacterApiReconnectBeforeBotCommand } from '@/utils/characterApiReconnectGuard';
 import { buildOptimisticMessageIcModeFields } from '@/utils/optimisticMessageIcMode';
 import { normalizePunctuationForMessageSend } from '@/utils/punctuationNormalizer';
@@ -661,7 +670,8 @@ type ExternalPanelKey =
   | 'sticky-note'
   | 'clue-box'
   | 'clue-board'
-  | 'battle-summary';
+  | 'battle-summary'
+  | 'shortcut-command';
 
 const openPanelForShell = (panel: ExternalPanelKey) => {
   switch (panel) {
@@ -724,6 +734,9 @@ const openPanelForShell = (panel: ExternalPanelKey) => {
     case 'battle-summary':
       if (!chat.curChannel?.id || !aiStore.isFeatureEnabled('battle_summary')) return;
       openBattleSummary();
+      return;
+    case 'shortcut-command':
+      shortcutCommandVisible.value = true;
       return;
     default:
       return;
@@ -895,6 +908,8 @@ const sendMessageForTheater = async (payload: TheaterMessageSendRequest) => {
   const outcome = await performSend({
     identityIdOverride,
     mode: isTipTapJson(payload.content) ? 'rich' : 'plain',
+    // 小剧场舞台发送的是预设内容，不参与个人/世界快捷命令改写
+    skipShortcutRules: true,
   });
   return outcome || {
     ok: false as const,
@@ -1154,6 +1169,7 @@ const canManageWorldKeywords = computed(() => {
 })
 const displaySettingsVisible = ref(false);
 const glassBackgroundPanelVisible = ref(false);
+const shortcutCommandVisible = ref(false);
 type DisplaySettingsCategory = 'appearance' | 'reading' | 'input' | 'role' | 'terms' | 'notifications' | 'other';
 const displaySettingsInitialCategory = ref<DisplaySettingsCategory>('appearance');
 const characterRemarkManagerVisible = ref(false);
@@ -11422,16 +11438,12 @@ const insertComposerText = (content: string) => {
   if (inputMode.value === 'rich') {
     const editor = textInputRef.value?.getEditor?.();
     if (editor) {
-      const { from, to } = editor.state.selection;
-      editor.view.dispatch(editor.state.tr.insertText(content, from, to).scrollIntoView());
-      editor.chain().focus().run();
+      insertTextIntoRichEditor(editor, content);
       return;
     }
   }
-  const selection = getInputSelection();
-  const draft = textToSend.value;
-  textToSend.value = draft.slice(0, selection.start) + content + draft.slice(selection.end);
-  const cursor = selection.start + content.length;
+  const { text, cursor } = spliceTextAtSelection(textToSend.value, getInputSelection(), content);
+  textToSend.value = text;
   nextTick(() => {
     setInputSelection(cursor, cursor);
     ensureInputFocus();
@@ -11443,6 +11455,20 @@ const handleWorldClueInsertLink = (payload?: { link?: string }) => {
   if (link) insertComposerText(link);
 };
 chatEvent.on('world-clue-insert-link' as any, handleWorldClueInsertLink as any);
+
+// 通用输入框插入动作（如快捷消息按钮的“插入到输入框”），保留当前光标/选区语义
+const handleComposerInsertTextRequest = (payload?: { content?: string; channelId?: string }) => {
+  const content = String(payload?.content || '');
+  if (!content) return;
+  const targetChannelId = String(payload?.channelId || '').trim();
+  if (targetChannelId && targetChannelId !== String(chat.curChannel?.id || '').trim()) return;
+  if (isEditing.value || spectatorInputDisabled.value || !chat.curChannel?.id) {
+    message.warning(isEditing.value ? '正在编辑消息，暂不能插入' : '当前频道不可输入');
+    return;
+  }
+  insertComposerText(content);
+};
+chatEvent.on(COMPOSER_INSERT_TEXT_EVENT as any, handleComposerInsertTextRequest as any);
 
 const moveInputCursorToEnd = () => {
   if (textInputRef.value?.moveCursorToEnd) {
@@ -13127,6 +13153,7 @@ const performSend = async (options?: {
   identityIdOverride?: string
   identityVariantIdOverride?: string
   mode?: 'plain' | 'rich'
+  skipShortcutRules?: boolean
 }) => {
   if (spectatorInputDisabled.value) {
     message.warning('旁观者仅可查看频道内容，无法发送消息');
@@ -13216,8 +13243,24 @@ const performSend = async (options?: {
     }
   }
 
+  // 快捷命令接入点：send_alias 只记录原消息中的触发词，原消息发送成功后再额外发命令；
+  // replace 在这里改写待发送正文。均位于身份/差分快捷切换之后、表情备注与标点规范化之前。
+  // composerDraft 保留用户原始输入，用于输入历史与发送失败后的恢复。
+  const composerDraft = draft;
+  const shortcutWorldId = String(chat.currentWorldId || '');
+  const shortcutAliasRules = options?.skipShortcutRules
+    ? []
+    : resolveShortcutSendAliasesFor(shortcutWorldId, composerDraft, sendMode);
+  const shortcutOutgoing = options?.skipShortcutRules
+    ? null
+    : resolveShortcutOutgoingDraft(shortcutWorldId, draft, sendMode, chat.curChannel?.botCommandPrefixes);
+  const outgoingMode = shortcutOutgoing?.mode || sendMode;
+  if (shortcutOutgoing) {
+    draft = shortcutOutgoing.draft;
+  }
+
   // 检查是否为富文本模式
-  const isRichMode = sendMode === 'rich';
+  const isRichMode = outgoingMode === 'rich';
   const diceMatchesInDraft = !isRichMode ? matchDiceExpressions(draft, defaultDiceExpr.value) : [];
 
   // 替换表情备注为图片标记
@@ -13249,12 +13292,12 @@ const performSend = async (options?: {
   }
 
   // 记录发送前的输入历史，便于失败后回溯
-  appendHistoryEntry(sendMode, draft);
+  appendHistoryEntry(sendMode, shortcutOutgoing ? composerDraft : draft);
 
   const outgoingDraft = normalizePunctuationForMessageSend(
     draft,
     display.settings.autoCorrectPunctuation,
-    sendMode,
+    outgoingMode,
     isBotCommandLikeContent(draft, chat.curChannel?.botCommandPrefixes),
     Boolean(activeReeditSource),
   );
@@ -13438,6 +13481,26 @@ const performSend = async (options?: {
       sendOutcome = { ok: true, messageId: String(newMsg.id) };
       return sendOutcome;
     }
+    if (shortcutAliasRules.length) {
+      void (async () => {
+        for (const rule of shortcutAliasRules) {
+          const sent = await executeChatMessageAction({
+            chat,
+            user,
+            notice: message,
+            content: rule.command,
+            context: { worldId: shortcutWorldId, channelId: activeChannelId },
+            identityId: activeIdentity?.id || identityIdOverride || null,
+            identityVariantId: activeAppearance?.variantId || identityVariantIdOverride,
+            icMode: sendIcMode,
+            whisperTargetIds,
+          });
+          if (sent && rule.config?.autoDelete === true && !isChannelDefaultDiceCommandResponse(sent)) {
+            scheduleShortcutCommandAutoDelete(chat.messageRemove, activeChannelId, String(sent.id || ''));
+          }
+        }
+      })();
+    }
 	  const applyAck = shouldApplyMessageCreateAck(
 	    activeChannelId,
 	    responseChannelId,
@@ -13454,7 +13517,7 @@ const performSend = async (options?: {
         channelId: activeChannelId,
         originalContent: finalContent,
         draft: finalContent,
-        mode: sendMode,
+        mode: outgoingMode,
         isWhisper: whisperTargetsForSend.length > 0,
         whisperTargetId: whisperTargetIds[0] || null,
         whisperTargets: whisperTargetsForSend.map((target) => ({ ...target })),
@@ -13511,10 +13574,11 @@ const performSend = async (options?: {
     const reason = resolveMessageSendFailureReason(e);
     message.error(`发送失败：${reason}`);
     console.error('消息发送失败', e);
+    const restoredDraft = shortcutOutgoing ? composerDraft : draft;
     suspendInlineSync = true;
-    textToSend.value = draft;
+    textToSend.value = restoredDraft;
     suspendInlineSync = false;
-    syncInlineMarkersWithText(draft);
+    syncInlineMarkersWithText(restoredDraft);
     syncSessionDraftSnapshot();
     const index = rows.value.findIndex(msg => msg.id === tmpMsg.id);
     if (index !== -1) {
@@ -15783,6 +15847,44 @@ const composerVariantHintViews = computed<ComposerVariantHintView[]>(() => {
 });
 const composerActiveVariantId = computed(() => activeIdentityVariantForEmojiPanel.value?.id || '');
 
+// 快捷命令作为输入提示的数据源：send_alias 用于补全/提示，replace 根据规则作用范围提示
+const composerShortcutHints = computed(() => {
+  if (!textToSend.value || composerHintsSuppressed.value || isEditing.value) return [];
+  return resolveShortcutComposerHintsFor(
+    String(chat.currentWorldId || ''),
+    resolveComposerHintSource().text,
+    chat.curChannel?.botCommandPrefixes,
+  );
+});
+const composerShortcutHintViews = computed<ComposerShortcutHintView[]>(() => composerShortcutHints.value.map((hint) => ({
+  id: hint.id,
+  kind: hint.kind,
+  trigger: hint.rule.trigger,
+  command: hint.rule.command,
+  scope: hint.rule.scope,
+})));
+const handleComposerShortcutHintSelect = (id: string) => {
+  const hint = composerShortcutHints.value.find((entry) => entry.id === id);
+  if (!hint) return;
+  if (hint.kind === 'alias-ready') {
+    send();
+    return;
+  }
+  if (hint.kind !== 'alias-complete') return;
+  // 补全为完整触发词；发送时原消息保留，并额外触发映射命令
+  const editor = inputMode.value === 'rich' ? textInputRef.value?.getEditor?.() : null;
+  if (editor) {
+    replaceRichEditorText(editor, hint.rule.trigger);
+    return;
+  }
+  textToSend.value = hint.rule.trigger;
+  const cursor = hint.rule.trigger.length;
+  nextTick(() => {
+    setInputSelection(cursor, cursor);
+    ensureInputFocus();
+  });
+};
+
 const handleComposerHintEmojiSelect = (id: string) => {
   const item = composerHintMatches.value.emojis.find((entry) => entry.id === id);
   if (!item) return;
@@ -15884,6 +15986,7 @@ onBeforeUnmount(() => {
   chatEvent.off('world-dice3d-updated' as any, handleDice3DSettingsUpdated as any);
   chatEvent.off('world-member-dice3d-updated' as any, handleDice3DSettingsUpdated as any);
   chatEvent.off('world-clue-insert-link' as any, handleWorldClueInsertLink as any);
+  chatEvent.off(COMPOSER_INSERT_TEXT_EVENT as any, handleComposerInsertTextRequest as any);
   revokeIdentityObjectURL();
   revokeIdentityVariantObjectURL();
   searchHighlightTimers.forEach((timer) => window.clearTimeout(timer));
@@ -15921,6 +16024,8 @@ onBeforeUnmount(() => {
           :display-active="displaySettingsVisible"
           :glass-background-active="glassBackgroundPanelVisible"
           @open-glass-background="glassBackgroundPanelVisible = true"
+          :shortcut-command-active="shortcutCommandVisible"
+          @open-shortcut-command="shortcutCommandVisible = true"
           :favorite-active="channelFavoritesVisible"
           :character-remark-active="characterRemarkManagerVisible"
           :channel-images-active="channelImagesPanelVisible"
@@ -17058,11 +17163,13 @@ onBeforeUnmount(() => {
             :class="{ 'composer-context-hints--raised': chat.curChannel && identityQuickBarVisible }"
             :emoji-items="composerEmojiHintViews"
             :variant-items="composerVariantHintViews"
+            :shortcut-items="composerShortcutHintViews"
             :active-variant-id="composerActiveVariantId"
             :show-reset="!!composerActiveVariantId && composerVariantHintViews.length > 0"
             :position="display.settings.composerHintsPosition"
             :size-percent="display.settings.composerHintsScalePercent"
             @select-emoji="handleComposerHintEmojiSelect"
+            @select-shortcut="handleComposerShortcutHintSelect"
             @select-variant="handleEmojiVariantSelect"
             @reset-variant="handleEmojiVariantSelect('')"
           />
@@ -18662,6 +18769,7 @@ onBeforeUnmount(() => {
   <IFormDrawer />
 
   <GlassBackgroundPanel v-if="glassBackgroundPanelVisible" @close="glassBackgroundPanelVisible = false" />
+  <ShortcutCommandModal v-model:show="shortcutCommandVisible" :world-id="chat.currentWorldId || ''" />
   <DisplaySettingsModal
     v-model:visible="displaySettingsVisible"
     :settings="display.settings"

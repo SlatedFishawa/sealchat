@@ -31,7 +31,9 @@ import 'viewerjs/dist/viewer.css';
 import { useWorldGlossaryStore } from '@/stores/worldGlossary'
 import { useDisplayStore, type BotBadgeStyle, type TimestampFormat } from '@/stores/display'
 import { useChannelImageLayoutStore } from '@/stores/channelImageLayout';
-import { refreshWorldKeywordHighlights } from '@/utils/worldKeywordHighlighter'
+import { clearExistingHighlights, refreshWorldKeywordHighlights } from '@/utils/worldKeywordHighlighter'
+import { getEffectiveShortcutRules } from '@/features/shortcut-command/ruleCache'
+import { refreshShortcutMessageActions } from '@/features/shortcut-command/messageActionEnhancer'
 import { createKeywordTooltip } from '@/utils/keywordTooltip'
 import type { KeywordTooltipSessionState } from '@/utils/worldKeywordTooltipCandidates'
 import { formatWorldKeywordSourceLabel } from '@/utils/worldKeywordSourceLabel'
@@ -2203,6 +2205,8 @@ const compiledKeywords = computed(() => {
 })
 
 const keywordHighlightEnabled = computed(() => displayStore.settings.worldKeywordHighlightEnabled !== false)
+// 快捷消息按钮（显示时增强，只读当前用户在当前世界生效的 message_action 规则）
+const shortcutMessageActionRules = computed(() => getEffectiveShortcutRules(String(chat.currentWorldId || '')).messageAction)
 const keywordUnderlineOnly = computed(() => !!displayStore.settings.worldKeywordUnderlineOnly)
 const keywordTooltipEnabled = computed(() => displayStore.settings.worldKeywordTooltipEnabled !== false)
 const keywordTooltipHoverEnabled = computed(() => displayStore.settings.worldKeywordTooltipHoverEnabled !== false)
@@ -2304,6 +2308,9 @@ const applyKeywordHighlights = async () => {
   }
   
   pendingHighlights = false
+  // 先清理术语高亮再增强快捷按钮，避免触发词被高亮 span 拆开；术语高亮随后重新应用并跳过按钮
+  clearExistingHighlights(host)
+  refreshShortcutMessageActions(host, shortcutMessageActionRules.value)
   const compiled = compiledKeywords.value
   if (!keywordHighlightEnabled.value || !compiled.length) {
     refreshWorldKeywordHighlights(host, [], { underlineOnly: false })
@@ -3580,6 +3587,7 @@ watch(
     () => displayStore.settings.worldKeywordDeduplicateEnabled,
     () => displayStore.settings.worldKeywordTooltipTextIndent,
     () => displayContent.value,
+    () => shortcutMessageActionRules.value,
   ],
   () => {
     // Recreate tooltip instance when settings change
