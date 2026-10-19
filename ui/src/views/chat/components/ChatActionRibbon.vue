@@ -28,6 +28,7 @@ import { MailOutline } from '@vicons/ionicons5'
 import ObserverFilterModal from '../../components/ObserverFilterModal.vue'
 import { useSpeechStore } from '@/features/tts/store'
 import TTSWorldActivationDialog from '@/features/tts/TTSWorldActivationDialog.vue'
+import { useDisplayStore } from '@/stores/display'
 
 interface FilterState {
   icFilter: 'all' | 'ic' | 'ooc'
@@ -117,11 +118,13 @@ interface Emits {
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 const speech = useSpeechStore()
+const display = useDisplayStore()
 const message = useMessage()
 
 // Ref for measuring container width
 const actionsContainerRef = ref<HTMLElement | null>(null)
 const actionMeasureRef = ref<HTMLElement | null>(null)
+const moreAnchorRef = ref<HTMLElement | null>(null)
 const filterModalVisible = ref(false)
 const roleSelectExpanded = ref(false)
 
@@ -149,6 +152,10 @@ const splitChooserExpanded = ref(false)
 const dualSplitActionRef = ref<HTMLElement | null>(null)
 const theaterChooserExpanded = ref(false)
 const theaterActionRef = ref<HTMLElement | null>(null)
+const moreExpanded = ref(false)
+const moreMenuVisible = ref(false)
+const moreMenuColumnCount = ref(1)
+const useExpandedMore = computed(() => display.settings.actionRibbonExpandMoreEnabled !== false)
 
 const setDualSplitActionRef = (element: Element | ComponentPublicInstance | null) => {
   dualSplitActionRef.value = element instanceof HTMLElement ? element : null
@@ -254,6 +261,12 @@ const overflowButtons = computed(() => {
   return allActionButtons.value.slice(visibleCount.value)
 })
 
+const renderedButtons = computed(() => (
+  useExpandedMore.value && moreExpanded.value
+    ? allActionButtons.value
+    : visibleButtons.value
+))
+
 // Check if any overflow action is active
 const hasActiveOverflowAction = computed(() => {
   return overflowButtons.value.some(
@@ -301,6 +314,63 @@ const moreMenuOptions = computed(() => {
     }
   })
 })
+
+const MORE_MENU_ITEM_HEIGHT = 34
+const MORE_MENU_VERTICAL_PADDING = 8
+const MORE_MENU_BOTTOM_GAP = 12
+const MORE_MENU_COLUMN_WIDTH = 168
+const MORE_MENU_COLUMN_GAP = 6
+
+const updateMoreMenuLayout = () => {
+  if (useExpandedMore.value || !moreMenuVisible.value || !moreAnchorRef.value || isMobile()) {
+    moreMenuColumnCount.value = 1
+    return
+  }
+
+  const triggerRect = moreAnchorRef.value.getBoundingClientRect()
+  const viewport = window.visualViewport
+  const viewportBottom = (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight)
+  let safeBottom = viewportBottom - MORE_MENU_BOTTOM_GAP
+
+  // 主聊天输入区可能高于视口底部；传统下拉应在碰到它之前向左增列。
+  const nearestInputTop = Array.from(document.querySelectorAll<HTMLElement>('.chat-input-container'))
+    .map(element => ({ element, rect: element.getBoundingClientRect() }))
+    .filter(({ element, rect }) => {
+      const style = window.getComputedStyle(element)
+      return style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && rect.height > 0
+        && rect.top > triggerRect.bottom
+    })
+    .reduce<number | null>((nearest, { rect }) => (
+      nearest === null || rect.top < nearest ? rect.top : nearest
+    ), null)
+
+  if (nearestInputTop !== null) {
+    safeBottom = Math.min(safeBottom, nearestInputTop - MORE_MENU_BOTTOM_GAP)
+  }
+
+  const availableHeight = Math.max(MORE_MENU_ITEM_HEIGHT + MORE_MENU_VERTICAL_PADDING * 2, safeBottom - triggerRect.bottom)
+  const maxRows = Math.max(
+    1,
+    Math.floor((availableHeight - MORE_MENU_VERTICAL_PADDING * 2) / MORE_MENU_ITEM_HEIGHT),
+  )
+  moreMenuColumnCount.value = Math.max(1, Math.ceil(overflowButtons.value.length / maxRows))
+}
+
+const moreMenuProps = () => {
+  const columns = moreMenuColumnCount.value
+  return {
+    class: 'chat-action-more-menu',
+    style: columns > 1
+      ? {
+          width: `${columns * MORE_MENU_COLUMN_WIDTH + (columns - 1) * MORE_MENU_COLUMN_GAP}px`,
+          columnCount: columns,
+          columnGap: `${MORE_MENU_COLUMN_GAP}px`,
+        }
+      : undefined,
+  }
+}
 
 const emitAction = (button: ActionButton) => {
   if (button.disabled?.() === true) return
@@ -473,6 +543,9 @@ const scheduleVisibleCountCalculation = () => {
 
 const handleViewportResize = () => {
   scheduleVisibleCountCalculation()
+  if (moreMenuVisible.value) {
+    nextTick(updateMoreMenuLayout)
+  }
 }
 
 const handleDocumentPointerDown = (event: PointerEvent) => {
@@ -536,6 +609,37 @@ watch(() => props.filters.roleIds.length, () => {
 watch(roleSelectExpanded, () => {
   nextTick(scheduleVisibleCountCalculation)
 })
+
+watch(moreMenuVisible, (visible) => {
+  if (visible) {
+    nextTick(updateMoreMenuLayout)
+    return
+  }
+  moreMenuColumnCount.value = 1
+})
+
+watch(useExpandedMore, (expandedMode) => {
+  moreExpanded.value = false
+  if (expandedMode) {
+    moreMenuVisible.value = false
+  }
+})
+
+watch(hasOverflowButtons, (hasOverflow) => {
+  if (!hasOverflow) {
+    moreExpanded.value = false
+    moreMenuVisible.value = false
+  }
+})
+
+watch(
+  () => overflowButtons.value.map(button => button.key).join('|'),
+  () => {
+    if (moreMenuVisible.value) {
+      nextTick(updateMoreMenuLayout)
+    }
+  },
+)
 
 const roleSelectOptions = computed(() => {
   return props.roles.map(role => ({
@@ -635,12 +739,15 @@ const cycleIcFilter = () => {
     <!-- 功能入口区域 -->
     <div
       class="ribbon-section ribbon-section--actions"
-      :class="{ 'is-action-chooser-expanded': splitChooserExpanded || theaterChooserExpanded }"
+      :class="{
+        'is-action-chooser-expanded': splitChooserExpanded || theaterChooserExpanded,
+        'is-more-expanded': useExpandedMore && moreExpanded,
+      }"
       ref="actionsContainerRef"
     >
       <div class="ribbon-actions-viewport">
         <div class="ribbon-actions-grid">
-          <template v-for="button in visibleButtons" :key="button.key">
+          <template v-for="button in renderedButtons" :key="button.key">
             <div
               v-if="button.template === 'theater-dual'"
               :ref="setTheaterActionRef"
@@ -744,9 +851,26 @@ const cycleIcFilter = () => {
         </div>
       </div>
 
-      <div v-if="hasOverflowButtons" class="ribbon-actions-anchor">
+      <div v-if="hasOverflowButtons" ref="moreAnchorRef" class="ribbon-actions-anchor">
+        <n-button
+          v-if="useExpandedMore"
+          type="tertiary"
+          class="ribbon-action-button ribbon-more-button"
+          :class="{ 'is-active': moreExpanded || hasActiveOverflowAction }"
+          :aria-expanded="moreExpanded"
+          @click="moreExpanded = !moreExpanded"
+        >
+          <template #icon>
+            <n-icon :component="MoreIcon" />
+          </template>
+          {{ moreExpanded ? '收起' : '更多' }}
+        </n-button>
         <n-dropdown
+          v-else
+          v-model:show="moreMenuVisible"
           :options="moreMenuOptions"
+          :menu-props="moreMenuProps"
+          placement="bottom-end"
           trigger="click"
           @select="handleMoreMenuSelect"
         >
@@ -907,6 +1031,11 @@ const cycleIcFilter = () => {
 }
 
 .ribbon-section--actions.is-action-chooser-expanded {
+  overflow: visible;
+}
+
+.ribbon-section--actions.is-more-expanded {
+  align-items: flex-start;
   overflow: visible;
 }
 
@@ -1086,6 +1215,15 @@ const cycleIcFilter = () => {
   overflow: hidden;
 }
 
+.ribbon-section--actions.is-more-expanded .ribbon-actions-viewport {
+  flex: 1 1 auto;
+  overflow: visible;
+}
+
+.ribbon-section--actions.is-more-expanded .ribbon-actions-grid {
+  flex-wrap: wrap;
+}
+
 .ribbon-section--actions.is-action-chooser-expanded .ribbon-actions-viewport {
   overflow: visible;
 }
@@ -1110,6 +1248,16 @@ const cycleIcFilter = () => {
 .ribbon-action-measurement-item {
   display: inline-flex;
   margin-right: 0.5rem;
+}
+
+:global(.chat-action-more-menu) {
+  direction: rtl;
+}
+
+:global(.chat-action-more-menu .n-dropdown-option),
+:global(.chat-action-more-menu .n-dropdown-divider) {
+  direction: ltr;
+  break-inside: avoid;
 }
 
 :root[data-display-palette='night'] .ribbon-action-button:hover {

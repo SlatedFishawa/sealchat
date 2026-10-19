@@ -867,6 +867,19 @@ const handleThemeSelectionModeUpdate = (mode: ThemeSelectionMode) => {
         </n-switch>
       </section>
 
+      <section v-if="activeSettingsCategory === 'appearance'" class="display-settings__section">
+        <header>
+          <div>
+            <p class="section-title">“更多”功能展示</p>
+            <p class="section-desc">控制顶部功能栏点击“更多”后的展示方式</p>
+          </div>
+        </header>
+        <n-switch v-model:value="draft.actionRibbonExpandMoreEnabled">
+          <template #checked>多行展开</template>
+          <template #unchecked>下拉菜单</template>
+        </n-switch>
+      </section>
+
       <section v-if="activeSettingsCategory === 'reading'" class="display-settings__section display-settings__section--wide">
         <header>
           <div>

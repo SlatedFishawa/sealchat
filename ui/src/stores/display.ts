@@ -84,6 +84,7 @@ export interface DisplaySettings {
   avatarVisibilityScope: AvatarVisibilityScope
   preferStaticAvatarDecoration: boolean
   backgroundMessageToneEnabled: boolean
+  actionRibbonExpandMoreEnabled: boolean // 顶部“更多”开启时展开为多行工具区；关闭时使用传统下拉
   avatarSize: number            // 头像大小 (px)
   avatarBorderRadius: number    // 头像圆角 (0-50, 50为圆形)
   showInputPreview: boolean
@@ -575,6 +576,7 @@ export const createDefaultDisplaySettings = (): DisplaySettings => ({
   avatarVisibilityScope: 'all',
   preferStaticAvatarDecoration: false,
   backgroundMessageToneEnabled: true,
+  actionRibbonExpandMoreEnabled: false,
   avatarSize: AVATAR_SIZE_DEFAULT,
   avatarBorderRadius: AVATAR_BORDER_RADIUS_DEFAULT,
   showInputPreview: true,
@@ -835,6 +837,7 @@ const parseStoredSettingsInternal = (
       avatarVisibilityScope: normalizeAvatarVisibilityScope((parsed as any)?.avatarVisibilityScope),
       preferStaticAvatarDecoration: coerceBoolean((parsed as any)?.preferStaticAvatarDecoration ?? false),
       backgroundMessageToneEnabled: coerceBoolean((parsed as any)?.backgroundMessageToneEnabled ?? true),
+      actionRibbonExpandMoreEnabled: coerceBoolean((parsed as any)?.actionRibbonExpandMoreEnabled ?? false),
       avatarSize: coerceNumberInRange(
         (parsed as any)?.avatarSize,
         AVATAR_SIZE_DEFAULT,
@@ -1139,6 +1142,10 @@ const normalizeWith = (base: DisplaySettings, patch?: Partial<DisplaySettings>):
     patch && Object.prototype.hasOwnProperty.call(patch, 'backgroundMessageToneEnabled')
       ? coerceBoolean((patch as any).backgroundMessageToneEnabled)
       : base.backgroundMessageToneEnabled,
+  actionRibbonExpandMoreEnabled:
+    patch && Object.prototype.hasOwnProperty.call(patch, 'actionRibbonExpandMoreEnabled')
+      ? coerceBoolean((patch as any).actionRibbonExpandMoreEnabled)
+      : base.actionRibbonExpandMoreEnabled,
   avatarSize:
     patch && Object.prototype.hasOwnProperty.call(patch, 'avatarSize')
       ? coerceNumberInRange((patch as any).avatarSize, AVATAR_SIZE_DEFAULT, AVATAR_SIZE_MIN, AVATAR_SIZE_MAX)
