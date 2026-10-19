@@ -1170,6 +1170,20 @@ onBeforeUnmount(() => {
   border-radius: 6px;
 }
 
+.log-wb__section :deep(.n-base-selection) {
+  --n-color: var(--log-wb-hover) !important;
+  --n-color-active: var(--log-wb-hover) !important;
+  --n-color-focus: var(--log-wb-hover) !important;
+  background-color: var(--log-wb-hover) !important;
+  box-shadow: inset 0 0 0 1px var(--log-wb-line-soft);
+  border-radius: 7px;
+}
+
+.log-wb__section:hover :deep(.n-base-selection),
+.log-wb__section:focus-within :deep(.n-base-selection) {
+  box-shadow: inset 0 0 0 1px var(--log-wb-line);
+}
+
 .log-wb__search {
   flex: 0 1 200px;
   min-width: 110px;
@@ -1230,7 +1244,24 @@ onBeforeUnmount(() => {
   height: 30px;
   padding: 0 9px;
   border-radius: 7px;
-  color: var(--log-wb-muted);
+  color: var(--sc-text-primary, #222);
+  background: var(--log-wb-hover);
+  box-shadow: inset 0 0 0 1px var(--log-wb-line-soft);
+}
+
+.log-wb__text-btn .n-icon {
+  color: var(--log-wb-accent);
+}
+
+.log-wb__text-btn:hover,
+.log-wb__text-btn:focus-visible {
+  background: color-mix(in srgb, var(--log-wb-accent) 9%, var(--log-wb-chrome));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--log-wb-accent) 30%, var(--log-wb-line));
+}
+
+.log-wb__text-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--log-wb-accent) 38%, transparent);
+  outline-offset: 1px;
 }
 
 .log-wb__seg {
