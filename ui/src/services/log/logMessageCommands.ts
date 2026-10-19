@@ -86,10 +86,6 @@ export const updateMessageAppearance = async (t: MessageTarget, patch: Pick<LogA
   return result?.message || null;
 };
 
-/** 撤回（message.delete 语义）。 */
-export const revokeMessage = (t: MessageTarget) =>
-  send<{ success?: boolean; version?: number } | null>('message.delete', base(t, 'revoke'));
-
 /** 删除原消息（message.remove）：真实影响聊天记录。 */
 export const removeMessage = (t: MessageTarget) =>
   send<{ success?: boolean; message_ids?: string[] } | null>('message.remove', base(t, 'remove'));

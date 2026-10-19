@@ -41,7 +41,6 @@ import {
   listWorldChannels,
   removeMessage,
   reorderMessage,
-  revokeMessage,
 } from '@/services/log/logMessageCommands';
 import {
   buildFrameDocument,
@@ -409,21 +408,6 @@ const confirmMoveTo = () => {
   if (!targetItem) return;
   moveToShow.value = false;
   onDrop(item.message.id, targetItem.message.id, moveToSide.value);
-};
-
-const revokeSelected = () => {
-  const item = selectedMessages.value[0];
-  if (!item) return;
-  dialog.warning({
-    title: '撤回消息',
-    content: '撤回会作用于聊天原记录，所有成员都会看到消息已撤回。确定撤回？',
-    positiveText: '撤回',
-    negativeText: '取消',
-    onPositiveClick: () => runCommand('撤回', () => revokeMessage(target(item)), () => {
-      selection.clear();
-      void win.load();
-    }),
-  });
 };
 
 const removeSelected = () => {
@@ -866,7 +850,6 @@ onBeforeUnmount(() => {
               @move="moveSelected"
               @move-to="moveToIndex = null; moveToShow = true"
               @insert="insertAtSelection"
-              @revoke="revokeSelected"
               @remove="removeSelected"
               @exclude="excludeSelected"
               @edit-element="openPanel('elements')"

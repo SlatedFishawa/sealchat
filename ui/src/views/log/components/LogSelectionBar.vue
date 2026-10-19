@@ -34,7 +34,6 @@ const emit = defineEmits<{
   move: [dir: -1 | 1];
   'move-to': [];
   insert: [side: 'before' | 'after'];
-  revoke: [];
   remove: [];
   exclude: [];
   'edit-element': [];
@@ -44,22 +43,15 @@ const emit = defineEmits<{
 
 const single = computed(() => (props.messages.length === 1 ? props.messages[0] : null));
 const caps = computed(() => single.value?.capabilities);
-const revoked = computed(() => !!single.value && !single.value.message.content && !single.value.capabilities.edit);
 const reason = (allowed: boolean | undefined, text: string) => (allowed ? '' : text);
 /** 可用时显示操作名，不可用时显示原因。 */
 const tip = (label: string, allowed: boolean | undefined, why: string) => (allowed ? label : `${label}：${why}`);
 
-const editTip = computed(() => tip('编辑正文', caps.value?.edit, revoked.value ? '消息已撤回' : '无权编辑：仅作者或已开启代编辑的上级管理员'));
+const editTip = computed(() => tip('编辑正文', caps.value?.edit, '无权编辑：仅作者或已开启代编辑的上级管理员'));
 const reorderWhy = '无权调整顺序';
 const excludeWhy = '仅世界管理者可以调整公开范围';
 
 const moreOptions = computed<DropdownOption[]>(() => [
-  {
-    key: 'revoke',
-    label: '撤回消息',
-    disabled: props.busy || !caps.value?.revoke,
-    props: { title: reason(caps.value?.revoke, '只有作者可以撤回') },
-  },
   {
     key: 'remove',
     label: '删除原消息',
@@ -68,8 +60,7 @@ const moreOptions = computed<DropdownOption[]>(() => [
   },
 ]);
 const onMore = (key: string) => {
-  if (key === 'revoke') emit('revoke');
-  else if (key === 'remove') emit('remove');
+  if (key === 'remove') emit('remove');
 };
 </script>
 
@@ -125,7 +116,7 @@ const onMore = (key: string) => {
         <n-icon :component="Ban" size="16" /><span>排除</span>
       </button>
       <n-dropdown trigger="click" placement="bottom-end" :options="moreOptions" @select="onMore">
-        <button type="button" class="log-ctx__btn" title="更多：撤回、删除原消息" aria-label="更多操作">
+        <button type="button" class="log-ctx__btn" title="更多：删除原消息" aria-label="更多操作">
           <n-icon :component="Dots" size="16" />
         </button>
       </n-dropdown>
