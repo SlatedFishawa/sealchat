@@ -2254,6 +2254,7 @@ const {
   allGalleryItems,
   emojiUsageMap,
   ensureEmojiCollectionLoaded,
+  ensureEmojiHintItemsLoaded,
   loadMoreEmojiPanelItems,
   handleEmojiPanelContentScroll,
   refreshEmojiPanelRender,
@@ -15965,8 +15966,13 @@ const insertGalleryInline = (attachmentId: string, selection?: SelectionRange) =
   const range = selection ?? captureSelectionRange();
   const start = Math.max(0, Math.min(range.start, range.end));
   const end = Math.max(start, Math.max(range.start, range.end));
-  textToSend.value = draft.slice(0, start) + token + draft.slice(end);
+  const nextDraft = draft.slice(0, start) + token + draft.slice(end);
   const cursor = start + token.length;
+  if (textInputRef.value?.commitInputMutation?.(nextDraft, cursor)) {
+    ensureInputFocus();
+    return;
+  }
+  textToSend.value = nextDraft;
   nextTick(() => setInputSelection(cursor, cursor));
   ensureInputFocus();
 };
@@ -15989,10 +15995,10 @@ const emojiHintIndex = computed(() => (
   display.settings.emojiInputHintEnabled ? buildEmojiHintIndex(emojiItems.value) : []
 ));
 watch(
-  () => [display.settings.emojiInputHintEnabled, textToSend.value, emojiItems.value.length, user.info?.id] as const,
-  ([enabled, draft, itemCount, userId]) => {
-    if (!enabled || !userId || itemCount > 0 || !String(draft || '').trim()) return;
-    void ensureEmojiCollectionLoaded();
+  () => [display.settings.emojiInputHintEnabled, textToSend.value, user.info?.id] as const,
+  ([enabled, draft, userId]) => {
+    if (!enabled || !userId || !String(draft || '').trim()) return;
+    void ensureEmojiHintItemsLoaded();
   },
   { flush: 'post' },
 );

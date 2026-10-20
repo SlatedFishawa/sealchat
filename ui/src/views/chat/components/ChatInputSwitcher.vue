@@ -205,6 +205,15 @@ const setSelectionRange = (start: number, end: number) => {
   }
 };
 
+const commitInputMutation = (nextValue: string, cursor: number) => {
+  const input = plainRef.value;
+  if (modeRef.value !== 'plain' || !input?.commitInputMutation) {
+    return false;
+  }
+  input.commitInputMutation(nextValue, cursor);
+  return true;
+};
+
 const moveCursorToEnd = () => {
   if (modeRef.value === 'plain') {
     plainRef.value?.moveCursorToEnd?.();
@@ -224,6 +233,7 @@ defineExpose({
   getSelectionRange,
   setSelectionRange,
   moveCursorToEnd,
+  commitInputMutation,
   getMode: () => modeRef.value,
   switchMode,
 });

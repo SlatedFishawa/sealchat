@@ -178,6 +178,39 @@ export const useChatEmoji = ({
       });
     return emojiCollectionLoadPromise;
   };
+  let emojiHintItemsLoadPromise: Promise<void> | null = null;
+  let emojiHintItemsLoadOwnerId = '';
+  let emojiHintItemsReadyOwnerId = '';
+  const ensureEmojiHintItemsLoaded = async () => {
+    const ownerId = user.info?.id;
+    if (!ownerId || emojiHintItemsReadyOwnerId === ownerId) return;
+    if (emojiHintItemsLoadPromise && emojiHintItemsLoadOwnerId === ownerId) return emojiHintItemsLoadPromise;
+
+    emojiHintItemsLoadOwnerId = ownerId;
+    const request = (async () => {
+      await ensureEmojiCollectionLoaded();
+      if (user.info?.id !== ownerId || emojiCollectionReadyOwnerId !== ownerId) return;
+
+      const linkedCollectionIds = gallery.allEmojiCollectionIds.filter(
+        (collectionId) => collectionId !== gallery.favoritesCollectionId,
+      );
+      const results = await Promise.allSettled(
+        linkedCollectionIds.map((collectionId) => gallery.loadItems(collectionId)),
+      );
+      if (user.info?.id === ownerId && results.every((result) => result.status === 'fulfilled')) {
+        emojiHintItemsReadyOwnerId = ownerId;
+      }
+    })();
+    emojiHintItemsLoadPromise = request;
+    try {
+      await request;
+    } finally {
+      if (emojiHintItemsLoadPromise === request) {
+        emojiHintItemsLoadPromise = null;
+        emojiHintItemsLoadOwnerId = '';
+      }
+    }
+  };
   const loadMoreEmojiPanelItems = async () => {
     const tabId = activeEmojiTab.value;
     if (!tabId || emojiPanelLoading.value || emojiPanelLoadingMore.value || !emojiPanelHasMore.value) return;
@@ -293,7 +326,7 @@ export const useChatEmoji = ({
     activeIdentityForEmojiPanel, activeIdentityVariantOptions, activeIdentityVariantForEmojiPanel, filteredIdentityVariantOptions,
     hasIdentityVariantOptions, identityVariantTabTooltip, describeIdentityVariantCard, activeEmojiTab, emojiTabOptions, hasMultipleTabs,
     emojiPanelPagination, emojiPanelLoading, emojiPanelLoadingMore, emojiPanelHasMore, toggleEmojiRemarkVisible, syncEmojiPopoverPosition,
-    allGalleryItems, emojiUsageMap, ensureEmojiCollectionLoaded, loadMoreEmojiPanelItems, handleEmojiPanelContentScroll, refreshEmojiPanelRender,
+    allGalleryItems, emojiUsageMap, ensureEmojiCollectionLoaded, ensureEmojiHintItemsLoaded, loadMoreEmojiPanelItems, handleEmojiPanelContentScroll, refreshEmojiPanelRender,
     recordEmojiUsage, filteredEmojiItems, buildEmojiRemarkMap, replaceEmojiRemarksForPreview,
     selectedEmojiIds, emojiRemarkModalVisible, emojiRemarkInput, emojiRemarkSaving, editingEmojiItem, resolveEmojiRemark,
     openEmojiRemarkEditor, submitEmojiRemark, cancelEmojiRemark, exitEmojiManage, emojiSelectedDelete,

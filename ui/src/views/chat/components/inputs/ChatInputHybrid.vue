@@ -849,6 +849,9 @@ watch(() => props.modelValue, () => {
 
 // 监听图片变化（图片状态更新时保留光标）
 watch(() => props.inlineImages, () => {
+  if (isInternalUpdate.value) {
+    return;
+  }
   scheduleExternalRender();
 }, { deep: true });
 
@@ -942,6 +945,7 @@ interface QuickFormatBoundaryDeleteResult {
 
 const commitInputMutation = (nextValue: string, cursor: number) => {
   const safeCursor = clamp(cursor, 0, nextValue.length);
+  latestCursorRestoreTaskId++;
   isInternalUpdate.value = true;
   emit('update:modelValue', nextValue);
   addToHistory(nextValue, safeCursor);
@@ -1667,6 +1671,7 @@ defineExpose({
   getSelectionRange,
   setSelectionRange,
   moveCursorToEnd,
+  commitInputMutation,
   getInstance: () => editorRef.value,
 });
 </script>
