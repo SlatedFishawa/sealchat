@@ -421,6 +421,13 @@ type AIModelPricingConfig struct {
 	LegacyCachePricePer1KTokens      float64 `json:"-" yaml:"cachePricePer1KTokens,omitempty"`
 }
 
+const defaultAIQuotaLimit = 999.0
+
+func defaultAIQuotaPolicy() AIQuotaPolicyConfig {
+	daily, monthly, lifetime := defaultAIQuotaLimit, defaultAIQuotaLimit, defaultAIQuotaLimit
+	return AIQuotaPolicyConfig{DailyLimit: &daily, MonthlyLimit: &monthly, LifetimeLimit: &lifetime}
+}
+
 type AIQuotaPolicyConfig struct {
 	DailyLimit    *float64 `json:"dailyLimit,omitempty" yaml:"dailyLimit,omitempty"`
 	MonthlyLimit  *float64 `json:"monthlyLimit,omitempty" yaml:"monthlyLimit,omitempty"`
@@ -739,7 +746,7 @@ func ReadConfig() *AppConfig {
 			Rules:   DefaultUITextReplaceRules(),
 		},
 		Certificate: defaultCertificateConfig(),
-		AI:          NormalizeAIConfig(AIConfig{}),
+		AI:          NormalizeAIConfig(AIConfig{QuotaDefault: defaultAIQuotaPolicy()}),
 		PerformanceProfiler: PerformanceProfilerConfig{
 			Enabled:                false,
 			OutputDir:              "./data/perf",
@@ -842,11 +849,48 @@ func ReadConfig() *AppConfig {
 	if err := ValidateMCPConfig(config.MCP); err != nil {
 		panic(err)
 	}
+	applyAIUsageDefaults(&config, fileConfig)
 	config.AI = NormalizeAIConfig(config.AI)
 	applyPerformanceProfilerDefaults(&config.PerformanceProfiler)
 
 	currentConfig = &config
 	return currentConfig
+}
+
+func applyAIUsageDefaults(config *AppConfig, fileConfig *koanf.Koanf) {
+	if config == nil || fileConfig == nil {
+		return
+	}
+	applyQuota := func(policy *AIQuotaPolicyConfig, prefix string) {
+		if !fileConfig.Exists(prefix + ".dailyLimit") {
+			value := defaultAIQuotaLimit
+			policy.DailyLimit = &value
+		}
+		if !fileConfig.Exists(prefix + ".monthlyLimit") {
+			value := defaultAIQuotaLimit
+			policy.MonthlyLimit = &value
+		}
+		if !fileConfig.Exists(prefix + ".lifetimeLimit") {
+			value := defaultAIQuotaLimit
+			policy.LifetimeLimit = &value
+		}
+	}
+	applyQuota(&config.AI.QuotaDefault, "ai.quotaDefault")
+	if config.AI.Speech != nil {
+		speech := config.AI.Speech
+		applyQuota(&speech.QuotaDefault, "ai.speech.quotaDefault")
+		if !fileConfig.Exists("ai.speech.defaultSlots") {
+			speech.DefaultSlots = defaultSpeechSavedVoiceSlots
+		}
+		// The old admin form persisted its untouched defaults as 0/0/0 + 0 slots.
+		// Treat only that complete legacy tuple as "not configured"; individual
+		// explicit zero values remain valid administrator choices.
+		zero := func(value *float64) bool { return value != nil && *value == 0 }
+		if speech.DefaultSlots == 0 && zero(speech.QuotaDefault.DailyLimit) && zero(speech.QuotaDefault.MonthlyLimit) && zero(speech.QuotaDefault.LifetimeLimit) {
+			speech.QuotaDefault = defaultAIQuotaPolicy()
+			speech.DefaultSlots = defaultSpeechSavedVoiceSlots
+		}
+	}
 }
 
 func NormalizeCertificateConfig(cfg CertificateConfig) CertificateConfig {

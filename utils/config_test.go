@@ -227,6 +227,80 @@ func TestWriteConfigPersistsSpeech(t *testing.T) {
 	}
 }
 
+func TestReadConfigAppliesAIUsageDefaultsAndPreservesExplicitZero(t *testing.T) {
+	oldK := k
+	oldCurrentConfig := currentConfig
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd failed: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldCwd)
+		k = oldK
+		currentConfig = oldCurrentConfig
+	})
+
+	read := func(content string) *AppConfig {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write config failed: %v", err)
+		}
+		k = koanf.New(".")
+		currentConfig = nil
+		return ReadConfig()
+	}
+
+	cfg := read("serveAt: :3212\nai:\n  speech:\n    enabled: false\n")
+	for name, limit := range map[string]*float64{
+		"ai daily":        cfg.AI.QuotaDefault.DailyLimit,
+		"ai monthly":      cfg.AI.QuotaDefault.MonthlyLimit,
+		"ai lifetime":     cfg.AI.QuotaDefault.LifetimeLimit,
+		"speech daily":    cfg.AI.Speech.QuotaDefault.DailyLimit,
+		"speech monthly":  cfg.AI.Speech.QuotaDefault.MonthlyLimit,
+		"speech lifetime": cfg.AI.Speech.QuotaDefault.LifetimeLimit,
+	} {
+		if limit == nil || *limit != defaultAIQuotaLimit {
+			t.Fatalf("%s limit = %v, want %.0f", name, limit, defaultAIQuotaLimit)
+		}
+	}
+	if cfg.AI.Speech == nil || cfg.AI.Speech.DefaultSlots != defaultSpeechSavedVoiceSlots {
+		t.Fatalf("speech default slots = %#v, want %d", cfg.AI.Speech, defaultSpeechSavedVoiceSlots)
+	}
+
+	cfg = read("serveAt: :3212\nai:\n  quotaDefault:\n    dailyLimit: 0\n    monthlyLimit: 0\n    lifetimeLimit: 0\n  speech:\n    enabled: false\n    defaultSlots: 0\n    quotaDefault:\n      dailyLimit: 0\n      monthlyLimit: 0\n      lifetimeLimit: 0\n")
+	for name, limit := range map[string]*float64{
+		"ai daily":    cfg.AI.QuotaDefault.DailyLimit,
+		"ai monthly":  cfg.AI.QuotaDefault.MonthlyLimit,
+		"ai lifetime": cfg.AI.QuotaDefault.LifetimeLimit,
+	} {
+		if limit == nil || *limit != 0 {
+			t.Fatalf("explicit %s limit = %v, want 0", name, limit)
+		}
+	}
+	for name, limit := range map[string]*float64{
+		"speech daily":    cfg.AI.Speech.QuotaDefault.DailyLimit,
+		"speech monthly":  cfg.AI.Speech.QuotaDefault.MonthlyLimit,
+		"speech lifetime": cfg.AI.Speech.QuotaDefault.LifetimeLimit,
+	} {
+		if limit == nil || *limit != defaultAIQuotaLimit {
+			t.Fatalf("legacy %s limit = %v, want %.0f", name, limit, defaultAIQuotaLimit)
+		}
+	}
+	if cfg.AI.Speech.DefaultSlots != defaultSpeechSavedVoiceSlots {
+		t.Fatalf("legacy speech default slots = %d, want %d", cfg.AI.Speech.DefaultSlots, defaultSpeechSavedVoiceSlots)
+	}
+
+	cfg = read("serveAt: :3212\nai:\n  speech:\n    enabled: false\n    defaultSlots: 0\n    quotaDefault:\n      dailyLimit: 0\n      monthlyLimit: 1\n      lifetimeLimit: 1\n")
+	if cfg.AI.Speech.QuotaDefault.DailyLimit == nil || *cfg.AI.Speech.QuotaDefault.DailyLimit != 0 || cfg.AI.Speech.DefaultSlots != 0 {
+		t.Fatalf("explicit non-legacy zero values were not preserved: %#v", cfg.AI.Speech)
+	}
+}
+
 func TestResolveBotCommandPrefixesDefaults(t *testing.T) {
 	got := ResolveBotCommandPrefixes(nil)
 	expected := []string{".", "。", "．", "｡", "/"}
