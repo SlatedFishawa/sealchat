@@ -429,8 +429,9 @@ func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn
 	_ = ttsPrepareMessageIntent(m, user, 0, "")
 }
 
-// Both entry points freeze the same current role settings and audience. Only
-// automatic sending consults the user's automatic synthesis preference.
+// Both entry points freeze the same current role settings and audience. Manual
+// historical synthesis is strict about stale legacy voice routes so it never
+// silently substitutes the platform default voice.
 func ttsPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, manualRequestedAt int64, manualRequestKey string) error {
 	if user == nil || user.IsBot || m.ICMode != "ic" || len(m.ChannelID) >= 30 || m.WidgetData != "" {
 		return TTSValidationError("此消息类型不朗读")
@@ -464,8 +465,10 @@ func ttsPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, manua
 			r.Volume = &role.Volume
 		}
 	}
-	// Start with an isolated scope, then freeze the actual audience below.
-	s, err := ttsSnapshotForRequest(user.ID, r, m.ChannelID+":"+m.ID, true)
+	// Start with an isolated scope, then freeze the actual audience below. Only
+	// automatic sends may use the legacy system-voice fallback; a manual history
+	// request must surface a stale binding instead of changing the character voice.
+	s, err := ttsSnapshotForRequest(user.ID, r, m.ChannelID+":"+m.ID, manualRequestedAt == 0)
 	if err != nil {
 		m.TTSStatus = "unavailable"
 		return err
