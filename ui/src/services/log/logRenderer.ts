@@ -27,6 +27,7 @@ import {
   type TemplateLibrary,
 } from './logTemplateCompiler';
 import type { FrameBlock, FrameDocument } from './pagination/logFrameHost';
+import { logPlatformFontId } from './logFontPlan';
 
 export interface RenderMessageNode {
   kind: 'message';
@@ -516,9 +517,13 @@ export const buildFrameDocument = (opts: BuildOptions): BuildResult => {
     });
   }
 
+  const safePlatformFontId = logPlatformFontId(opts.page.fontFamily);
+  const platformFontFamily = safePlatformFontId ? `sc-log-platform-${safePlatformFontId}` : '';
   const rootVars: Record<string, string> = {
     '--log-page-bg': HEX.test(opts.page.backgroundColor) ? opts.page.backgroundColor : '#ffffff',
-    '--log-font-family': SYSTEM_FONTS[opts.page.fontFamily] || `"${opts.page.fontFamily.replace(/["\\]/g, '')}",${SYSTEM_FONTS['sans-serif']}`,
+    '--log-font-family': platformFontFamily
+      ? `"${platformFontFamily}",${SYSTEM_FONTS['sans-serif']}`
+      : SYSTEM_FONTS[opts.page.fontFamily] || `"${opts.page.fontFamily.replace(/["\\]/g, '')}",${SYSTEM_FONTS['sans-serif']}`,
     '--log-font-size': `${opts.page.fontSizePt}pt`,
     '--log-line-height': String(opts.page.lineHeight),
   };

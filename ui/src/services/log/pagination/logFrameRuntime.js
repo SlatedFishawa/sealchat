@@ -8,7 +8,7 @@
   var CLOSE = '，。、；：？！）」』】〉》〕”’…—,.;:?!)]}%';
   var OPEN = '（「『【〈《〔“‘([{';
   var IMAGE_MIME = /^image\/(png|jpeg|webp|gif|avif)$/;
-  var FONT_MIME = /^(font\/(ttf|otf|sfnt)|application\/(x-font-ttf|x-font-otf|font-sfnt))$/;
+  var FONT_MIME = /^(font\/(ttf|otf|sfnt|woff|woff2)|application\/(x-font-ttf|x-font-otf|font-sfnt))$/;
   var port = null;
   var revision = 0;
   var assetUrls = new Map();
@@ -163,9 +163,22 @@
     img.replaceWith(holder);
   }
 
-  function waitFonts() {
+  async function waitFonts() {
     if (!document.fonts || !document.fonts.ready) return Promise.resolve();
-    return Promise.race([document.fonts.ready, new Promise(function (r) { setTimeout(r, 3000); })]);
+    // 当前修订的 Blob 字体已注入；显式加载与 FontFaceSet ready 共用一个总超时，异常字体不阻塞分页。
+    var loads = [document.fonts.ready];
+    document.fonts.forEach(function (face) {
+      if (/^['"]?sc-log-platform-/.test(face.family)) loads.push(face.load().catch(function () {}));
+    });
+    var timer = 0;
+    try {
+      await Promise.race([
+        Promise.all(loads),
+        new Promise(function (r) { timer = setTimeout(r, 3000); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   function nextFrame() { return new Promise(function (r) { setTimeout(r, 0); }); }
@@ -436,12 +449,16 @@
     host.style.top = '0';
     document.body.appendChild(host);
     try {
-      await waitFonts();
       var blocks = (doc.blocks || []).map(createBlock);
       var staging = document.createElement('div');
       for (var i = 0; i < blocks.length; i++) staging.appendChild(blocks[i]);
+      host.appendChild(staging);
+      // 在文档内触发布局后再等待 FontFaceSet，避免先用 fallback 字体测量分页。
+      void staging.offsetHeight;
+      await waitFonts();
       await decodeImages(staging);
       if (rev !== revision) return;
+      staging.remove();
       var warnings = [];
       if (current.mode === 'flow') {
         for (var j = 0; j < blocks.length; j++) host.appendChild(blocks[j]);

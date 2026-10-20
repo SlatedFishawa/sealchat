@@ -3,17 +3,17 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import {
   LogFrameEngine,
-  type FrameAsset,
   type FrameAnchor,
   type FrameDocument,
   type FrameEvent,
   type FrameLayoutResult,
 } from '@/services/log/pagination/logFrameHost';
+import type { PreparedLogFrame } from '../composables/useLogAssets';
 
 const props = withDefaults(defineProps<{
   doc: FrameDocument | null;
   assetTokens: string[];
-  ensureAssets: (tokens: string[]) => Promise<FrameAsset[]>;
+  prepareAssets: (doc: FrameDocument, tokens: string[], hasAsset: (token: string) => boolean) => Promise<PreparedLogFrame>;
   mode?: 'paged' | 'flow';
   spread?: boolean;
   design?: boolean;
@@ -64,11 +64,12 @@ const run = async () => {
   emit('busy', true);
   progress.value = null;
   try {
-    const assets = await props.ensureAssets(props.assetTokens.filter((t) => !e.hasAsset(t)));
+    const prepared = await props.prepareAssets(doc, props.assetTokens, token => e.hasAsset(token));
     if (rev !== revision) return;
-    await e.provideAssets(assets);
+    await e.provideAssets(prepared.assets);
+    if (rev !== revision) return;
     const result = await e.layout({
-      doc: JSON.parse(JSON.stringify(doc)) as FrameDocument,
+      doc: JSON.parse(JSON.stringify(prepared.doc)) as FrameDocument,
       mode: props.mode,
       spread: props.spread,
       design: props.design,

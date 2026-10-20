@@ -821,7 +821,7 @@ onBeforeUnmount(() => {
           ref="previewRef"
           :doc="frame?.doc || null"
           :asset-tokens="frame?.assetTokens || []"
-          :ensure-assets="assets.ensure"
+          :prepare-assets="assets.prepare"
           :mode="viewMode === 'flow' ? 'flow' : 'paged'"
           :spread="viewMode === 'spread'"
           :design="!previewPublish"

@@ -90,6 +90,11 @@ type LogDraftResult struct {
 
 var logUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 var logColorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$`)
+var logPlatformFontPattern = regexp.MustCompile(`^platform:[a-zA-Z0-9_-]{1,100}$`)
+
+func isLogPlatformFont(font string) bool {
+	return logPlatformFontPattern.MatchString(font)
+}
 
 func parseLogDraft(raw []byte) (LogDraft, error) {
 	var draft LogDraft
@@ -139,7 +144,7 @@ func parseLogDraft(raw []byte) (LogDraft, error) {
 	if (p.Preset != "a4" && p.Preset != "a5" && p.Preset != "custom") || p.WidthMM < 50 || p.WidthMM > 1000 || p.HeightMM < 50 || p.HeightMM > 1000 || m.Top+m.Bottom >= p.HeightMM || m.Left+m.Right+p.GutterMM >= p.WidthMM || (p.Columns != 1 && p.Columns != 2) || p.FontSizePT < 6 || p.FontSizePT > 72 || p.LineHeight < 1 || p.LineHeight > 3 || !logColorPattern.MatchString(p.BackgroundColor) {
 		return draft, logError("INVALID_INPUT", "页面设置超出允许范围")
 	}
-	if draft.StylePackageID == "" && p.FontFamily != "sans-serif" && p.FontFamily != "serif" && p.FontFamily != "monospace" {
+	if draft.StylePackageID == "" && p.FontFamily != "sans-serif" && p.FontFamily != "serif" && p.FontFamily != "monospace" && !isLogPlatformFont(p.FontFamily) {
 		return draft, logError("INVALID_INPUT", "字体未登记")
 	}
 	return draft, nil

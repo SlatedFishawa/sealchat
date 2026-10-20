@@ -43,6 +43,7 @@ const stubs = {
   '@/utils/plainQuickFormat': {},
   '@/utils/tiptap-render': {},
   '@/utils/tools': { contentEscape: escape },
+  '@/utils/uploadTimeout': { getUploadTimeoutMs: () => 30000 },
   '@/stores/_config': { urlBase: '', api: { get: async (url, options) => { authRequests.push({ url, options }); return response } } },
   axios: { create: () => ({ get: async (url, options) => { publicRequests.push({ url, options }); return response } }), isAxiosError: () => false },
   vue: { onBeforeUnmount: (fn) => cleanups.push(fn) },
@@ -68,6 +69,7 @@ const context = `section/message/${'a'.repeat(32)}`
 const token = `body:${context}`
 const other = `body:section/message/${'b'.repeat(32)}`
 const templateCompilerSource = fs.readFileSync(path.join(src, 'services/log/logTemplateCompiler.ts'), 'utf8')
+const frameCss = fs.readFileSync(path.join(src, 'services/log/pagination/logFrame.css'), 'utf8')
 
 const body = renderPresentedBody(`<p>images</p><img src="/__log_body_asset/${context}" srcset="https://evil.invalid/a.png 2x"><img src="/__log_body_asset/section/message/${'b'.repeat(32)}"><img src="/api/v1/attachment/ordinary-image"><img src="https://evil.invalid/a.png"><img src="/api/v1/worlds/w/clues/c/image"><img src="data:image/png;base64,AAAA">`, 'images')
 assert.deepEqual(body.assets, [token, other, 'att:ordinary-image'])
@@ -80,6 +82,7 @@ assert.equal(bodyAssetToken('../attachment/id'), '')
 assert.equal(bodyAssetToken('section/message/attachment-id'), '')
 assert.equal(bodyAssetToken(`47c49d8c-5c72-4a71-ab3d-9f38efd37811/djZbxBWoyEdQChnW/${'c'.repeat(32)}`), `body:47c49d8c-5c72-4a71-ab3d-9f38efd37811/djZbxBWoyEdQChnW/${'c'.repeat(32)}`)
 assert.match(templateCompilerSource, /ADD_URI_SAFE_ATTR:\s*\[\s*['\"]data-log-asset['\"]\s*\]/, '模板正文二次清洗必须保留 data-log-asset 的非 http 资源令牌')
+assert.match(frameCss, /\.log-body\s*\{[^}]*font-family:\s*var\(--log-font-family\)/, '页面字体必须直接作用于消息正文，不能只依赖消息外壳继承')
 
 ;(async () => {
   const assets = useLogAssets({ projectId: () => 'project', stylePackage: () => ({ id: 'style', version: '1.0.0' }), publicSlug: () => 'publicslug' })

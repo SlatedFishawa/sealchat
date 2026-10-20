@@ -56,6 +56,8 @@ body {
 .log-link { text-decoration: underline; }
 .log-fallback-message { margin: 0 0 0.8em; }
 .log-fallback-message .log-speaker { font-weight: 700; }
+/* 页面字体明确作用于消息正文，避免旧样式在消息外壳上指定字体后让正文只继承样式字体；更具体的骰子/富文本字体仍可覆盖。 */
+.log-body { font-family: var(--log-font-family); }
 /* 消息语义的默认呈现：样式包未声明时兜底，样式包 CSS 在其后注入可覆盖。 */
 .log-embed { margin: 0.2em 0; padding: 0.45em 0.75em; border-left: 3px solid rgba(0, 0, 0, 0.18); background: rgba(0, 0, 0, 0.03); }
 .log-embed > p:first-child strong { font-weight: 700; }

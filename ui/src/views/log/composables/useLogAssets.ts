@@ -2,15 +2,29 @@
 // 令牌：att:（历史聊天附件）、body:（LOG 正文）、style:（样式包）、pub:（公开快照）。
 import { onBeforeUnmount } from 'vue';
 import {
+  buildPlatformFontFileUrl,
+  buildPlatformFontSubsetUrl,
+  getPlatformFontManifest,
+  getPlatformFontMeta,
+  getPublicPlatformFontManifest,
+  getPublicPlatformFontMeta,
+} from '@/services/font/platformFontApi';
+import type { PlatformFontAsset, PlatformFontSubsetManifest } from '@/services/font/platformFontTypes';
+import { inferPlatformFontFormat, resolvePlatformFontChunkUrl } from '@/services/font/platformFontSubsetRuntime';
+import { buildLogFontPlan, collectLogFontText, logFontChunkToken, logPlatformFontId } from '@/services/log/logFontPlan';
+import {
   fetchAttachmentBytes,
   fetchLogBodyAssetBytes,
   fetchLogStyleAssetBytes,
   fetchPublicAssetBytes,
   publicAssetPath,
 } from '@/services/log/logApi';
-import type { FrameAsset } from '@/services/log/pagination/logFrameHost';
+import type { FrameAsset, FrameDocument } from '@/services/log/pagination/logFrameHost';
 
 const MAX_PARALLEL = 6;
+const FONT_MIME = /^(font\/(ttf|otf|sfnt|woff|woff2)|application\/(x-font-ttf|x-font-otf|font-sfnt))$/;
+
+export interface PreparedLogFrame { doc: FrameDocument; assets: FrameAsset[] }
 
 export interface AssetScope {
   /** 设计态：服务端生成的正文资源上下文属于当前工程。 */
@@ -24,6 +38,23 @@ export interface AssetScope {
 export const useLogAssets = (scope: AssetScope) => {
   const cache = new Map<string, Promise<FrameAsset>>();
   const controller = new AbortController();
+  const publicScope = !!scope.publicSlug;
+  // 与当前资源宿主同生命周期，编辑文本时复用清单，不建立全局字体缓存。
+  const fontInfo = new Map<string, Promise<{ meta?: PlatformFontAsset; manifest?: PlatformFontSubsetManifest }>>();
+  const getFontInfo = (id: string) => {
+    let task = fontInfo.get(id);
+    if (!task) {
+      task = (async () => {
+        const meta = await (publicScope ? getPublicPlatformFontMeta(id) : getPlatformFontMeta(id));
+        const manifest = meta.deliveryMode === 'subset'
+          ? await (publicScope ? getPublicPlatformFontManifest(id) : getPlatformFontManifest(id)).catch(() => undefined)
+          : undefined;
+        return { meta, manifest };
+      })().catch(() => ({}));
+      fontInfo.set(id, task);
+    }
+    return task;
+  };
   let active = 0;
   const queue: Array<() => void> = [];
 
@@ -48,6 +79,26 @@ export const useLogAssets = (scope: AssetScope) => {
     const id = rest.join(':');
     await acquire();
     try {
+      if (kind === 'platform-font') {
+        const match = /^([A-Za-z0-9_-]{1,100}):(full|chunk:[a-f0-9]+)$/.exec(id);
+        if (!match) return { token, data: null, mime: '' };
+        const fontId = match[1];
+        const info = await getFontInfo(fontId);
+        const chunk = match[2] === 'full' ? undefined : info.manifest?.chunks?.find(item => logFontChunkToken(fontId, item) === token);
+        if (match[2] !== 'full' && !chunk) return { token, data: null, mime: '' };
+        const url = chunk
+          ? resolvePlatformFontChunkUrl(chunk, name => buildPlatformFontSubsetUrl(fontId, name), true)
+          : buildPlatformFontFileUrl(fontId);
+        const response = await fetch(url, { signal: controller.signal, credentials: publicScope ? 'omit' : 'include' });
+        if (!response.ok) return { token, data: null, mime: '' };
+        let mime = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (!mime || mime === 'application/octet-stream') {
+          const format = inferPlatformFontFormat(chunk?.name || info.meta?.sourceFileName || '', chunk?.mimeType || info.meta?.sourceMimeType);
+          mime = ({ woff2: 'font/woff2', woff: 'font/woff', opentype: 'font/otf', truetype: 'font/ttf' } as Record<string, string>)[format] || '';
+        }
+        if (!FONT_MIME.test(mime)) return { token, data: null, mime: '' };
+        return { token, data: await response.arrayBuffer(), mime };
+      }
       if (kind === 'att' && id) {
         const r = await fetchAttachmentBytes(id, controller.signal);
         return { token, data: r.data, mime: r.mime };
@@ -87,6 +138,22 @@ export const useLogAssets = (scope: AssetScope) => {
     return p;
   }));
 
+  /** 在任何字节送入 iframe 前完成分片规划和必要的 full 降级。 */
+  const prepare = async (doc: FrameDocument, tokens: string[], hasAsset: (token: string) => boolean): Promise<PreparedLogFrame> => {
+    const id = logPlatformFontId(doc.page.fontFamily);
+    if (!id) return { doc, assets: await ensure(tokens.filter(token => !hasAsset(token))) };
+    const text = collectLogFontText(doc);
+    const info = text.text || !text.reliable ? await getFontInfo(id) : {};
+    let plan = buildLogFontPlan(id, text, info.meta, info.manifest);
+    const missing = (items: string[]) => items.filter(token => !hasAsset(token));
+    let assets = await ensure(missing([...tokens, ...plan.tokens]));
+    if (plan.subset && assets.some(asset => plan.tokens.includes(asset.token) && !asset.data)) {
+      plan = buildLogFontPlan(id, text, info.meta, undefined, true);
+      assets = [...assets.filter(asset => !asset.token.startsWith('platform-font:')), ...await ensure(missing(plan.tokens))];
+    }
+    return { doc: { ...doc, css: `${plan.css}\n${doc.css}` }, assets };
+  };
+
   /** 样式包切换后，style: 令牌指向另一个包版本，必须失效。 */
   const invalidate = (prefix: string) => {
     for (const key of Array.from(cache.keys())) {
@@ -97,7 +164,8 @@ export const useLogAssets = (scope: AssetScope) => {
   onBeforeUnmount(() => {
     controller.abort();
     cache.clear();
+    fontInfo.clear();
   });
 
-  return { ensure, invalidate };
+  return { ensure, prepare, invalidate };
 };

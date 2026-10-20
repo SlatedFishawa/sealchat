@@ -37,7 +37,7 @@ func validateLogDraftStyle(d *LogDraft, userID string) error {
 	if err := ValidateLogStyle(p, assets); err != nil {
 		return err
 	}
-	if d.Page.FontFamily != "sans-serif" && d.Page.FontFamily != "serif" && d.Page.FontFamily != "monospace" {
+	if d.Page.FontFamily != "sans-serif" && d.Page.FontFamily != "serif" && d.Page.FontFamily != "monospace" && !isLogPlatformFont(d.Page.FontFamily) {
 		valid := false
 		for _, a := range p.Assets {
 			if strings.HasPrefix(a.MIME, "font/") && a.ID == d.Page.FontFamily {

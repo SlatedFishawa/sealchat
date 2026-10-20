@@ -4,8 +4,11 @@ import {
   getPlatformFontManifest,
   getPlatformFontMeta,
 } from './platformFontApi'
-import type { PlatformFontAsset, PlatformFontSubsetManifest } from './platformFontTypes'
+import type { PlatformFontAsset } from './platformFontTypes'
+import { inferPlatformFontFormat as inferFontFormat, resolvePlatformFontChunkUrl, selectPlatformFontChunksForText } from './platformFontSubsetRuntime'
 import { buildGlobalFontFamilyStack, quoteFontFamilyName, sanitizeFontFamilyName } from './fontUtils'
+
+export { selectPlatformFontChunksForText } from './platformFontSubsetRuntime'
 
 export const CHARACTER_SHEET_FONT_MANIFEST_TYPE = 'application/sealchat-fonts+json'
 
@@ -29,11 +32,8 @@ export interface CharacterSheetFontCssMessage {
   }
 }
 
-type PlatformFontChunk = NonNullable<PlatformFontSubsetManifest['chunks']>[number]
-
 const DEFAULT_FONT_VAR = '--sealchat-sheet-font'
 const FONT_MANIFEST_RE = /<script\b[^>]*type=["']application\/sealchat-fonts\+json["'][^>]*>([\s\S]*?)<\/script>/giu
-const CSS_URL_ABSOLUTE_RE = /^(data:|blob:|https?:|\/\/|\/)/iu
 const fontDataUrlCache = new Map<string, Promise<string>>()
 
 const escapeCssString = (value: string): string => value.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')
@@ -85,37 +85,6 @@ export const parseCharacterSheetFontManifest = (html: string): CharacterSheetFon
   return { version, global, fonts }
 }
 
-const parseCodePoint = (value: string): number | null => {
-  const normalized = value.trim().replace(/^U\+/iu, '')
-  if (!/^[0-9A-F]{1,6}$/iu.test(normalized)) return null
-  const codePoint = Number.parseInt(normalized, 16)
-  return Number.isFinite(codePoint) ? codePoint : null
-}
-
-const unicodeRangeMatchesText = (unicodeRange: string, text: string): boolean => {
-  const ranges = unicodeRange.split(',')
-  const codePoints = Array.from(text || '').map(char => char.codePointAt(0) || 0)
-  if (codePoints.length === 0) return false
-  return ranges.some((part) => {
-    const normalized = part.trim()
-    if (!normalized) return false
-    const [startRaw, endRaw] = normalized.split('-')
-    const start = parseCodePoint(startRaw || '')
-    const end = parseCodePoint(endRaw || startRaw || '')
-    if (start == null || end == null) return false
-    return codePoints.some(codePoint => codePoint >= start && codePoint <= end)
-  })
-}
-
-export const selectPlatformFontChunksForText = (chunks: PlatformFontChunk[], text: string): PlatformFontChunk[] => {
-  const normalizedText = String(text || '')
-  return (chunks || []).filter((chunk) => {
-    const unicodeRange = String(chunk.unicodeRange || '').trim()
-    if (!unicodeRange) return normalizedText.length > 0
-    return unicodeRangeMatchesText(unicodeRange, normalizedText)
-  })
-}
-
 export const buildCharacterSheetFontCssMessage = (cssText: string): CharacterSheetFontCssMessage => ({
   type: 'SEALCHAT_FONT_CSS',
   payload: {
@@ -154,22 +123,6 @@ const fetchFontDataUrl = async (url: string, fallbackMime?: string): Promise<str
   }
 }
 
-const inferFontFormat = (name: string, mimeType?: string): string => {
-  const lower = `${name || ''} ${mimeType || ''}`.toLowerCase()
-  if (lower.includes('woff2')) return 'woff2'
-  if (lower.includes('woff')) return 'woff'
-  if (lower.includes('opentype') || lower.includes('.otf')) return 'opentype'
-  if (lower.includes('truetype') || lower.includes('.ttf')) return 'truetype'
-  return ''
-}
-
-const resolveChunkUrl = (fontId: string, chunk: PlatformFontChunk): string => {
-  const raw = String(chunk.url || '').trim()
-  if (!raw) return buildPlatformFontSubsetUrl(fontId, chunk.name)
-  if (CSS_URL_ABSOLUTE_RE.test(raw)) return raw
-  return buildPlatformFontSubsetUrl(fontId, raw.replace(/^\.?\//u, '') || chunk.name)
-}
-
 const buildFontFace = (
   family: string,
   src: string,
@@ -198,7 +151,7 @@ const buildSubsetFontFaces = async (
   const selected = selectPlatformFontChunksForText(manifest.chunks || [], text)
   if (selected.length === 0) return ''
   const faces = await Promise.all(selected.map(async (chunk) => {
-    const dataUrl = await fetchFontDataUrl(resolveChunkUrl(fontId, chunk), chunk.mimeType)
+    const dataUrl = await fetchFontDataUrl(resolvePlatformFontChunkUrl(chunk, name => buildPlatformFontSubsetUrl(fontId, name)), chunk.mimeType)
     return buildFontFace(family, dataUrl, meta, {
       format: inferFontFormat(chunk.name, chunk.mimeType),
       unicodeRange: chunk.unicodeRange,

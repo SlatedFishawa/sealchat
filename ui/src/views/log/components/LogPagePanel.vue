@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // 页面设计：先在本地校验几何范围（与服务端规则一致），合法后才写入草稿并触发重排。
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import type { LogDraft, LogPageSettings, LogStylePackage } from '@/types/log';
+import { listPlatformFonts } from '@/services/font/platformFontApi';
+import type { PlatformFontAsset } from '@/services/font/platformFontTypes';
 import { cloneJson, packageFontAssets, packageImageAssets } from '../logDraftOps';
 
 const props = defineProps<{
@@ -15,6 +17,8 @@ const PRESETS: Record<'a4' | 'a5', { w: number; h: number }> = { a4: { w: 210, h
 const HEX = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
 
 const local = ref<LogPageSettings>(cloneJson(props.draft.page));
+const platformFonts = ref<PlatformFontAsset[]>([]);
+const loadingPlatformFonts = ref(false);
 watch(() => props.draft.page, (p) => {
   local.value = cloneJson(p);
 });
@@ -73,8 +77,22 @@ const fontOptions = computed(() => [
   { label: '无衬线（系统）', value: 'sans-serif' },
   { label: '衬线/宋体（系统）', value: 'serif' },
   { label: '等宽（系统）', value: 'monospace' },
+  ...platformFonts.value.map((font) => ({ label: `平台字体：${font.displayName || font.family}`, value: `platform:${font.id}` })),
   ...packageFontAssets(props.stylePackage).map((a) => ({ label: `样式包字体：${a.path}`, value: a.id })),
 ]);
+
+const refreshPlatformFonts = async () => {
+  loadingPlatformFonts.value = true;
+  try {
+    platformFonts.value = await listPlatformFonts();
+  } catch {
+    platformFonts.value = [];
+  } finally {
+    loadingPlatformFonts.value = false;
+  }
+};
+
+onMounted(() => { void refreshPlatformFonts(); });
 </script>
 
 <template>
@@ -119,7 +137,7 @@ const fontOptions = computed(() => [
       <n-select :value="local.backgroundAssetId" clearable :options="backgroundOptions" :placeholder="backgroundOptions.length ? '无' : '当前样式包没有图片资源'" @update:value="(v: string | null) => set('backgroundAssetId', v)" />
     </n-form-item>
     <n-form-item label="字体">
-      <n-select :value="local.fontFamily" :options="fontOptions" @update:value="(v: string) => set('fontFamily', v)" />
+      <n-select :value="local.fontFamily" :options="fontOptions" :loading="loadingPlatformFonts" filterable @update:value="(v: string) => set('fontFamily', v)" />
     </n-form-item>
     <n-form-item label="字号">
       <n-input-number :value="local.fontSizePt" :min="6" :max="72" :step="0.5" @update:value="(v: number | null) => setNum('fontSizePt', v)"><template #suffix>pt</template></n-input-number>

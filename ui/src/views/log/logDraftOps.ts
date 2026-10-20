@@ -134,7 +134,7 @@ export const rebindStyle = (draft: LogDraft, pkg: LogStylePackage): { next: LogD
     next.page.backgroundAssetId = null;
   }
   const font = next.page.fontFamily;
-  if (!['sans-serif', 'serif', 'monospace'].includes(font) && !packageFontAssets(pkg).some((a) => a.id === font)) {
+  if (!['sans-serif', 'serif', 'monospace'].includes(font) && !font.startsWith('platform:') && !packageFontAssets(pkg).some((a) => a.id === font)) {
     problems.push({ kind: 'font', id: font, message: '字体不属于新样式包，已改为无衬线', fixable: true });
     next.page.fontFamily = 'sans-serif';
   }
