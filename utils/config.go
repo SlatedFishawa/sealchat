@@ -2101,6 +2101,7 @@ func WriteConfigChecked(config *AppConfig) error {
 		_ = candidateK.Set("cursorTheme.slots", config.CursorTheme.Slots)
 		_ = candidateK.Set("uiTextReplace.enabled", config.UITextReplace.Enabled)
 		_ = candidateK.Set("uiTextReplace.rules", config.UITextReplace.Rules)
+		_ = candidateK.Set("channelEmbedTools.maxCodeSizeKB", config.ChannelEmbedTools.MaxCodeSizeKB)
 
 		if err := candidateK.Unmarshal("", config); err != nil {
 			return fmt.Errorf("配置解析失败: %w", err)
