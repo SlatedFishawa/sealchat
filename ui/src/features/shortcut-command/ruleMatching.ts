@@ -9,6 +9,8 @@ export interface EffectiveShortcutRules {
   sendAlias: Map<string, ShortcutRule>
   replace: ShortcutRule[]
   messageAction: Map<string, ShortcutRule>
+  /** 快速备选（输入前缀 → 候选），只用于输入框补全，不参与发送与消息显示 */
+  quickSuggest: ShortcutRule[]
   /** 因同 type + trigger 的个人规则而被覆盖的世界规则 id */
   overriddenIds: Set<string>
 }
@@ -25,6 +27,9 @@ const sortRules = (rules: readonly ShortcutRule[]) => rules
   .slice()
   .sort((a, b) => (a.sortOrder - b.sortOrder) || a.id.localeCompare(b.id))
 
+// quick_suggest 不发送任何内容，没有 command
+const requiresCommand = (type: ShortcutRuleType) => type !== 'quick_suggest'
+
 /**
  * 合并个人与世界规则：同 type + trigger 时 personal 优先于 world；
  * 停用的规则完全不参与（不会遮蔽世界规则）。同一作用域内重复时按排序取第一条。
@@ -38,7 +43,7 @@ export const buildEffectiveShortcutRules = (
   const active: ShortcutRule[] = []
   for (const rule of [...sortRules(personal), ...sortRules(world)]) {
     const trigger = String(rule.trigger || '').trim()
-    if (!rule.enabled || !trigger || !String(rule.command || '').trim()) continue
+    if (!rule.enabled || !trigger || (requiresCommand(rule.type) && !String(rule.command || '').trim())) continue
     const key = ruleKey(rule.type, trigger)
     const winner = taken.get(key)
     if (winner) {
@@ -54,13 +59,15 @@ export const buildEffectiveShortcutRules = (
     sendAlias: new Map(),
     replace: [],
     messageAction: new Map(),
+    quickSuggest: [],
     overriddenIds,
   }
   for (const rule of active) {
     const trigger = rule.trigger.trim()
     if (rule.type === 'send_alias') result.sendAlias.set(trigger, rule)
     else if (rule.type === 'replace') result.replace.push(rule)
-    else result.messageAction.set(trigger, rule)
+    else if (rule.type === 'message_action') result.messageAction.set(trigger, rule)
+    else if (rule.type === 'quick_suggest') result.quickSuggest.push(rule)
   }
   return result
 }

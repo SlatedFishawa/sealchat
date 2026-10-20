@@ -11,13 +11,15 @@ const (
 	ShortcutRuleTypeSendAlias     = "send_alias"
 	ShortcutRuleTypeReplace       = "replace"
 	ShortcutRuleTypeMessageAction = "message_action"
+	// ShortcutRuleTypeQuickSuggest 是输入阶段的候选补全：Trigger 为输入前缀，Command 为空。
+	ShortcutRuleTypeQuickSuggest = "quick_suggest"
 )
 
 // ShortcutRuleModel 存储快捷命令规则。
 //
 // personal 规则：Scope=personal，OwnerID=所属用户，WorldID 为空，跨世界生效。
 // world 规则：Scope=world，WorldID=所属世界，OwnerID 为空，由世界成员共同维护。
-// Config 保存按类型区分的轻量配置（autoDelete、clickAction 等），由 service 层归一化。
+// Config 保存按类型区分的轻量配置（autoDelete、clickAction、quick_suggest 的 source/items 等），由 service 层归一化。
 type ShortcutRuleModel struct {
 	StringPKBaseModel
 	Scope     string  `json:"scope" gorm:"size:16;not null;index:idx_shortcut_rule_bucket,priority:1;uniqueIndex:idx_shortcut_rule_unique,priority:1"`

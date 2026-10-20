@@ -28,6 +28,12 @@ const (
 
 	ShortcutRuleClickActionSend   = "send"
 	ShortcutRuleClickActionInsert = "insert"
+
+	// quick_suggest 的候选来源：character_attrs 在输入时实时读取当前人物卡顶层属性名，不做快照。
+	ShortcutRuleQuickSuggestSourceCharacterAttrs = "character_attrs"
+	ShortcutRuleQuickSuggestSourceCustom         = "custom"
+	ShortcutRuleQuickSuggestItemMaxRunes         = 64
+	ShortcutRuleQuickSuggestItemsMaxCount        = 200
 )
 
 // ShortcutRuleInput 用于创建规则。
@@ -96,6 +102,8 @@ func normalizeShortcutRuleType(raw string) (string, error) {
 		return model.ShortcutRuleTypeReplace, nil
 	case model.ShortcutRuleTypeMessageAction:
 		return model.ShortcutRuleTypeMessageAction, nil
+	case model.ShortcutRuleTypeQuickSuggest:
+		return model.ShortcutRuleTypeQuickSuggest, nil
 	default:
 		return "", fmt.Errorf("%w: 规则类型无效", ErrShortcutRuleInvalid)
 	}
@@ -115,7 +123,11 @@ func normalizeShortcutRuleTrigger(raw string) (string, error) {
 	return trigger, nil
 }
 
-func normalizeShortcutRuleCommand(raw string) (string, error) {
+// normalizeShortcutRuleCommand 校验实际内容；quick_suggest 只做输入补全、不发送命令，Command 固定为空。
+func normalizeShortcutRuleCommand(ruleType, raw string) (string, error) {
+	if ruleType == model.ShortcutRuleTypeQuickSuggest {
+		return "", nil
+	}
 	command := strings.TrimSpace(raw)
 	if command == "" {
 		return "", fmt.Errorf("%w: 实际内容不能为空", ErrShortcutRuleInvalid)
@@ -126,8 +138,51 @@ func normalizeShortcutRuleCommand(raw string) (string, error) {
 	return command, nil
 }
 
+// normalizeShortcutQuickSuggestItems 把自定义候选归一化为去重后的字符串数组。
+func normalizeShortcutQuickSuggestItems(raw any) ([]string, error) {
+	var values []any
+	switch typed := raw.(type) {
+	case nil:
+	case []any:
+		values = typed
+	case []string:
+		for _, item := range typed {
+			values = append(values, item)
+		}
+	default:
+		return nil, fmt.Errorf("%w: 自定义候选格式无效", ErrShortcutRuleInvalid)
+	}
+	items := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: 自定义候选格式无效", ErrShortcutRuleInvalid)
+		}
+		item := strings.TrimSpace(text)
+		if item == "" {
+			continue
+		}
+		if strings.ContainsAny(item, "\r\n") {
+			return nil, fmt.Errorf("%w: 候选内容不能换行", ErrShortcutRuleInvalid)
+		}
+		if utf8.RuneCountInString(item) > ShortcutRuleQuickSuggestItemMaxRunes {
+			return nil, fmt.Errorf("%w: 每个候选最多 %d 个字符", ErrShortcutRuleInvalid, ShortcutRuleQuickSuggestItemMaxRunes)
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		items = append(items, item)
+	}
+	if len(items) > ShortcutRuleQuickSuggestItemsMaxCount {
+		return nil, fmt.Errorf("%w: 自定义候选最多 %d 个", ErrShortcutRuleInvalid, ShortcutRuleQuickSuggestItemsMaxCount)
+	}
+	return items, nil
+}
+
 // normalizeShortcutRuleConfig 只保留当前类型认识的配置键，未知键丢弃。
-func normalizeShortcutRuleConfig(ruleType string, raw map[string]any) model.JSONMap {
+func normalizeShortcutRuleConfig(ruleType string, raw map[string]any) (model.JSONMap, error) {
 	config := model.JSONMap{}
 	switch ruleType {
 	case model.ShortcutRuleTypeSendAlias:
@@ -143,8 +198,23 @@ func normalizeShortcutRuleConfig(ruleType string, raw map[string]any) model.JSON
 		} else {
 			config["clickAction"] = ShortcutRuleClickActionSend
 		}
+	case model.ShortcutRuleTypeQuickSuggest:
+		source, _ := raw["source"].(string)
+		if strings.TrimSpace(source) != ShortcutRuleQuickSuggestSourceCustom {
+			config["source"] = ShortcutRuleQuickSuggestSourceCharacterAttrs
+			break
+		}
+		items, err := normalizeShortcutQuickSuggestItems(raw["items"])
+		if err != nil {
+			return nil, err
+		}
+		if len(items) == 0 {
+			return nil, fmt.Errorf("%w: 自定义候选至少需要一项", ErrShortcutRuleInvalid)
+		}
+		config["source"] = ShortcutRuleQuickSuggestSourceCustom
+		config["items"] = items
 	}
-	return config
+	return config, nil
 }
 
 func shortcutWorldMemberRole(db *gorm.DB, worldID, userID string) (string, error) {
@@ -331,7 +401,7 @@ func buildShortcutRuleViews(db *gorm.DB, rules []*model.ShortcutRuleModel) []*Sh
 	seen := map[string]struct{}{}
 	for _, rule := range rules {
 		if rule.Config == nil {
-			rule.Config = normalizeShortcutRuleConfig(rule.Type, nil)
+			rule.Config, _ = normalizeShortcutRuleConfig(rule.Type, nil)
 		}
 		views = append(views, &ShortcutRuleView{ShortcutRuleModel: rule})
 		if id := strings.TrimSpace(rule.UpdatedBy); id != "" {
@@ -427,7 +497,11 @@ func ShortcutRuleCreate(actorID string, input ShortcutRuleInput) (*ShortcutRuleV
 	if err != nil {
 		return nil, err
 	}
-	command, err := normalizeShortcutRuleCommand(input.Command)
+	command, err := normalizeShortcutRuleCommand(ruleType, input.Command)
+	if err != nil {
+		return nil, err
+	}
+	config, err := normalizeShortcutRuleConfig(ruleType, input.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -456,7 +530,7 @@ func ShortcutRuleCreate(actorID string, input ShortcutRuleInput) (*ShortcutRuleV
 			Type:      ruleType,
 			Trigger:   trigger,
 			Command:   command,
-			Config:    normalizeShortcutRuleConfig(ruleType, input.Config),
+			Config:    config,
 			Enabled:   enabled,
 			SortOrder: sortOrder,
 			CreatedBy: actorID,
@@ -502,7 +576,7 @@ func ShortcutRuleUpdate(actorID, ruleID string, patch ShortcutRulePatch) (*Short
 			updates["trigger_text"] = trigger
 		}
 		if patch.Command != nil {
-			command, err := normalizeShortcutRuleCommand(*patch.Command)
+			command, err := normalizeShortcutRuleCommand(rule.Type, *patch.Command)
 			if err != nil {
 				return err
 			}
@@ -512,7 +586,11 @@ func ShortcutRuleUpdate(actorID, ruleID string, patch ShortcutRulePatch) (*Short
 			updates["enabled"] = *patch.Enabled
 		}
 		if patch.Config != nil {
-			updates["config"] = normalizeShortcutRuleConfig(rule.Type, patch.Config)
+			config, err := normalizeShortcutRuleConfig(rule.Type, patch.Config)
+			if err != nil {
+				return err
+			}
+			updates["config"] = config
 		}
 
 		bucket := shortcutRuleBucketOf(rule)

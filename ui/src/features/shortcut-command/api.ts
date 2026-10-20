@@ -12,7 +12,7 @@ const normalizeRule = (raw: any): ShortcutRule => ({
   scope: raw?.scope === 'world' ? 'world' : 'personal',
   worldId: String(raw?.worldId || ''),
   ownerId: String(raw?.ownerId || ''),
-  type: raw?.type === 'replace' || raw?.type === 'message_action' ? raw.type : 'send_alias',
+  type: raw?.type === 'replace' || raw?.type === 'message_action' || raw?.type === 'quick_suggest' ? raw.type : 'send_alias',
   trigger: String(raw?.trigger || ''),
   command: String(raw?.command || ''),
   config: raw?.config && typeof raw.config === 'object' ? { ...raw.config } : {},

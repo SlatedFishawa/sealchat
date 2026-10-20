@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { NInput, NSwitch } from 'naive-ui'
+import QuickSuggestItemsEditor from './QuickSuggestItemsEditor.vue'
+import { normalizeQuickSuggestItems, resolveQuickSuggestSource } from './quickSuggest'
 import {
   SHORTCUT_COMMAND_MAX_LENGTH,
   SHORTCUT_RULE_TYPE_LABELS,
   SHORTCUT_TRIGGER_MAX_LENGTH,
+  type QuickSuggestSource,
   type ShortcutRule,
   type ShortcutRuleDraft,
   type ShortcutRuleType,
@@ -18,6 +21,8 @@ const props = defineProps<{
   worldDisabledReason: string
   saving: boolean
   error: string
+  /** 新建快速备选时预选的候选来源 */
+  presetSource?: QuickSuggestSource
 }>()
 
 const emit = defineEmits<{
@@ -34,6 +39,7 @@ const draft = reactive<ShortcutRuleDraft>({
   config: {},
 })
 const triggerInputRef = ref<InstanceType<typeof NInput> | null>(null)
+const itemsEditorRef = ref<InstanceType<typeof QuickSuggestItemsEditor> | null>(null)
 
 const resetDraft = () => {
   const source = props.rule
@@ -47,10 +53,12 @@ const resetDraft = () => {
     autoDelete: source?.config?.autoDelete === true,
     replaceInChat: source?.config?.replaceInChat === true,
     clickAction: source?.config?.clickAction === 'insert' ? 'insert' : 'send',
+    source: source ? resolveQuickSuggestSource(source) : (props.presetSource || 'character_attrs'),
+    items: normalizeQuickSuggestItems(source?.config?.items),
   }
 }
 resetDraft()
-watch(() => [props.rule, props.type] as const, resetDraft)
+watch(() => [props.rule, props.type, props.presetSource] as const, resetDraft)
 
 onMounted(() => {
   nextTick(() => triggerInputRef.value?.focus())
@@ -77,6 +85,14 @@ const copy = computed(() => {
         command: '替换为',
         commandPlaceholder: '例如：力量',
       }
+    case 'quick_suggest':
+      return {
+        trigger: '触发前缀',
+        triggerHint: '在输入框输入这段文字后弹出候选；可以是 .ra、。test、#、技能: 等任意文字',
+        triggerPlaceholder: '例如：.ra',
+        command: '',
+        commandPlaceholder: '',
+      }
     default:
       return {
         trigger: '消息中的关键词',
@@ -91,26 +107,58 @@ const copy = computed(() => {
 const previewTrigger = computed(() => draft.trigger.trim() || copy.value.triggerPlaceholder.replace(/^例如：/, ''))
 const previewCommand = computed(() => draft.command.trim() || copy.value.commandPlaceholder.replace(/^例如：/, ''))
 
+const isQuickSuggest = computed(() => draft.type === 'quick_suggest')
+const isCustomSource = computed(() => draft.config.source === 'custom')
+const draftItems = computed({
+  get: () => draft.config.items || [],
+  set: (value: string[]) => {
+    draft.config.items = value
+  },
+})
+
 const canSave = computed(() => (
   !props.saving
   && !!draft.trigger.trim()
-  && !!draft.command.trim()
   && !/[\r\n]/.test(draft.trigger)
+  && (isQuickSuggest.value
+    ? (!isCustomSource.value || draftItems.value.length > 0)
+    : !!draft.command.trim())
 ))
 
+// 预览只示意用户自己的输入形式：字母数字结尾的前缀习惯空一格，符号前缀直接接查询
+const quickSuggestPreviewGap = computed(() => (/[A-Za-z0-9]$/.test(previewTrigger.value) ? ' ' : ''))
+const quickSuggestPreviewItems = computed(() => {
+  if (!isCustomSource.value) return ['力量', '敏捷', '体质', '侦查']
+  return draftItems.value.length ? draftItems.value.slice(0, 4) : ['候选一', '候选二']
+})
+
+const buildConfig = () => {
+  switch (draft.type) {
+    case 'send_alias':
+      return { autoDelete: draft.config.autoDelete === true }
+    case 'replace':
+      return { replaceInChat: draft.config.replaceInChat === true }
+    case 'message_action':
+      return { clickAction: draft.config.clickAction === 'insert' ? 'insert' as const : 'send' as const }
+    case 'quick_suggest':
+      // 人物卡属性来源不保存属性名快照，使用时实时读取
+      return isCustomSource.value
+        ? { source: 'custom' as const, items: draftItems.value.slice() }
+        : { source: 'character_attrs' as const }
+    default:
+      return {}
+  }
+}
+
 const submit = () => {
+  itemsEditorRef.value?.commitPending()
   if (!canSave.value) return
   emit('save', {
     ...draft,
     trigger: draft.trigger.trim(),
-    command: draft.command.trim(),
-    config: draft.type === 'send_alias'
-      ? { autoDelete: draft.config.autoDelete === true }
-      : draft.type === 'replace'
-        ? { replaceInChat: draft.config.replaceInChat === true }
-      : draft.type === 'message_action'
-        ? { clickAction: draft.config.clickAction === 'insert' ? 'insert' : 'send' }
-        : {},
+    // 快速备选只补全输入、不发送命令，没有实际内容
+    command: isQuickSuggest.value ? '' : draft.command.trim(),
+    config: buildConfig(),
   })
 }
 
@@ -178,7 +226,7 @@ const handleKeydown = (event: KeyboardEvent) => {
         <span class="sc-rule-editor__hint">{{ copy.triggerHint }}</span>
       </label>
 
-      <label class="sc-rule-editor__field">
+      <label v-if="!isQuickSuggest" class="sc-rule-editor__field">
         <span class="sc-rule-editor__label">{{ copy.command }}</span>
         <NInput
           v-model:value="draft.command"
@@ -188,6 +236,35 @@ const handleKeydown = (event: KeyboardEvent) => {
           clearable
         />
       </label>
+
+      <div v-if="isQuickSuggest" class="sc-rule-editor__field">
+        <span class="sc-rule-editor__label">候选来源</span>
+        <div class="sc-rule-editor__segmented" role="radiogroup" aria-label="候选来源">
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="!isCustomSource"
+            :class="{ 'is-active': !isCustomSource }"
+            @click="draft.config.source = 'character_attrs'"
+          >
+            当前人物卡属性<small>输入时实时读取，随人物卡变化</small>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="isCustomSource"
+            :class="{ 'is-active': isCustomSource }"
+            @click="draft.config.source = 'custom'"
+          >
+            自定义候选<small>自己维护一组固定选项</small>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="isQuickSuggest && isCustomSource" class="sc-rule-editor__field">
+        <span class="sc-rule-editor__label">候选</span>
+        <QuickSuggestItemsEditor ref="itemsEditorRef" v-model="draftItems" />
+      </div>
 
       <div v-if="draft.type === 'message_action'" class="sc-rule-editor__field">
         <span class="sc-rule-editor__label">点击按钮时</span>
@@ -248,6 +325,21 @@ const handleKeydown = (event: KeyboardEvent) => {
           <code class="sc-preview-flow__command">.ra <del>{{ previewTrigger }}</del></code>
           <span class="sc-preview-flow__arrow">发送时</span>
           <code class="sc-preview-flow__command">.ra <ins>{{ previewCommand }}</ins></code>
+        </div>
+        <div v-else-if="isQuickSuggest" class="sc-preview-suggest">
+          <ul class="sc-preview-suggest__menu" aria-hidden="true">
+            <li
+              v-for="(item, index) in quickSuggestPreviewItems"
+              :key="item"
+              :class="{ 'is-active': index === 0 }"
+            >{{ item }}</li>
+          </ul>
+          <div class="sc-preview-suggest__input">
+            <span>{{ previewTrigger }}{{ quickSuggestPreviewGap }}</span><span class="sc-preview-suggest__caret" />
+          </div>
+          <span class="sc-preview-message__caption">
+            选中后输入框变为 <code>{{ previewTrigger }}{{ quickSuggestPreviewGap }}{{ quickSuggestPreviewItems[0] }}</code>，光标停在末尾，不会自动发送
+          </span>
         </div>
         <div v-else class="sc-preview-message">
           我准备做一次<button
@@ -473,6 +565,66 @@ const handleKeydown = (event: KeyboardEvent) => {
   text-decoration: none;
   color: var(--sc-shortcut-accent);
   font-weight: 600;
+}
+
+.sc-preview-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sc-preview-suggest__menu {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-self: flex-start;
+  min-width: 132px;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--sc-border-mute);
+  border-radius: 8px;
+  background: var(--sc-bg-elevated);
+  box-shadow: 0 6px 16px -10px rgba(15, 23, 42, 0.45);
+  list-style: none;
+  font-size: 12.5px;
+}
+
+.sc-preview-suggest__menu li {
+  padding: 2px 8px;
+  border-radius: 5px;
+}
+
+.sc-preview-suggest__menu li.is-active {
+  background: color-mix(in srgb, var(--sc-shortcut-accent) 14%, transparent);
+  color: var(--sc-shortcut-accent);
+}
+
+.sc-preview-suggest__input {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--sc-chip-bg);
+  font-family: var(--sc-code-font);
+  font-size: 13px;
+  white-space: pre;
+}
+
+.sc-preview-suggest__caret {
+  width: 1.5px;
+  height: 1.1em;
+  background: var(--sc-shortcut-accent);
+  animation: sc-caret-blink 1.1s steps(1) infinite;
+}
+
+@keyframes sc-caret-blink {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sc-preview-suggest__caret {
+    animation: none;
+  }
 }
 
 .sc-preview-message {

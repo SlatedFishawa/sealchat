@@ -2,22 +2,25 @@
   <transition name="keyword-suggest-fade">
     <div v-if="visible" class="keyword-suggest" @mousedown.prevent>
       <div class="keyword-suggest__content">
-        <div v-if="options.length" class="keyword-suggest__list">
+        <div v-if="title" class="keyword-suggest__title">{{ title }}</div>
+        <div v-if="options.length" ref="listRef" class="keyword-suggest__list" role="listbox">
           <div
             v-for="(option, index) in options"
-            :key="option.keyword.id"
+            :key="option.id"
             class="keyword-suggest__item"
             :class="{ 'is-active': index === activeIndex }"
+            role="option"
+            :aria-selected="index === activeIndex"
             @mousedown.prevent="$emit('select', option)"
             @mouseenter="$emit('hover', index)"
           >
-            <span class="keyword-suggest__name">{{ option.keyword.keyword }}</span>
-            <span v-if="option.keyword.category" class="keyword-suggest__category">{{ option.keyword.category }}</span>
-            <span v-if="option.keyword.description" class="keyword-suggest__desc">{{ truncateDesc(option.keyword.description) }}</span>
+            <span class="keyword-suggest__name">{{ option.label }}</span>
+            <span v-if="option.category" class="keyword-suggest__category">{{ option.category }}</span>
+            <span v-if="option.description" class="keyword-suggest__desc">{{ truncateDesc(option.description) }}</span>
           </div>
         </div>
         <div v-else class="keyword-suggest__empty">
-          {{ loading ? '搜索中...' : '无匹配术语' }}
+          {{ loading ? '搜索中...' : (emptyText || '无匹配术语') }}
         </div>
       </div>
     </div>
@@ -25,21 +28,39 @@
 </template>
 
 <script setup lang="ts">
-import type { KeywordMatchResult } from '@/utils/pinyinMatch'
+import { nextTick, ref, watch } from 'vue'
+import type { ComposerSuggestOption } from '@/views/chat/composables/useComposerSuggest'
+
+// 聊天输入框候选浮层：世界术语与快速备选共用，候选来源与键盘导航由 useComposerSuggest 管理。
 
 interface Props {
   visible: boolean
-  options: KeywordMatchResult[]
+  options: ComposerSuggestOption[]
   activeIndex: number
   loading?: boolean
+  /** 没有候选时的提示 */
+  emptyText?: string
+  /** 顶部来源说明（例如快速备选的前缀与来源） */
+  title?: string
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 
 defineEmits<{
-  (e: 'select', option: KeywordMatchResult): void
+  (e: 'select', option: ComposerSuggestOption): void
   (e: 'hover', index: number): void
 }>()
+
+const listRef = ref<HTMLElement | null>(null)
+
+// 候选较多时列表可滚动，键盘切换后让当前项保持可见
+watch(() => [props.visible, props.activeIndex, props.options] as const, () => {
+  if (!props.visible) return
+  void nextTick(() => {
+    const active = listRef.value?.children[props.activeIndex] as HTMLElement | undefined
+    active?.scrollIntoView?.({ block: 'nearest' })
+  })
+})
 
 const MAX_DESC_LENGTH = 40
 
@@ -75,10 +96,23 @@ function truncateDesc(desc: string): string {
   padding: 0.35rem;
 }
 
+.keyword-suggest__title {
+  padding: 0.15rem 0.6rem 0.3rem;
+  font-size: 11px;
+  color: var(--text-color-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .keyword-suggest__list {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  max-height: min(16rem, 40vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .keyword-suggest__item {

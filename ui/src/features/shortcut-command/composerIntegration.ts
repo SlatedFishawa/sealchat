@@ -46,6 +46,9 @@ export const resolveShortcutComposerHintsFor = (
   isCommandLike: commandLikeChecker(botCommandPrefixes),
 })
 
+/** 当前世界生效的快速备选规则（personal 覆盖同前缀的 world）；只用于输入补全，不进入发送流程。 */
+export const resolveQuickSuggestRulesFor = (worldId: string) => getEffectiveShortcutRules(worldId).quickSuggest
+
 // 给机器人留出读取命令消息的时间后再删除
 export const SHORTCUT_AUTO_DELETE_DELAY_MS = 1500
 

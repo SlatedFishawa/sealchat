@@ -26,11 +26,25 @@ import ChatActionRibbon from './components/ChatActionRibbon.vue'
 import GlassBackgroundPanel from './components/GlassBackgroundPanel.vue'
 import ShortcutCommandModal from '@/features/shortcut-command/ShortcutCommandModal.vue'
 import {
+  resolveQuickSuggestRulesFor,
   resolveShortcutComposerHintsFor,
   resolveShortcutOutgoingDraft,
   resolveShortcutSendAliasesFor,
   scheduleShortcutCommandAutoDelete,
 } from '@/features/shortcut-command/composerIntegration'
+import {
+  applyQuickSuggestToRichEditor,
+  applyQuickSuggestToText,
+  filterQuickSuggestCandidates,
+  findQuickSuggestMatch,
+  pickComposerSuggestTrigger,
+  readRichTextBeforeCursor,
+  resolveQuickSuggestCandidates,
+  resolveQuickSuggestSource,
+  type QuickSuggestMatch,
+  type RichTextBeforeCursor,
+} from '@/features/shortcut-command/quickSuggest'
+import { useComposerSuggest, type ComposerSuggestOption } from './composables/useComposerSuggest'
 import { executeChatMessageAction } from '@/utils/chatMessageActionExecutor'
 import { buildBackgroundImageStyle, buildBackgroundOverlayStyle } from '@/utils/backgroundPresentation'
 import InlineChatSplitWindow from './components/InlineChatSplitWindow.vue'
@@ -10045,10 +10059,8 @@ const showAIPolish = computed(() => aiStore.isFeatureEnabled('polish'))
 const showBattleSummary = computed(() => aiStore.isFeatureEnabled('battle_summary'))
 const reeditRevokedSource = ref<{ channelId: string; messageId: string } | null>(null);
 
-// 术语快捷输入状态
-const keywordSuggestVisible = ref(false);
+// 术语快捷输入状态（浮层可见性与键盘导航由 composerSuggest 统一管理）
 const keywordSuggestQuery = ref('');
-const keywordSuggestIndex = ref(0);
 const keywordSuggestSlashPos = ref(-1);
 const keywordSuggestLoading = ref(false);
 const keywordSuggestOptions = ref<KeywordMatchResult[]>([]);
@@ -13813,7 +13825,7 @@ watch(textToSend, (value) => {
   handleWhisperCommand(value);
   scheduleHistorySnapshot();
   scheduleSessionDraftSnapshot();
-  checkKeywordSuggest();
+  checkComposerSuggest();
   if (isEditing.value) {
     chat.updateEditingDraft(value);
     emitEditingPreview();
@@ -15263,25 +15275,41 @@ const handleMentionSelect = () => {
 };
 
 // 术语快捷输入相关函数
+let keywordMatchSeq = 0;
 const performKeywordMatch = async (query: string) => {
+  const seq = ++keywordMatchSeq;
   keywordSuggestLoading.value = true;
   try {
     await ensurePinyinLoaded();
+    // 等待拼音库期间输入已变化（或已被快速备选接管）时丢弃旧结果
+    if (seq !== keywordMatchSeq) return;
     const keywords = worldGlossary.currentKeywords || [];
     const results = matchKeywords(query, keywords, 5);
     // 按分数升序排列（低分在上，高分在下靠近输入框）
     keywordSuggestOptions.value = results.sort((a, b) => a.score - b.score);
-    keywordSuggestIndex.value = results.length > 0 ? results.length - 1 : 0;
-    keywordSuggestVisible.value = results.length > 0;
+    if (results.length > 0) {
+      composerSuggest.open('keyword', 'last');
+    } else {
+      composerSuggest.close('keyword');
+    }
   } finally {
-    keywordSuggestLoading.value = false;
+    if (seq === keywordMatchSeq) {
+      keywordSuggestLoading.value = false;
+    }
   }
 };
 
-const checkKeywordSuggest = () => {
+interface KeywordSuggestTrigger {
+  slashIndex: number;
+  query: string;
+  /** 触发字符到光标的字符数 */
+  distance: number;
+  triggerLength: number;
+}
+
+const detectKeywordSuggestTrigger = (): KeywordSuggestTrigger | null => {
   if (!display.settings.worldKeywordQuickInputEnabled) {
-    keywordSuggestVisible.value = false;
-    return;
+    return null;
   }
 
   const trigger = display.settings.worldKeywordQuickInputTrigger || '/';
@@ -15293,8 +15321,7 @@ const checkKeywordSuggest = () => {
     // 富文本模式：从编辑器获取纯文本和光标位置
     const editorInstance = textInputRef.value?.getEditor?.();
     if (!editorInstance) {
-      keywordSuggestVisible.value = false;
-      return;
+      return null;
     }
     text = editorInstance.getText();
     cursorPos = editorInstance.state.selection.from - 1; // TipTap 的 from 是基于 1 的
@@ -15309,8 +15336,7 @@ const checkKeywordSuggest = () => {
   // 查找最近的触发字符
   const slashIndex = beforeCursor.lastIndexOf(trigger);
   if (slashIndex === -1) {
-    keywordSuggestVisible.value = false;
-    return;
+    return null;
   }
 
   // 提取查询内容
@@ -15319,67 +15345,252 @@ const checkKeywordSuggest = () => {
 
   // 检测是否是快捷命令模式 (/e 空格 或 /w 空格) - 仅当触发字符为 / 时检查
   if (trigger === '/' && /^[ew]\s/.test(query)) {
-    keywordSuggestVisible.value = false;
-    return;
+    return null;
   }
 
   if (shouldSuppressKeywordSuggestForIdentityShortcut(shortcutDraft, trigger)) {
-    keywordSuggestVisible.value = false;
-    return;
+    return null;
   }
 
   // 检测两个连续空格
   if (query.includes('  ')) {
-    keywordSuggestVisible.value = false;
-    return;
+    return null;
   }
 
   // 空查询时不显示
   if (!query.trim()) {
-    keywordSuggestVisible.value = false;
+    return null;
+  }
+
+  return { slashIndex, query, distance: beforeCursor.length - slashIndex, triggerLength: trigger.length };
+};
+
+// 快速备选：输入快捷规则配置的前缀后显示候选，选中只修改输入框，不进入发送流程
+interface QuickSuggestSession {
+  match: QuickSuggestMatch;
+  channelId: string;
+  /** 富文本模式下光标所在文本块；match 的下标相对该文本块 */
+  rich: RichTextBeforeCursor | null;
+  /** 从前缀起点到光标的文本，用于判断“选中/Escape 后输入未变化” */
+  draftKey: string;
+}
+
+const quickSuggestSession = shallowRef<QuickSuggestSession | null>(null);
+const quickSuggestCardLoadingChannel = ref('');
+const quickSuggestCardRequestsInFlight = new Set<string>();
+const quickSuggestCardRetryAfter = new Map<string, number>();
+const QUICK_SUGGEST_CARD_RETRY_DELAY_MS = 5000;
+let quickSuggestDismissedKey = '';
+let quickSuggestApplying = false;
+
+const quickSuggestSessionKey = (session: Pick<QuickSuggestSession, 'match' | 'draftKey'>) => (
+  `${session.match.rule.id}:${session.match.triggerStart}:${session.draftKey}`
+);
+
+const quickSuggestUsesCard = computed(() => (
+  !!quickSuggestSession.value && resolveQuickSuggestSource(quickSuggestSession.value.match.rule) === 'character_attrs'
+));
+// 实时读取当前频道正在使用的人物卡；角色切换引起的人物卡同步会直接反映到候选
+const quickSuggestCard = computed(() => {
+  const session = quickSuggestSession.value;
+  if (!session || !quickSuggestUsesCard.value) return null;
+  return characterCardStore.activeCards[session.channelId] || null;
+});
+const quickSuggestOptions = computed<ComposerSuggestOption[]>(() => {
+  const session = quickSuggestSession.value;
+  if (!session) return [];
+  const candidates = resolveQuickSuggestCandidates(session.match.rule, { characterAttrs: quickSuggestCard.value?.attrs });
+  return filterQuickSuggestCandidates(candidates, session.match.query, matchText)
+    .map((label) => ({ id: label, label }));
+});
+const quickSuggestLoading = computed(() => (
+  quickSuggestUsesCard.value
+  && !quickSuggestCard.value
+  && quickSuggestCardLoadingChannel.value === quickSuggestSession.value?.channelId
+));
+const quickSuggestEmptyText = computed(() => {
+  const session = quickSuggestSession.value;
+  // 已输入查询但没有匹配时不打扰正常输入
+  if (!session || session.match.query) return '';
+  if (!quickSuggestUsesCard.value) return '没有可用候选';
+  if (characterCardStore.isBotCharacterDisabled(session.channelId)) return '当前频道未启用人物卡';
+  if (quickSuggestLoading.value) return '';
+  return quickSuggestCard.value ? '当前人物卡没有属性' : '当前没有正在使用的人物卡';
+});
+const quickSuggestTitle = computed(() => {
+  const session = quickSuggestSession.value;
+  if (!session) return '';
+  const prefix = session.match.rule.trigger.trim();
+  if (!quickSuggestUsesCard.value) return `${prefix} · 快速备选`;
+  const cardName = String(quickSuggestCard.value?.name || '').trim();
+  return `${prefix} · ${cardName ? `人物卡「${cardName}」` : '人物卡属性'}`;
+});
+
+// 当前频道还没有人物卡数据时惰性读取一次；不随每次按键请求
+const ensureQuickSuggestCard = (channelId: string) => {
+  if (!channelId
+    || characterCardStore.activeCards[channelId]
+    || quickSuggestCardRequestsInFlight.has(channelId)
+    || Date.now() < (quickSuggestCardRetryAfter.get(channelId) || 0)
+    || characterCardStore.isBotCharacterDisabled(channelId)) {
+    return;
+  }
+  quickSuggestCardRequestsInFlight.add(channelId);
+  quickSuggestCardLoadingChannel.value = channelId;
+  void characterCardStore.getActiveCard(channelId)
+    .then(() => {
+      if (characterCardStore.activeCards[channelId]) {
+        quickSuggestCardRetryAfter.delete(channelId);
+      } else {
+        quickSuggestCardRetryAfter.set(channelId, Date.now() + QUICK_SUGGEST_CARD_RETRY_DELAY_MS);
+      }
+    })
+    .catch(() => {
+      quickSuggestCardRetryAfter.set(channelId, Date.now() + QUICK_SUGGEST_CARD_RETRY_DELAY_MS);
+    })
+    .finally(() => {
+      quickSuggestCardRequestsInFlight.delete(channelId);
+      if (quickSuggestCardLoadingChannel.value === channelId) {
+        quickSuggestCardLoadingChannel.value = '';
+      }
+    });
+};
+
+const detectQuickSuggest = (): QuickSuggestSession | null => {
+  const channelId = String(chat.curChannel?.id || '');
+  const rules = resolveQuickSuggestRulesFor(String(chat.currentWorldId || ''));
+  if (!channelId || !rules.length) return null;
+  if (inputMode.value === 'rich') {
+    const rich = readRichTextBeforeCursor(textInputRef.value?.getEditor?.());
+    if (!rich) return null;
+    const match = findQuickSuggestMatch(rich.text, rules);
+    return match ? { match, channelId, rich, draftKey: rich.text.slice(match.triggerStart) } : null;
+  }
+  const selection = getInputSelection();
+  if (selection.start !== selection.end) return null;
+  const beforeCursor = textToSend.value.slice(0, selection.start);
+  const match = findQuickSuggestMatch(beforeCursor, rules);
+  return match ? { match, channelId, rich: null, draftKey: beforeCursor.slice(match.triggerStart) } : null;
+};
+
+const closeQuickSuggest = () => {
+  quickSuggestSession.value = null;
+  composerSuggest.close('quick');
+};
+
+const openQuickSuggest = (next: QuickSuggestSession) => {
+  const key = quickSuggestSessionKey(next);
+  if (key === quickSuggestDismissedKey) {
+    closeQuickSuggest();
+    return;
+  }
+  quickSuggestDismissedKey = '';
+  const previous = quickSuggestSession.value;
+  const sameQuery = !!previous
+    && composerSuggest.activeProvider.value === 'quick'
+    && previous.match.rule.id === next.match.rule.id
+    && previous.match.triggerStart === next.match.triggerStart
+    && previous.match.query === next.match.query;
+  quickSuggestSession.value = next;
+  if (resolveQuickSuggestSource(next.match.rule) === 'character_attrs') {
+    ensureQuickSuggestCard(next.channelId);
+  }
+  composerSuggest.open('quick', sameQuery ? composerSuggest.activeIndex.value : 'first');
+};
+
+const applyQuickSuggestion = (option: ComposerSuggestOption) => {
+  const session = quickSuggestSession.value;
+  if (!session) return;
+  const { match } = session;
+  const value = option.label;
+  // 选中后输入停在“前缀 + 候选”，在用户继续修改前不再弹出同一组候选
+  quickSuggestDismissedKey = quickSuggestSessionKey({
+    match,
+    draftKey: session.draftKey.slice(0, match.queryStart - match.triggerStart) + value,
+  });
+  closeQuickSuggest();
+
+  if (session.rich) {
+    const editorInstance = textInputRef.value?.getEditor?.();
+    if (editorInstance) {
+      applyQuickSuggestToRichEditor(editorInstance, session.rich, match, value);
+    }
     return;
   }
 
-  // 执行匹配
-  keywordSuggestSlashPos.value = slashIndex;
-  keywordSuggestQuery.value = query;
-  performKeywordMatch(query);
+  const result = applyQuickSuggestToText(textToSend.value, match, value);
+  // 文本先于 DOM 选区更新，期间跳过候选检测，避免用旧光标重新匹配
+  quickSuggestApplying = true;
+  textToSend.value = result.text;
+  nextTick(() => {
+    nextTick(() => {
+      quickSuggestApplying = false;
+      setInputSelection(result.cursor, result.cursor);
+      textInputRef.value?.focus?.();
+    });
+  });
 };
 
-const handleKeywordSuggestKeydown = (e: KeyboardEvent): boolean => {
-  if (!keywordSuggestVisible.value) return false;
+const composerSuggest = useComposerSuggest({
+  keyword: {
+    options: computed<ComposerSuggestOption[]>(() => keywordSuggestOptions.value.map((result) => ({
+      id: result.keyword.id,
+      label: result.keyword.keyword,
+      category: result.keyword.category,
+      description: result.keyword.description,
+    }))),
+    loading: keywordSuggestLoading,
+    apply: (option) => {
+      const result = keywordSuggestOptions.value.find((item) => item.keyword.id === option.id);
+      if (result) applyKeywordSuggestion(result);
+    },
+  },
+  quick: {
+    options: quickSuggestOptions,
+    loading: quickSuggestLoading,
+    emptyText: quickSuggestEmptyText,
+    title: quickSuggestTitle,
+    apply: (option) => applyQuickSuggestion(option),
+    dismiss: () => {
+      const session = quickSuggestSession.value;
+      if (session) quickSuggestDismissedKey = quickSuggestSessionKey(session);
+      quickSuggestSession.value = null;
+    },
+  },
+});
 
-  const options = keywordSuggestOptions.value;
-  if (!options.length) return false;
-
-  if (e.key === 'ArrowDown') {
-    keywordSuggestIndex.value = Math.min(keywordSuggestIndex.value + 1, options.length - 1);
-    e.preventDefault();
-    return true;
+/**
+ * 输入变化后决定显示哪个候选来源：世界术语与快速备选同时触发时，
+ * 离光标最近的触发优先，起点相同时更长的触发优先（因此快速备选 /ra 覆盖术语触发 /）。
+ */
+const checkComposerSuggest = () => {
+  if (quickSuggestApplying) return;
+  // 作废尚未返回的术语匹配，避免旧结果覆盖本次判定
+  keywordMatchSeq += 1;
+  keywordSuggestLoading.value = false;
+  const quick = detectQuickSuggest();
+  const keyword = detectKeywordSuggestTrigger();
+  const winner = pickComposerSuggestTrigger([
+    quick && { kind: 'quick' as const, distance: quick.match.queryEnd - quick.match.triggerStart, triggerLength: quick.match.rule.trigger.trim().length },
+    keyword && { kind: 'keyword' as const, distance: keyword.distance, triggerLength: keyword.triggerLength },
+  ]);
+  if (winner?.kind === 'quick' && quick) {
+    openQuickSuggest(quick);
+    return;
   }
-
-  if (e.key === 'ArrowUp') {
-    keywordSuggestIndex.value = Math.max(keywordSuggestIndex.value - 1, 0);
-    e.preventDefault();
-    return true;
+  closeQuickSuggest();
+  if (winner?.kind === 'keyword' && keyword) {
+    // 执行匹配
+    keywordSuggestSlashPos.value = keyword.slashIndex;
+    keywordSuggestQuery.value = keyword.query;
+    void performKeywordMatch(keyword.query);
+    return;
   }
+  composerSuggest.close('keyword');
+};
 
-  if (e.key === 'Enter' && !e.isComposing) {
-    const selected = options[keywordSuggestIndex.value];
-    if (selected) {
-      applyKeywordSuggestion(selected);
-      e.preventDefault();
-      return true;
-    }
-  }
-
-  if (e.key === 'Escape') {
-    keywordSuggestVisible.value = false;
-    e.preventDefault();
-    return true;
-  }
-
-  return false;
+const handleComposerSelectionChange = () => {
+  nextTick(() => checkComposerSuggest());
 };
 
 const applyKeywordSuggestion = (result: KeywordMatchResult) => {
@@ -15423,23 +15634,16 @@ const applyKeywordSuggestion = (result: KeywordMatchResult) => {
     });
   }
 
-  keywordSuggestVisible.value = false;
+  composerSuggest.close('keyword');
 };
 
-const handleKeywordSuggestSelect = (result: KeywordMatchResult) => {
-  applyKeywordSuggestion(result);
-};
-
-const handleKeywordSuggestHover = (index: number) => {
-  keywordSuggestIndex.value = index;
-};
-
-const handleKeywordSuggestBlur = () => {
-  keywordSuggestVisible.value = false;
+const handleComposerSuggestBlur = () => {
+  closeQuickSuggest();
+  composerSuggest.close();
 };
 
 const handleChatInputBlur = () => {
-  handleKeywordSuggestBlur();
+  handleComposerSuggestBlur();
   syncSessionDraftSnapshot();
 };
 
@@ -15559,8 +15763,8 @@ const customSendShortcutEnabled = computed(() => {
 const keyDown = function (e: KeyboardEvent) {
   if (pauseKeydown.value) return;
 
-  // 优先处理术语快捷输入
-  if (handleKeywordSuggestKeydown(e)) {
+  // 优先处理输入候选（世界术语 / 快速备选）
+  if (composerSuggest.handleKeydown(e)) {
     return;
   }
 
@@ -15795,7 +15999,7 @@ watch(
 const composerHintsSuppressed = computed(() => (
   !chat.curChannel?.id
   || spectatorInputDisabled.value
-  || keywordSuggestVisible.value
+  || composerSuggest.visible.value
   || emojiPopoverShow.value
   || whisperPanelVisible.value
   || historyPopoverVisible.value
@@ -17770,12 +17974,14 @@ onBeforeUnmount(() => {
               </div>
               <div class="chat-input-editor-main">
                 <KeywordSuggestPanel
-                  :visible="keywordSuggestVisible"
-                  :options="keywordSuggestOptions"
-                  :active-index="keywordSuggestIndex"
-                  :loading="keywordSuggestLoading"
-                  @select="handleKeywordSuggestSelect"
-                  @hover="handleKeywordSuggestHover"
+                  :visible="composerSuggest.visible.value"
+                  :options="composerSuggest.options.value"
+                  :active-index="composerSuggest.activeIndex.value"
+                  :loading="composerSuggest.loading.value"
+                  :empty-text="composerSuggest.emptyText.value"
+                  :title="composerSuggest.title.value"
+                  @select="composerSuggest.select"
+                  @hover="composerSuggest.hover"
                 />
                 <div
                   ref="minimalInputMeasureRef"
@@ -17800,6 +18006,7 @@ onBeforeUnmount(() => {
                     @mention-search="atHandleSearch"
                     @mention-select="handleMentionSelect"
                     @keydown="keyDown"
+                    @selection-change="handleComposerSelectionChange"
                     @blur="handleChatInputBlur"
                     @input="handleSlashInput"
                     @paste-image="handlePlainPasteImage"
@@ -17942,12 +18149,14 @@ onBeforeUnmount(() => {
             <div v-else class="chat-input-editor-row" :style="chatInputStyle">
               <div class="chat-input-editor-main">
                 <KeywordSuggestPanel
-                  :visible="keywordSuggestVisible"
-                  :options="keywordSuggestOptions"
-                  :active-index="keywordSuggestIndex"
-                  :loading="keywordSuggestLoading"
-                  @select="handleKeywordSuggestSelect"
-                  @hover="handleKeywordSuggestHover"
+                  :visible="composerSuggest.visible.value"
+                  :options="composerSuggest.options.value"
+                  :active-index="composerSuggest.activeIndex.value"
+                  :loading="composerSuggest.loading.value"
+                  :empty-text="composerSuggest.emptyText.value"
+                  :title="composerSuggest.title.value"
+                  @select="composerSuggest.select"
+                  @hover="composerSuggest.hover"
                 />
                 <ChatInputSwitcher
                   ref="textInputRef"
@@ -17968,6 +18177,7 @@ onBeforeUnmount(() => {
                   @mention-search="atHandleSearch"
                   @mention-select="handleMentionSelect"
                   @keydown="keyDown"
+                  @selection-change="handleComposerSelectionChange"
                   @blur="handleChatInputBlur"
                   @input="handleSlashInput"
                   @paste-image="handlePlainPasteImage"
@@ -18769,7 +18979,11 @@ onBeforeUnmount(() => {
   <IFormDrawer />
 
   <GlassBackgroundPanel v-if="glassBackgroundPanelVisible" @close="glassBackgroundPanelVisible = false" />
-  <ShortcutCommandModal v-model:show="shortcutCommandVisible" :world-id="chat.currentWorldId || ''" />
+  <ShortcutCommandModal
+    v-model:show="shortcutCommandVisible"
+    :world-id="chat.currentWorldId || ''"
+    :channel-id="chat.curChannel?.id || ''"
+  />
   <DisplaySettingsModal
     v-model:visible="displaySettingsVisible"
     :settings="display.settings"

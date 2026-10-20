@@ -13,6 +13,7 @@ import { useChatStore } from '@/stores/chat'
 import ShortcutButtonPanel from './ShortcutButtonPanel.vue'
 import ShortcutDicePanel from './ShortcutDicePanel.vue'
 import ShortcutRuleEditor from './ShortcutRuleEditor.vue'
+import ShortcutSuggestPanel from './ShortcutSuggestPanel.vue'
 import {
   createShortcutRule,
   deleteShortcutRule,
@@ -29,14 +30,16 @@ import {
   getShortcutRuleSnapshot,
 } from './ruleCache'
 import { mergeReorderedSubset } from './ruleMatching'
-import type { ShortcutRule, ShortcutRuleDraft, ShortcutRuleScope, ShortcutRuleType } from './types'
+import type { QuickSuggestSource, ShortcutRule, ShortcutRuleDraft, ShortcutRuleScope, ShortcutRuleType } from './types'
 
-type ShortcutTab = 'dice' | 'buttons'
+type ShortcutTab = 'dice' | 'buttons' | 'suggest'
 type ScopeFilter = 'all' | ShortcutRuleScope
 
 const props = defineProps<{
   show: boolean
   worldId: string
+  /** 当前频道；快速备选用它读取正在使用的人物卡 */
+  channelId?: string
 }>()
 
 const emit = defineEmits<{
@@ -49,6 +52,7 @@ const message = useMessage()
 const TAB_TYPES: Record<ShortcutTab, ShortcutRuleType[]> = {
   dice: ['send_alias', 'replace'],
   buttons: ['message_action'],
+  suggest: ['quick_suggest'],
 }
 
 const activeTab = ref<ShortcutTab>('dice')
@@ -60,11 +64,13 @@ const editor = reactive({
   open: false,
   rule: null as ShortcutRule | null,
   type: 'send_alias' as ShortcutRuleType,
+  presetSource: undefined as QuickSuggestSource | undefined,
   saving: false,
   error: '',
 })
 
 const worldId = computed(() => String(props.worldId || '').trim())
+const channelId = computed(() => String(props.channelId || '').trim())
 const hasWorld = computed(() => !!worldId.value)
 const snapshot = computed(() => getShortcutRuleSnapshot(worldId.value))
 const effective = computed(() => getEffectiveShortcutRules(worldId.value))
@@ -109,7 +115,9 @@ const tabCount = (tab: ShortcutTab) => tabRules(snapshot.value.personal, tab).le
 const matchesSearch = (rule: ShortcutRule) => {
   const keyword = search.value.trim().toLowerCase()
   if (!keyword) return true
-  return rule.trigger.toLowerCase().includes(keyword) || rule.command.toLowerCase().includes(keyword)
+  return rule.trigger.toLowerCase().includes(keyword)
+    || rule.command.toLowerCase().includes(keyword)
+    || (rule.config?.items || []).some((item) => item.toLowerCase().includes(keyword))
 }
 const filterRules = (rules: ShortcutRule[], scope: ShortcutRuleScope) => {
   if (scopeFilter.value !== 'all' && scopeFilter.value !== scope) return []
@@ -123,10 +131,11 @@ const scopeCounts = computed(() => ({
   world: tabRules(snapshot.value.world, activeTab.value).length,
 }))
 
-const openEditor = (type: ShortcutRuleType, rule: ShortcutRule | null = null) => {
+const openEditor = (type: ShortcutRuleType, rule: ShortcutRule | null = null, presetSource?: QuickSuggestSource) => {
   maintaining.value = true
   editor.type = type
   editor.rule = rule
+  editor.presetSource = presetSource
   editor.error = ''
   editor.saving = false
   editor.open = true
@@ -135,8 +144,14 @@ const closeEditor = () => {
   editor.open = false
 }
 
+const TAB_DEFAULT_TYPE: Record<ShortcutTab, ShortcutRuleType> = {
+  dice: 'send_alias',
+  buttons: 'message_action',
+  suggest: 'quick_suggest',
+}
+
 const handleCreate = (type?: ShortcutRuleType) => {
-  openEditor(type || (activeTab.value === 'buttons' ? 'message_action' : 'send_alias'))
+  openEditor(type || TAB_DEFAULT_TYPE[activeTab.value])
 }
 
 const handleSave = async (draft: ShortcutRuleDraft) => {
@@ -294,11 +309,28 @@ const panelListeners = {
           <span class="sc-tab__title">快捷消息按钮<span class="sc-tab__count">{{ tabCount('buttons') }}</span></span>
           <span class="sc-tab__caption">消息里的关键词一点即用</span>
         </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === 'suggest'"
+          class="sc-tab"
+          :class="{ 'is-active': activeTab === 'suggest' }"
+          @click="activeTab = 'suggest'"
+        >
+          <span class="sc-tab__title">快速备选<span class="sc-tab__count">{{ tabCount('suggest') }}</span></span>
+          <span class="sc-tab__caption">输入前缀，弹出候选补全</span>
+        </button>
         <span class="sc-tabs__indicator" :class="`is-${activeTab}`" aria-hidden="true" />
       </nav>
 
       <div class="sc-shortcut__toolbar">
-        <NInput v-model:value="search" size="small" clearable placeholder="搜索触发内容或命令" class="sc-shortcut__search">
+        <NInput
+          v-model:value="search"
+          size="small"
+          clearable
+          :placeholder="activeTab === 'suggest' ? '搜索前缀或候选' : '搜索触发内容或命令'"
+          class="sc-shortcut__search"
+        >
           <template #prefix><NIcon :component="SearchIcon" size="14" /></template>
         </NInput>
         <div v-if="hasWorld" class="sc-filter" role="radiogroup" aria-label="来源筛选">
@@ -341,7 +373,7 @@ const panelListeners = {
             @reorder="panelListeners.onReorder"
           />
           <ShortcutButtonPanel
-            v-else
+            v-else-if="activeTab === 'buttons'"
             key="buttons"
             :personal="visiblePersonal"
             :world="visibleWorld"
@@ -352,6 +384,25 @@ const panelListeners = {
             :can-manage-world="canManageWorld"
             :filtered="filtered"
             @create="handleCreate('message_action')"
+            @edit="panelListeners.onEdit"
+            @delete="panelListeners.onDelete"
+            @toggle="panelListeners.onToggle"
+            @reorder="panelListeners.onReorder"
+          />
+          <ShortcutSuggestPanel
+            v-else
+            key="suggest"
+            :personal="visiblePersonal"
+            :world="visibleWorld"
+            :effective-rules="effective.quickSuggest"
+            :overridden-ids="effective.overriddenIds"
+            :busy-ids="busyIds"
+            :maintaining="maintaining"
+            :has-world="hasWorld"
+            :can-manage-world="canManageWorld"
+            :filtered="filtered"
+            :channel-id="channelId"
+            @create="(source) => openEditor('quick_suggest', null, source)"
             @edit="panelListeners.onEdit"
             @delete="panelListeners.onDelete"
             @toggle="panelListeners.onToggle"
@@ -370,6 +421,7 @@ const panelListeners = {
               :world-disabled-reason="worldDisabledReason"
               :saving="editor.saving"
               :error="editor.error"
+              :preset-source="editor.presetSource"
               @save="handleSave"
               @cancel="closeEditor"
             />
@@ -477,7 +529,7 @@ const panelListeners = {
 .sc-shortcut__tabs {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0 20px;
   border-bottom: 1px solid var(--sc-border-mute);
 }
@@ -534,7 +586,7 @@ const panelListeners = {
   position: absolute;
   bottom: -1px;
   left: 0;
-  width: 50%;
+  width: calc(100% / 3);
   height: 2px;
   border-radius: 2px;
   background: var(--sc-shortcut-accent);
@@ -543,6 +595,10 @@ const panelListeners = {
 
 .sc-tabs__indicator.is-buttons {
   transform: translateX(100%);
+}
+
+.sc-tabs__indicator.is-suggest {
+  transform: translateX(200%);
 }
 
 .sc-shortcut__toolbar {
@@ -714,6 +770,17 @@ const panelListeners = {
 
   .sc-tab__caption {
     display: none;
+  }
+
+  .sc-tab__title {
+    gap: 4px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .sc-tab__count {
+    min-width: 16px;
+    padding: 0 5px;
   }
 
   .sc-shortcut__toolbar {

@@ -51,6 +51,7 @@ const emit = defineEmits<{
   (event: 'blur'): void
   (event: 'composition-start'): void
   (event: 'composition-end'): void
+  (event: 'selection-change'): void
   (event: 'remove-image', markerId: string): void
   (event: 'paste-image', payload: { files: File[]; selectionStart: number; selectionEnd: number }): void
   (event: 'drop-files', payload: { files: File[]; selectionStart: number; selectionEnd: number }): void
@@ -1582,6 +1583,16 @@ const handleClick = (event: MouseEvent) => {
   }
 };
 
+const handleSelectionPointerUp = () => {
+  nextTick(() => emit('selection-change'));
+};
+
+const handleSelectionNavigationKeyup = (event: KeyboardEvent) => {
+  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+    emit('selection-change');
+  }
+};
+
 // 焦点事件
 const handleFocus = () => {
   isFocused.value = true;
@@ -1673,6 +1684,8 @@ defineExpose({
       @drop="handleDrop"
       @dragover="handleDragOver"
       @keydown="handleKeydown"
+      @keyup="handleSelectionNavigationKeyup"
+      @mouseup="handleSelectionPointerUp"
       @click="handleClick"
       @focus="handleFocus"
       @blur="handleBlur"

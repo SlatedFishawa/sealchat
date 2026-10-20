@@ -108,6 +108,7 @@ const emit = defineEmits<{
   (event: 'upload-button-click', source?: 'rich-editor' | SmartLinkUploadSource): void
   (event: 'composition-start'): void
   (event: 'composition-end'): void
+  (event: 'selection-change'): void
 }>();
 
 const message = useMessage();
@@ -1984,6 +1985,7 @@ const initEditor = async () => {
         editor.value = ed as Editor;
         rememberEditorSelection();
         bumpEditorStateVersion();
+        emit('selection-change');
       },
       onFocus: () => {
         isFocused.value = true;
