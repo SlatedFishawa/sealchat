@@ -79,6 +79,7 @@ func AdminAIConfigUpdate(ctx *fiber.Ctx) error {
 	}
 	appConfig = merged
 	SyncConfigToDB(appConfig, "api")
+	broadcastTTSCapabilityUpdated("")
 	return ctx.JSON(fiber.Map{
 		"config": sanitizeConfigForAdmin(appConfig).AI,
 	})

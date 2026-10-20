@@ -27,7 +27,7 @@ class FakeSocket {
   frame(value) { this.onmessage?.({ data: JSON.stringify(value) }) }
   drop() { this.closed = true; this.onclose?.() }
 }
-const calls = { tickets: [], queue: [], states: [], play: [], pcm: [], stops: 0 }
+const calls = { tickets: [], queue: [], states: [], refresh: [], play: [], pcm: [], stops: 0 }
 const serverQueue = { items: [] }
 const messageStates = {}
 let readStates = async () => []
@@ -44,7 +44,7 @@ let mountedHooks = []
 let unmountHooks = []
 const user = vue.reactive({ info: { id: 'u' } })
 const chat = vue.reactive({ curChannel: { id: 'c1' } })
-const speech = vue.reactive({ scopeChannel: '', messageStates: {}, visible: false, temporary: {}, quota: null, reset() {}, async refresh() {}, open() {}, setTemporary() {} })
+const speech = vue.reactive({ scopeChannel: '', messageStates: {}, visible: false, temporary: {}, quota: null, reset() {}, async refresh(channelId = '') { calls.refresh.push(channelId) }, open() {}, setTemporary() {} })
 const state = vue.reactive({ preferred: true, automatic: true, loading: false, playing: false, key: '', error: '' })
 const player = {
   state,
@@ -111,7 +111,7 @@ test.afterEach(() => mounted?.stop())
 test.after(() => { console.warn = originalWarn })
 test.beforeEach(() => {
   sockets.length = 0
-  Object.assign(calls, { tickets: [], queue: [], states: [], play: [], pcm: [], stops: 0 })
+  Object.assign(calls, { tickets: [], queue: [], states: [], refresh: [], play: [], pcm: [], stops: 0 })
   readStates = async () => []
   gatewayListeners.clear()
   serverQueue.items = []
@@ -138,6 +138,20 @@ test('metadata takes one entry snapshot and never polls, including with autoplay
   assert.deepEqual(calls.states, ['c1'])
   assert.deepEqual(calls.tickets, [])
   scope.stop()
+})
+
+test('tts capability updates refresh the current channel capability without polling', async () => {
+  const scope = mount()
+  await settle()
+  assert.deepEqual(calls.refresh, ['c1'])
+  chatEvent.emit('tts-capability-updated')
+  await settle()
+  assert.deepEqual(calls.refresh, ['c1', 'c1'])
+  scope.stop()
+  assert.equal(gatewayListeners.get('tts-capability-updated').size, 0)
+  chatEvent.emit('tts-capability-updated')
+  await settle()
+  assert.deepEqual(calls.refresh, ['c1', 'c1'])
 })
 
 test('main gateway metadata updates without autoplay and ignores other channels or malformed IDs', async () => {

@@ -118,6 +118,7 @@ func BindTTSRoutes(auth fiber.Router) {
 		if err := service.ActivateTTSWorld(getCurUser(c).ID, c.Params("worldId"), body.Code); err != nil {
 			return ttsError(c, err)
 		}
+		broadcastTTSCapabilityUpdated(c.Params("worldId"))
 		return c.JSON(fiber.Map{"ok": true})
 	})
 	r.Patch("/settings", func(c *fiber.Ctx) error {
@@ -343,6 +344,18 @@ func ttsBroadcastMessageState(messageID string) {
 	}
 }
 
+func broadcastTTSCapabilityUpdated(worldID string) {
+	event := &protocol.Event{Type: protocol.EventTTSCapabilityUpdated}
+	if strings.TrimSpace(worldID) != "" {
+		broadcastEventToWorld(worldID, event)
+		return
+	}
+	ctx := &ChatContext{UserId2ConnInfo: getUserConnInfoMap()}
+	if ctx.UserId2ConnInfo != nil {
+		ctx.BroadcastEvent(event)
+	}
+}
+
 func BindTTSAdminRoutes(authAdmin fiber.Router) {
 	admin := authAdmin.Group("/tts/admin")
 	admin.Get("/worlds", func(c *fiber.Ctx) error {
@@ -377,6 +390,7 @@ func BindTTSAdminRoutes(authAdmin fiber.Router) {
 		if err := service.TTSPatchWorldPolicy(c.Params("worldId"), patch, present); err != nil {
 			return ttsError(c, err)
 		}
+		broadcastTTSCapabilityUpdated(c.Params("worldId"))
 		return ttsAdminWorldDetail(c)
 	})
 	admin.Get("/config", func(c *fiber.Ctx) error {
@@ -852,6 +866,7 @@ func ttsAdminConfig(c *fiber.Ctx) error {
 	appConfig = merged
 	SyncConfigToDB(appConfig, "api")
 	go service.TTSPrimeMPSCatalogs()
+	broadcastTTSCapabilityUpdated("")
 	return c.JSON(fiber.Map{"config": sanitizeConfigForAdmin(appConfig).AI.Speech})
 }
 

@@ -264,9 +264,14 @@ function onChannelSwitchTo(event?: { argv?: { channelId?: string } }) {
   // channel-switch-to follows successful channel.enter, closing the subscription gap.
   void syncMessageStates(currentChannel.value || '', user.info.id)
 }
+function onTTSCapabilityUpdated() {
+  if (!user.info.id) return
+  void speech.refresh(currentChannel.value || '').catch(() => { /* Failed capabilities stay unavailable. */ })
+}
 onMounted(() => {
   chatEvent.on('message-tts-updated', onMessageTTSUpdated)
   chatEvent.on('channel-switch-to', onChannelSwitchTo)
+  chatEvent.on('tts-capability-updated', onTTSCapabilityUpdated)
   window.addEventListener('message', onIntent)
   window.addEventListener('pointerdown', resumePreferredPlayback, true)
   window.addEventListener('keydown', resumePreferredPlayback, true)
@@ -275,6 +280,7 @@ onBeforeUnmount(() => {
   metadataActive = false
   chatEvent.off('message-tts-updated', onMessageTTSUpdated)
   chatEvent.off('channel-switch-to', onChannelSwitchTo)
+  chatEvent.off('tts-capability-updated', onTTSCapabilityUpdated)
   window.removeEventListener('message', onIntent)
   window.removeEventListener('pointerdown', resumePreferredPlayback, true)
   window.removeEventListener('keydown', resumePreferredPlayback, true)
