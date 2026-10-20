@@ -464,6 +464,7 @@ const dropHint = computed(() => drag.dragging.value?.kind === 'section');
               :options="channelOptions"
               :loading="loadingChannels"
               filterable
+              placement="top-start"
               placeholder="选择来源频道（仅公开且可读的频道）"
             />
             <n-button type="primary" :disabled="!newChannelId" @click="createChapter">
