@@ -30,34 +30,126 @@ export interface RenderedBody {
   assets: string[];
 }
 
-const renderLegacy = (content: string): string => {
-  try {
-    const parts: string[] = [];
-    for (const item of Element.parse(content)) {
-      if (item.type === 'img') {
-        const marker = resolveToMarker(String(item.attrs?.src || ''));
-        parts.push(marker ? `<img src="${contentEscape(marker)}" alt="图片">` : '<span class="log-img-missing">图片不可用</span>');
-        continue;
+// 必须在 Element 解码 &lt; 之前识别真实标签，避免把用户输入的字面 <br/> 当成换行。
+const prepareLegacySource = (content: string): string => {
+  let inPre = false;
+  // Element 已处理基础/数值 entity，但不处理 nbsp；只替换源文中的这一种，不做二次解码。
+  return content.replace(/&nbsp;/g, '\u00a0')
+    .split(/(<!--[\s\S]*?-->|<(?:[^"'<>]|"[^"]*"|'[^']*')*>)/g)
+    .map((part, index) => {
+      if (index % 2 === 0) {
+        // Element.parse 会裁掉文本边界的换行和缩进；pre 内先用数值 entity 保护。
+        return inPre ? part.replace(/\r/g, '&#13;').replace(/\n/g, '&#10;') : part;
       }
-      if (item.type === 'audio') {
-        parts.push('<span class="log-audio">[语音]</span>');
-        continue;
-      }
-      if (item.type === 'at') {
-        const name = String(item.attrs?.name || item.attrs?.id || '用户');
-        parts.push(`<span class="log-mention">@${contentEscape(name)}</span>`);
-        continue;
-      }
-      if (item.type === 'text') {
-        const raw = typeof item.attrs?.content === 'string' ? item.attrs.content : item.toString();
-        parts.push(renderQuickFormatHtmlFromEscaped(contentEscape(String(raw || ''))));
-        continue;
-      }
-      parts.push(contentEscape(item.toString()));
+      if (/^<pre(?:\s|>)/i.test(part)) inPre = true;
+      if (/^<\/pre\s*>$/i.test(part)) inPre = false;
+      const separator = /^<(br|hr)\s*\/?\s*>$/i.exec(part);
+      return separator ? `<${separator[1].toLowerCase()}/>` : part;
+    }).join('');
+};
+
+/** 未知节点只取正文，不复制标签或属性；code/pre 和骰子回退也复用纯文本语义。 */
+const legacyNodeText = (item: Element): string => {
+  const type = item.type.toLowerCase();
+  if (type === 'text') return String(item.attrs?.content || '');
+  if (type === 'br') return '\n';
+  if (type === 'img') return resolveToMarker(String(item.attrs?.src || '')) ? '' : '图片不可用';
+  if (type === 'audio') return '[语音]';
+  if (type === 'at') return `@${String(item.attrs?.name || item.attrs?.id || '用户')}`;
+  const text = item.children.map(legacyNodeText).join('');
+  if (type === 'span') {
+    const classes = String(item.attrs?.class || '').split(/\s+/);
+    if (classes.includes('dice-chip') || classes.includes('dice-roll-group')) {
+      return typeof item.attrs?.dataDiceSource === 'string' && item.attrs.dataDiceSource ? item.attrs.dataDiceSource : text;
     }
-    return parts.join('');
+  }
+  return ['p', 'div', 'blockquote', 'pre', 'li', 'hr'].includes(type) ? `${text}\n` : text;
+};
+
+const renderLegacyNode = (item: Element): string => {
+  const type = item.type.toLowerCase();
+  const children = () => item.children.map(renderLegacyNode).join('');
+  switch (type) {
+    case 'img': {
+      const marker = resolveToMarker(String(item.attrs?.src || ''));
+      return marker ? `<img src="${contentEscape(marker)}" alt="图片">` : '<span class="log-img-missing">图片不可用</span>';
+    }
+    case 'audio':
+      return '<span class="log-audio">[语音]</span>';
+    case 'at': {
+      const name = String(item.attrs?.name || item.attrs?.id || '用户');
+      return `<span class="log-mention">@${contentEscape(name)}</span>`;
+    }
+    case 'text':
+      return renderQuickFormatHtmlFromEscaped(contentEscape(legacyNodeText(item)));
+    case 'br':
+      return '<br>';
+    case 'hr':
+      return '<hr>';
+    case 'strong':
+    case 'b':
+      return `<strong>${children()}</strong>`;
+    case 'em':
+    case 'i':
+      return `<em>${children()}</em>`;
+    case 's':
+    case 'strike':
+    case 'del':
+      return `<s>${children()}</s>`;
+    case 'code':
+    case 'pre':
+      return `<${type}>${contentEscape(item.children.map(legacyNodeText).join(''))}</${type}>`;
+    case 'p':
+    case 'div':
+    case 'blockquote':
+    case 'ul':
+    case 'ol':
+    case 'li':
+      return `<${type}>${children()}</${type}>`;
+    case 'a': {
+      const href = String(item.attrs?.href || '').trim();
+      if (/^https?:\/\//i.test(href)) {
+        try {
+          const url = new URL(href);
+          if (url.protocol === 'http:' || url.protocol === 'https:') {
+            return `<a href="${contentEscape(url.href)}" target="_blank" rel="noopener noreferrer">${children()}</a>`;
+          }
+        } catch { /* 无效链接只保留正文。 */ }
+      }
+      return children();
+    }
+    case 'span': {
+      const classes = String(item.attrs?.class || '').split(/\s+/);
+      if (classes.includes('dice-chip') || classes.includes('dice-roll-group')) {
+        // Element 将 data-dice-source 规范化为 dataDiceSource；整组优先恢复原表达式。
+        const source = typeof item.attrs?.dataDiceSource === 'string' ? item.attrs.dataDiceSource : '';
+        return contentEscape(source || legacyNodeText(item));
+      }
+      break;
+    }
+  }
+  return renderQuickFormatHtmlFromEscaped(contentEscape(legacyNodeText(item)), { disableAllFormatting: true });
+};
+
+const normalizeLegacyPlainText = (value: string) => value
+  .replace(/\r\n?/g, '\n')
+  .replace(/[^\S\n]+/g, ' ')
+  .replace(/ *\n */g, '\n')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+
+const renderLegacy = (content: string) => {
+  try {
+    const items = Element.parse(prepareLegacySource(content));
+    return {
+      html: items.map(renderLegacyNode).join(''),
+      plainText: normalizeLegacyPlainText(items.map(legacyNodeText).join('')),
+    };
   } catch {
-    return renderQuickFormatHtmlFromEscaped(contentEscape(content));
+    return {
+      html: renderQuickFormatHtmlFromEscaped(contentEscape(content)),
+      plainText: '',
+    };
   }
 };
 
@@ -112,7 +204,9 @@ export const renderMessageBody = (content: string): RenderedBody => {
       plainText = '';
     }
   } else {
-    html = renderLegacy(raw);
+    const legacy = renderLegacy(raw);
+    html = legacy.html;
+    plainText = legacy.plainText;
   }
   return finalizeBody(html, plainText);
 };
