@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/tdewolff/parse/v2"
@@ -93,14 +94,22 @@ func logSnapshotAttachment(ctx context.Context, r *model.LogReleaseModel, a *mod
 	return key, nil
 }
 
-func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, display *messageDisplayResolver, section string, m *model.MessageModel, ordinal int64) error {
+func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, display *messageDisplayResolver, section string, m *model.MessageModel, ordinal int64, imageWidths map[string]float64) error {
 	id := utils.NewID()
 	body := logMessageBodyOf(display, m)
+	sourceImageIndex, publicImageIndex := 0, 0
+	resolvedWidths := map[string]float64{}
 	err := logResolveBody(&body, func(ref LogBodyAssetRef) (string, error) {
+		width, hasWidth := imageWidths[strconv.Itoa(sourceImageIndex)]
+		sourceImageIndex++
 		key, err := logSnapshotBodyAsset(ctx, r, display, m, id, ref)
 		if key == "" || err != nil {
 			return "", err
 		}
+		if hasWidth {
+			resolvedWidths[strconv.Itoa(publicImageIndex)] = width
+		}
+		publicImageIndex++
 		return "/__log_asset/" + key, nil
 	})
 	if err != nil {
@@ -126,6 +135,9 @@ func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, display *mes
 	}
 	plain := body.plainText()
 	node := map[string]any{"id": id, "kind": "message", "sectionId": section, "messageType": logMessageType(m), "speaker": map[string]any{"key": logPublicKey(r.ID, "speaker", speakerID), "name": logSpeakerName(m), "color": color, "avatarAssetKey": avatarValue, "variantKey": variant}, "bodyHtml": body.html(), "plainText": plain, "createdAt": m.CreatedAt.UTC(), "quoteNodeId": nil}
+	if len(resolvedWidths) > 0 {
+		node["imageWidths"] = resolvedWidths
+	}
 	if body.EmbedKind != "" {
 		node["embed"] = body.EmbedKind
 	}

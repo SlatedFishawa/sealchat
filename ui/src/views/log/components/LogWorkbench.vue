@@ -44,6 +44,7 @@ import {
   type DesignNodeCacheEntry,
 } from '@/services/log/logRenderer';
 import type { FrameDocument, FrameEvent, FrameLayoutResult } from '@/services/log/pagination/logFrameHost';
+import { updateDraftImageWidth } from '@/services/log/logImageLayout';
 import type { LogAnchor, LogDesignMessage, LogElementType, LogProjectContext, LogProtocolMessage, LogSection, LogStylePackage } from '@/types/log';
 import { LOG_ELEMENT_TYPES } from '@/types/log';
 import { useLogDraft } from '../composables/useLogDraft';
@@ -210,13 +211,14 @@ const rebuild = () => {
     nodes: comp.nodes,
     toc: comp.toc,
     backgroundToken: designBackgroundToken(d.page),
+    imageWidths: d.imageWidths,
   });
   const json = JSON.stringify(result.doc);
   if (json === lastDocJson && frame.value) return;
   lastDocJson = json;
   frame.value = { doc: result.doc, assetTokens: result.assetTokens, issues: result.issues };
 };
-watch([composition, activePkg, () => draft.value.page, () => draft.value.themeTokens, () => draft.value.title], () => {
+watch([composition, activePkg, () => draft.value.page, () => draft.value.themeTokens, () => draft.value.title, () => draft.value.imageWidths], () => {
   if (buildTimer) clearTimeout(buildTimer);
   buildTimer = setTimeout(() => {
     buildTimer = null;
@@ -522,6 +524,11 @@ const removeElement = (id: string) => {
 // ---- iframe 事件 ----
 const onFrameEvent = (event: FrameEvent) => {
   switch (event.type) {
+    case 'imageResize':
+      if (caps.value.editDraft && orderedIds.value.includes(event.nodeId)) {
+        draftCtl.update((d) => updateDraftImageWidth(d, event));
+      }
+      break;
     case 'select':
       selection.select(event.nodeId, { shift: event.shift, additive: event.additive });
       if (event.nodeId?.startsWith('el-')) focusElementId.value = event.nodeId.slice(3);
@@ -817,6 +824,7 @@ onBeforeUnmount(() => {
           :mode="viewMode === 'flow' ? 'flow' : 'paged'"
           :spread="viewMode === 'spread'"
           :design="!previewPublish"
+          :can-resize-images="caps.editDraft && !previewPublish"
           :selection="selection.selected.value"
           :zoom="zoom"
           :canvas="canvasTone"

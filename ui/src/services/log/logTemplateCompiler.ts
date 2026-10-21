@@ -1,6 +1,7 @@
 // 受限模板编译器：语法见 01-contract.md §7 与 ai-style-authoring.md。
 // 客户端校验用于即时反馈与安全预览，权威校验由服务端 ValidateLogStyle 执行。
 import DOMPurify from 'dompurify';
+import { markLogImages } from './logImageLayout';
 
 export const LOG_RENDERER_VERSION = '1.2.0';
 
@@ -35,6 +36,8 @@ export interface TemplateData {
   assets: Record<string, string>;
   /** 已清洗的正文 HTML，仅插入 data-log-slot="body"。 */
   bodyHtml?: string;
+  /** 可信调用方提供的 LOG 图片布局；必须在正文清洗后才写入内部标记。 */
+  bodyImageLayout?: { messageId: string; widths?: Record<string, number> };
 }
 
 interface ParsedTemplate {
@@ -251,7 +254,12 @@ export const instantiateTemplate = (lib: TemplateLibrary, id: string, data: Temp
   frag.querySelectorAll('[data-log-slot]').forEach((el) => {
     el.removeAttribute('data-log-slot');
     el.classList.add('log-body');
-    if (data.bodyHtml) el.innerHTML = sanitizeBodyHtml(data.bodyHtml);
+    if (data.bodyHtml) {
+      const clean = sanitizeBodyHtml(data.bodyHtml);
+      el.innerHTML = data.bodyImageLayout
+        ? markLogImages(clean, { kind: 'message', id: data.bodyImageLayout.messageId, widths: data.bodyImageLayout.widths })
+        : clean;
+    }
   });
   return frag;
 };

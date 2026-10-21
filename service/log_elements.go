@@ -141,9 +141,9 @@ func logElementContent(e LogElement, assets map[string][]byte, projectAssets map
 	images := 0
 	switch e.Type {
 	case "cover":
-		allowed = map[string]string{"title": "string", "subtitle": "string", "assetId": "asset?", "projectAssetId": "project?"}
+		allowed = map[string]string{"title": "string", "subtitle": "string", "assetId": "asset?", "projectAssetId": "project?", "imageWidth": "width?"}
 	case "imagePlate":
-		allowed = map[string]string{"assetId": "asset?", "projectAssetId": "project?", "caption": "string", "fit": "fit"}
+		allowed = map[string]string{"assetId": "asset?", "projectAssetId": "project?", "caption": "string", "fit": "fit", "imageWidth": "width?"}
 	case "pageBreak":
 	case "transition":
 		allowed = map[string]string{"label": "string"}
@@ -166,13 +166,18 @@ func logElementContent(e LogElement, assets map[string][]byte, projectAssets map
 	for key, kind := range allowed {
 		v, ok := e.Content[key]
 		if !ok {
-			if kind == "asset?" || kind == "project?" {
+			if kind == "asset?" || kind == "project?" || kind == "width?" {
 				continue
 			}
 			return logTemplateError()
 		}
 		s, isString := v.(string)
 		switch kind {
+		case "width?":
+			n, ok := v.(float64)
+			if !ok || !validLogImageWidth(n) {
+				return logTemplateError()
+			}
 		case "string":
 			if !isString || len(s) > 128<<10 {
 				return logTemplateError()

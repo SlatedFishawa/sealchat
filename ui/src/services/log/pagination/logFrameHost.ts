@@ -4,6 +4,7 @@
 import runtimeSource from './logFrameRuntime.js?raw';
 import baseCss from './logFrame.css?raw';
 import type { LogPageSettings } from '@/types/log';
+import type { LogImageResize } from '../logImageLayout';
 
 export interface FrameBlock {
   id: string;
@@ -42,6 +43,7 @@ export interface FrameLayoutResult {
 }
 
 export type FrameEvent =
+  | ({ type: 'imageResize' } & LogImageResize)
   | { type: 'select'; nodeId: string | null; kind?: string; shift?: boolean; additive?: boolean }
   | { type: 'open'; nodeId: string; kind?: string }
   | { type: 'drop'; nodeId: string; targetId: string; side: 'before' | 'after' }
@@ -58,6 +60,7 @@ export interface LayoutRequest {
   mode: 'paged' | 'flow';
   spread: boolean;
   design: boolean;
+  canResizeImages: boolean;
   selection: string[];
   anchor?: FrameAnchor | null;
 }
@@ -148,6 +151,7 @@ export class LogFrameEngine {
         break;
       }
       case 'select':
+      case 'imageResize':
       case 'open':
       case 'drop':
       case 'action':

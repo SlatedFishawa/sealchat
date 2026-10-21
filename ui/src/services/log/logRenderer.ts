@@ -28,6 +28,7 @@ import {
 } from './logTemplateCompiler';
 import type { FrameBlock, FrameDocument } from './pagination/logFrameHost';
 import { logPlatformFontId } from './logFontPlan';
+import { markLogImages, messageImageKey, normalizeImageWidth } from './logImageLayout';
 
 export interface RenderMessageNode {
   kind: 'message';
@@ -51,6 +52,7 @@ export interface RenderMessageNode {
   /** 悄悄话收件人；与 messageType 正交（IC/OOC/骰子都可能是悄悄话）。 */
   whisper: { targets: LogWhisperTarget[] } | null;
   quote: LogQuotePresentation | null;
+  imageWidths?: Record<string, number>;
 }
 
 export interface RenderElementNode {
@@ -64,6 +66,7 @@ export interface RenderElementNode {
   bodyHtml: string | null;
   style: Record<string, unknown>;
   fit: 'contain' | 'cover' | null;
+  imageWidth?: number;
   level: number | null;
   depth: number | null;
 }
@@ -278,6 +281,7 @@ export const designElementToNode = (e: LogElement): RenderElementNode => {
     bodyHtml: body ? body.html : null,
     style: e.style || {},
     fit: content.fit === 'cover' ? 'cover' : content.fit === 'contain' ? 'contain' : null,
+    imageWidth: normalizeImageWidth(content.imageWidth),
     level: typeof content.level === 'number' ? content.level : null,
     depth: typeof content.depth === 'number' ? content.depth : null,
   };
@@ -320,6 +324,7 @@ export const publicNodeToRender = (node: LogPublicNode): RenderNode => {
       speakerColor: node.speaker.color && HEX.test(node.speaker.color) ? node.speaker.color : null,
       avatarToken: avatar,
       bodyHtml: body.html,
+      imageWidths: Object.fromEntries(Object.entries(node.imageWidths || {}).filter(([index]) => /^(0|[1-9]\d*)$/.test(index)).map(([index, width]) => [messageImageKey(node.id, Number(index)), width])),
       plainText: node.plainText,
       createdAt: formatTime(node.createdAt),
       movable: false,
@@ -344,6 +349,7 @@ export const publicNodeToRender = (node: LogPublicNode): RenderNode => {
     bodyHtml: body ? body.html : null,
     style: node.style || {},
     fit: content.fit === 'cover' ? 'cover' : content.fit === 'contain' ? 'contain' : null,
+    imageWidth: normalizeImageWidth(content.imageWidth),
     level: typeof content.level === 'number' ? content.level : null,
     depth: typeof content.depth === 'number' ? content.depth : null,
   };
@@ -363,6 +369,7 @@ export interface BuildOptions {
   /** 页面背景资源令牌（style:<id> 或 pub:<key>）。 */
   backgroundToken: string | null;
   pageNumberStart?: number;
+  imageWidths?: Record<string, number>;
 }
 
 export interface BuildResult {
@@ -384,8 +391,8 @@ const pickTemplate = (rules: LogStyleRule[], lib: TemplateLibrary, n: RenderMess
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 
-const fallbackMessageHtml = (n: RenderMessageNode) =>
-  `<article class="log-fallback-message"><header class="log-speaker">${escapeHtml(n.speakerName)}</header><div class="log-body">${sanitizeBodyHtml(n.bodyHtml)}</div></article>`;
+const fallbackMessageHtml = (n: RenderMessageNode, widths?: Record<string, number>) =>
+  `<article class="log-fallback-message"><header class="log-speaker">${escapeHtml(n.speakerName)}</header><div class="log-body">${markLogImages(sanitizeBodyHtml(n.bodyHtml), { kind: 'message', id: n.id, widths })}</div></article>`;
 
 /** 样式模板未引用新字段时的默认呈现（旧样式包、模板缺失时的兜底），保证语义不丢失。 */
 const fallbackMetaHtml = (n: RenderMessageNode, lib: TemplateLibrary | null, templateId: string | null) => {
@@ -466,12 +473,13 @@ export const buildFrameDocument = (opts: BuildOptions): BuildResult => {
           },
           assets: node.avatarToken ? { 'speaker.avatarUrl': node.avatarToken } : {},
           bodyHtml: node.bodyHtml,
+          bodyImageLayout: { messageId: node.id, widths: opts.imageWidths || node.imageWidths },
         };
         const frag = instantiateTemplate(library, templateId, data);
         html = frag ? fragmentToHtml(frag) : '';
       }
       const fromTemplate = !!html;
-      if (!html) html = fallbackMessageHtml(node);
+      if (!html) html = fallbackMessageHtml(node, opts.imageWidths || node.imageWidths);
       html = fallbackMetaHtml(node, fromTemplate ? library : null, templateId) + html;
       const attrs: Record<string, string> = {
         'data-log-type': node.messageType,
@@ -520,6 +528,9 @@ export const buildFrameDocument = (opts: BuildOptions): BuildResult => {
       html = `<div class="log-element-placeholder">${escapeHtml(String(node.type))}：模板 ${escapeHtml(node.templateId)} 不可用</div>`;
     }
     const attrs: Record<string, string> = { 'data-log-element-type': String(node.type) };
+    if (node.type === 'cover' || node.type === 'imagePlate') {
+      html = markLogImages(html, { kind: 'element', id: node.id, assetToken: node.assetToken, width: node.imageWidth });
+    }
     if (node.level) attrs['data-log-level'] = String(node.level);
     blocks.push({
       id: node.id,

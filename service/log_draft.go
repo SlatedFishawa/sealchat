@@ -82,7 +82,8 @@ type LogDraft struct {
 	StylePackageVersion string            `json:"stylePackageVersion"`
 	ThemeTokens         map[string]any    `json:"themeTokens"`
 	// Assets registers ordinary LOG images (attachments) independently of the style package.
-	Assets []LogProjectAsset `json:"assets,omitempty"`
+	Assets      []LogProjectAsset  `json:"assets,omitempty"`
+	ImageWidths map[string]float64 `json:"imageWidths,omitempty"`
 }
 type LogDraftUpdate struct {
 	ExpectedVersion int64           `json:"expectedVersion"`
@@ -96,6 +97,27 @@ type LogDraftResult struct {
 var logUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 var logColorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$`)
 var logPlatformFontPattern = regexp.MustCompile(`^platform:[a-zA-Z0-9_-]{1,100}$`)
+var logMessageImagePattern = regexp.MustCompile(`^message:([A-Za-z0-9_-]{1,100}):image:(0|[1-9][0-9]{0,8})$`)
+
+func validLogImageWidth(width float64) bool {
+	return !math.IsNaN(width) && !math.IsInf(width, 0) && width >= 0.15 && width <= 1
+}
+
+// Snapshot image indices without exposing source message IDs in public nodes.
+func logMessageImageWidths(d *LogDraft) map[string]map[string]float64 {
+	out := map[string]map[string]float64{}
+	for key, width := range d.ImageWidths {
+		match := logMessageImagePattern.FindStringSubmatch(key)
+		if match == nil || !validLogImageWidth(width) {
+			continue
+		}
+		if out[match[1]] == nil {
+			out[match[1]] = map[string]float64{}
+		}
+		out[match[1]][match[2]] = width
+	}
+	return out
+}
 
 func isLogPlatformFont(font string) bool {
 	return logPlatformFontPattern.MatchString(font)
@@ -117,6 +139,11 @@ func parseLogDraft(raw []byte) (LogDraft, error) {
 	}
 	if draft.SchemaVersion != 1 || strings.TrimSpace(draft.Title) == "" || len([]rune(draft.Title)) > 200 || draft.Sections == nil || draft.Elements == nil || len(draft.Sections) > 200 || len(draft.Elements) > 10000 {
 		return draft, logError("INVALID_INPUT", "草稿字段或数量无效")
+	}
+	for key, width := range draft.ImageWidths {
+		if !logMessageImagePattern.MatchString(key) || !validLogImageWidth(width) {
+			return draft, logError("INVALID_INPUT", "图片尺寸无效")
+		}
 	}
 	seen := map[string]bool{}
 	for _, section := range draft.Sections {

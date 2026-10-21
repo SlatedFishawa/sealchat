@@ -12,12 +12,13 @@
   var port = null;
   var revision = 0;
   var assetUrls = new Map();
-  var current = { doc: null, design: false, mode: 'paged', spread: false, selection: new Set(), zoom: 1 };
+  var current = { doc: null, design: false, canResizeImages: false, mode: 'paged', spread: false, selection: new Set(), zoom: 1 };
   var root = document.getElementById('log-root');
   var pkgStyle = document.getElementById('log-package');
   var pageStyle = document.getElementById('log-page-rule');
   var scrollTimer = 0;
   var drag = null;
+  var imageResize = null;
 
   function post(msg) { if (port) port.postMessage(msg); }
 
@@ -37,7 +38,7 @@
       case 'render': render(msg).catch(function (err) { post({ type: 'error', revision: msg.revision, message: String(err && err.message || err) }); }); break;
       case 'select': current.selection = new Set(msg.ids || []); applySelection(); break;
       case 'scrollTo': scrollToNode(msg.nodeId, msg.flash !== false); break;
-      case 'zoom': current.zoom = clampZoom(msg.zoom); root.style.zoom = String(current.zoom); break;
+      case 'zoom': endImageResize(false); current.zoom = clampZoom(msg.zoom); root.style.zoom = String(current.zoom); break;
       case 'canvas': setCanvas(msg.color, msg.dark); break;
       case 'print': window.print(); break;
       case 'dispose': dispose(); break;
@@ -70,6 +71,9 @@
   }
 
   function dispose() {
+    endImageResize(false);
+    endDrag(false);
+    clearTimeout(scrollTimer);
     assetUrls.forEach(function (url) { if (url) URL.revokeObjectURL(url); });
     assetUrls.clear();
     revision += 1;
@@ -140,7 +144,16 @@
     Object.keys(vars).forEach(function (k) { if (/^--[a-zA-Z0-9_-]+$/.test(k)) el.style.setProperty(k, String(vars[k])); });
     el.innerHTML = b.html;
     var imgs = el.querySelectorAll('img');
-    for (var i = 0; i < imgs.length; i++) setAssetSrc(imgs[i]);
+    for (var i = 0; i < imgs.length; i++) {
+      var img = imgs[i];
+      if (img.hasAttribute('data-log-resizable-image')) {
+        var box = document.createElement('span');
+        box.className = 'log-image-box';
+        img.replaceWith(box);
+        box.appendChild(img);
+      }
+      setAssetSrc(img);
+    }
     if (b.breakBefore) el.setAttribute('data-break-before', '1');
     if (b.breakAfter) el.setAttribute('data-break-after', '1');
     return el;
@@ -149,9 +162,21 @@
   function decodeImages(container) {
     var imgs = Array.prototype.slice.call(container.querySelectorAll('img'));
     return Promise.all(imgs.map(function (img) {
-      var timeout = new Promise(function (r) { setTimeout(r, 4000); });
-      var done = img.decode ? img.decode().catch(function () { markBroken(img); }) : Promise.resolve();
-      return Promise.race([done, timeout]);
+      return new Promise(function (resolve) {
+        var timer;
+        function done() {
+          clearTimeout(timer);
+          img.removeEventListener('load', done);
+          img.removeEventListener('error', broken);
+          resolve();
+        }
+        function broken() { markBroken(img); done(); }
+        timer = setTimeout(done, 4000);
+        img.addEventListener('load', done);
+        img.addEventListener('error', broken);
+        if (img.decode) img.decode().then(done, broken);
+        else if (img.complete) { if (img.naturalWidth) done(); else broken(); }
+      });
     }));
   }
 
@@ -161,6 +186,41 @@
     holder.className = 'log-img-missing';
     holder.textContent = '图片加载失败';
     img.replaceWith(holder);
+  }
+
+  function clampImageRatio(value) { return Math.min(1, Math.max(0.15, value)); }
+
+  function contentWidth(el) {
+    var cs = getComputedStyle(el);
+    return Math.max(0, el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
+  }
+
+  function imageLimits(img) {
+    var box = img.parentElement;
+    var node = img.closest('.log-node');
+    var column = contentWidth(node);
+    var available = contentWidth(box.parentElement) || column;
+    var heightRule = getComputedStyle(img).maxHeight;
+    var maxHeight = /px$/.test(heightRule) ? parseFloat(heightRule) : 0;
+    var max = Math.min(column, available);
+    if (maxHeight > 0 && img.naturalHeight > 0) max = Math.min(max, maxHeight * img.naturalWidth / img.naturalHeight);
+    return { column: column, max: max, min: Math.min(column * 0.15, max) };
+  }
+
+  function sizeImages(node) {
+    var imgs = node.querySelectorAll('img[data-log-resizable-image]');
+    for (var i = 0; i < imgs.length; i++) {
+      var img = imgs[i];
+      if (!img.naturalWidth || !img.naturalHeight) continue;
+      var limits = imageLimits(img);
+      var saved = Number(img.getAttribute('data-log-image-width'));
+      var explicit = saved > 0 && Number.isFinite(saved);
+      var rendered = img.getBoundingClientRect ? img.getBoundingClientRect().width : 0;
+      var width = explicit ? limits.column * clampImageRatio(saved) : Math.min(img.naturalWidth, limits.column * 0.75);
+      if (!explicit && rendered > 0) width = Math.min(width, rendered);
+      img.parentElement.style.width = Math.min(width, limits.max) + 'px';
+      img.parentElement.classList.add('log-image-box--sized');
+    }
   }
 
   async function waitFonts() {
@@ -231,6 +291,7 @@
   function splittable(el, ignoreAvoid) {
     var tag = el.tagName;
     if (tag === 'IMG' || tag === 'FIGURE' || tag === 'HR' || tag === 'BR' || tag === 'TR' || tag === 'BUTTON') return false;
+    if (el.classList.contains('log-image-box')) return false;
     if (el.classList.contains('log-img-missing')) return false;
     if (!ignoreAvoid) {
       var bi = getComputedStyle(el).breakInside;
@@ -348,6 +409,7 @@
       var b = blocks[i];
       // 计算样式需要元素在文档内：临时挂入当前页读取 break-before/after（包括模板根元素）。
       state.page.content.appendChild(b);
+      sizeImages(b);
       var first = b.firstElementChild;
       var cs = getComputedStyle(b);
       var fcs = first ? getComputedStyle(first) : null;
@@ -395,6 +457,22 @@
   }
 
   function addDesignControls(host) {
+    if (current.canResizeImages) {
+      host.querySelectorAll('img[data-log-resizable-image]').forEach(function (img) {
+        if (!img.naturalWidth) return;
+        var box = img.parentElement;
+        ['reset', 'resize'].forEach(function (action) {
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'log-image-control log-image-' + action;
+          button.setAttribute('data-log-image-action', action);
+          button.setAttribute('aria-label', action === 'reset' ? '恢复自动尺寸' : '拖动调整图片大小（保持比例）');
+          button.title = button.getAttribute('aria-label');
+          button.textContent = action === 'reset' ? '↺' : '↘';
+          box.appendChild(button);
+        });
+      });
+    }
     var nodes = host.querySelectorAll('.log-node[data-log-kind="message"][data-log-fragment="0"]');
     for (var i = 0; i < nodes.length; i++) {
       var node = nodes[i];
@@ -431,11 +509,14 @@
   }
 
   async function render(msg) {
+    endImageResize(false);
+    endDrag(false);
     var rev = Number(msg.revision) || 0;
     revision = rev;
     var anchor = msg.anchor || captureAnchor();
     current.doc = msg.doc;
     current.design = !!msg.design;
+    current.canResizeImages = !!msg.canResizeImages;
     current.mode = msg.mode === 'flow' ? 'flow' : 'paged';
     current.spread = !!msg.spread;
     current.selection = new Set(msg.selection || []);
@@ -461,7 +542,8 @@
       staging.remove();
       var warnings = [];
       if (current.mode === 'flow') {
-        for (var j = 0; j < blocks.length; j++) host.appendChild(blocks[j]);
+        document.documentElement.style.removeProperty('--log-content-height');
+        for (var j = 0; j < blocks.length; j++) { host.appendChild(blocks[j]); sizeImages(blocks[j]); }
       } else {
         var finished = await paginate(host, blocks, doc, rev, warnings);
         if (!finished || rev !== revision) return;
@@ -544,6 +626,16 @@
 
   root.addEventListener('click', function (e) {
     if (!current.design) return;
+    var imageAction = e.target.closest ? e.target.closest('[data-log-image-action]') : null;
+    if (imageAction) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (imageAction.getAttribute('data-log-image-action') === 'reset') {
+        var image = imageAction.parentElement.querySelector('img');
+        if (image) postImageResize(image, null);
+      }
+      return;
+    }
     var action = e.target.closest ? e.target.closest('[data-log-action]') : null;
     if (action) {
       var actionNode = action.closest('[data-log-node]');
@@ -560,13 +652,16 @@
 
   root.addEventListener('dblclick', function (e) {
     if (!current.design) return;
+    if (e.target.closest && e.target.closest('[data-log-image-action]')) return;
     var node = e.target.closest ? e.target.closest('[data-log-node]') : null;
     if (node) post({ type: 'open', nodeId: node.getAttribute('data-log-node'), kind: node.getAttribute('data-log-kind') });
   });
 
   document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && imageResize) endImageResize(false);
     if (e.key === 'Escape') { post({ type: 'key', key: 'Escape' }); return; }
     if (!current.design) return;
+    if (e.target.closest && e.target.closest('[data-log-image-action]')) return;
     var node = document.activeElement && document.activeElement.closest ? document.activeElement.closest('[data-log-node]') : null;
     if (!node) return;
     if (e.key === 'Enter' || e.key === ' ') {
@@ -576,6 +671,70 @@
   });
 
   // ---------- 拖动排序（仅消息、仅同章节；最终由外层校验并调用 message.reorder） ----------
+
+  function postImageResize(img, width) {
+    var node = img.closest('[data-log-node]');
+    if (!node) return;
+    post({ type: 'imageResize', targetKind: img.getAttribute('data-log-resizable-image'), nodeId: node.getAttribute('data-log-node'), imageKey: img.getAttribute('data-log-image-key') || undefined, width: width });
+  }
+
+  root.addEventListener('pointerdown', function (e) {
+    var control = e.target.closest ? e.target.closest('[data-log-image-action]') : null;
+    if (!control || !current.design || !current.canResizeImages) return;
+    e.stopImmediatePropagation();
+    if (control.getAttribute('data-log-image-action') !== 'resize') return;
+    if (e.button !== 0 || imageResize || drag) return;
+    e.preventDefault();
+    var box = control.parentElement;
+    var img = box.querySelector('img');
+    if (!img) return;
+    var limits = imageLimits(img);
+    if (!limits.column || !box.offsetWidth) return;
+    imageResize = { img: img, box: box, handle: control, pointerId: e.pointerId, x: e.clientX, width: box.offsetWidth, original: box.style.width, scale: box.getBoundingClientRect().width / box.offsetWidth, limits: limits, moved: false };
+    box.classList.add('log-image-resizing');
+    control.setPointerCapture(e.pointerId);
+    window.addEventListener('pointermove', moveImageResize, { passive: false });
+    window.addEventListener('pointerup', finishImageResize);
+    window.addEventListener('pointercancel', cancelImageResize);
+    window.addEventListener('blur', cancelImageResize);
+    control.addEventListener('lostpointercapture', cancelImageResize);
+  }, true);
+
+  function moveImageResize(e) {
+    var state = imageResize;
+    if (!state || e.pointerId !== state.pointerId) return;
+    e.preventDefault();
+    var delta = (e.clientX - state.x) / state.scale;
+    if (Math.abs(delta) < 1 && !state.moved) return;
+    state.moved = true;
+    state.box.style.width = Math.min(state.limits.max, Math.max(state.limits.min, state.width + delta)) + 'px';
+  }
+
+  function finishImageResize(e) {
+    if (!imageResize || e.pointerId !== imageResize.pointerId) return;
+    moveImageResize(e);
+    endImageResize(true);
+  }
+
+  function cancelImageResize(e) {
+    if (!imageResize || (e && e.pointerId !== undefined && e.pointerId !== imageResize.pointerId)) return;
+    endImageResize(false);
+  }
+
+  function endImageResize(commit) {
+    var state = imageResize;
+    if (!state) return;
+    imageResize = null;
+    window.removeEventListener('pointermove', moveImageResize);
+    window.removeEventListener('pointerup', finishImageResize);
+    window.removeEventListener('pointercancel', cancelImageResize);
+    window.removeEventListener('blur', cancelImageResize);
+    state.handle.removeEventListener('lostpointercapture', cancelImageResize);
+    if (state.handle.hasPointerCapture(state.pointerId)) state.handle.releasePointerCapture(state.pointerId);
+    state.box.classList.remove('log-image-resizing');
+    if (commit && state.moved) postImageResize(state.img, clampImageRatio(parseFloat(state.box.style.width) / state.limits.column));
+    else state.box.style.width = state.original;
+  }
 
   root.addEventListener('pointerdown', function (e) {
     var handle = e.target.closest ? e.target.closest('.log-handle') : null;

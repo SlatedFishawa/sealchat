@@ -17,6 +17,7 @@ const props = withDefaults(defineProps<{
   mode?: 'paged' | 'flow';
   spread?: boolean;
   design?: boolean;
+  canResizeImages?: boolean;
   selection?: string[];
   zoom?: number;
   title?: string;
@@ -26,6 +27,7 @@ const props = withDefaults(defineProps<{
   mode: 'paged',
   spread: false,
   design: false,
+  canResizeImages: false,
   selection: () => [],
   zoom: 1,
   title: 'LOG 预览',
@@ -73,6 +75,7 @@ const run = async () => {
       mode: props.mode,
       spread: props.spread,
       design: props.design,
+      canResizeImages: props.canResizeImages,
       selection: props.selection.slice(),
       anchor: lastAnchor,
     }, rev);
@@ -99,7 +102,7 @@ onMounted(() => {
   });
 });
 
-watch(() => [props.doc, props.mode, props.spread, props.design] as const, () => {
+watch(() => [props.doc, props.mode, props.spread, props.design, props.canResizeImages] as const, () => {
   void run();
 });
 watch(() => props.selection, (ids) => engine.value?.select(ids.slice()), { deep: false });

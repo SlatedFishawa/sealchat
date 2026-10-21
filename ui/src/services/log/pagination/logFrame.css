@@ -6,6 +6,12 @@
   --log-line-height: 1.5;
   --log-workspace-bg: #e9e7e2;
   --log-selection: #2f6fde;
+  --log-tool-fg: rgba(28, 31, 38, 0.88);
+  --log-tool-bg: color-mix(in srgb, var(--log-workspace-bg) 70%, rgba(255, 255, 255, 0.72));
+  --log-tool-bg-hover: color-mix(in srgb, var(--log-workspace-bg) 55%, rgba(255, 255, 255, 0.88));
+  --log-tool-border: color-mix(in srgb, var(--log-tool-fg) 22%, transparent);
+  --log-tool-border-strong: color-mix(in srgb, var(--log-tool-fg) 42%, transparent);
+  --log-tool-shadow: rgba(15, 23, 42, 0.14);
   color-scheme: light;
 }
 * { box-sizing: border-box; }
@@ -48,6 +54,10 @@ body {
 .log-node img { max-width: 100%; max-height: var(--log-content-height, 100%); height: auto; }
 .log-node figure img, .log-node .log-fit-contain img { object-fit: contain; }
 .log-node.log-fit-cover img { object-fit: cover; width: 100%; }
+/* 未计算尺寸前用 display: contents 保留样式包原有图片约束；确定尺寸后再生成交互包装盒。 */
+.log-node .log-image-box { display: contents; }
+.log-node .log-image-box.log-image-box--sized { display: inline-block; position: relative; max-width: 100%; vertical-align: bottom; line-height: 0; break-inside: avoid; }
+.log-node .log-image-box.log-image-box--sized > img { display: block; width: 100% !important; min-width: 0 !important; max-width: 100% !important; height: auto !important; min-height: 0 !important; }
 .log-img-missing {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 8em; min-height: 4.5em; padding: 0.5em; border: 1px dashed #b8b8b8; color: #888; font-size: 0.85em; background: #f6f6f6;
@@ -95,6 +105,14 @@ html:has(> body.log-design) { scrollbar-width: thin; scrollbar-color: rgba(128, 
 html:has(> body.log-design)::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
 html:has(> body.log-design)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: rgba(128, 128, 128, 0.45) padding-box; }
 html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
+.log-canvas-dark {
+  --log-tool-fg: rgba(255, 255, 255, 0.9);
+  --log-tool-bg: color-mix(in srgb, var(--log-workspace-bg) 62%, rgba(18, 20, 26, 0.7));
+  --log-tool-bg-hover: color-mix(in srgb, var(--log-workspace-bg) 46%, rgba(28, 30, 38, 0.86));
+  --log-tool-border: color-mix(in srgb, var(--log-tool-fg) 20%, transparent);
+  --log-tool-border-strong: color-mix(in srgb, var(--log-tool-fg) 38%, transparent);
+  --log-tool-shadow: rgba(0, 0, 0, 0.28);
+}
 .log-canvas-dark body.log-design { background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px); }
 .log-canvas-dark .log-page { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 8px 28px rgba(0, 0, 0, 0.45); }
 .log-design .log-node[data-log-kind="message"], .log-design .log-node[data-log-kind="element"] { cursor: default; position: relative; border-radius: 3px; }
@@ -125,6 +143,29 @@ html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
 .log-drop-indicator::before { left: -3px; }
 .log-drop-indicator::after { right: -3px; }
 .log-dragging { opacity: 0.45; }
+.log-image-control {
+  position: absolute; bottom: 4px; z-index: 14; width: 26px; height: 26px; padding: 0;
+  border: 1px solid var(--log-tool-border); border-radius: 7px;
+  background: var(--log-tool-bg); color: var(--log-tool-fg);
+  box-shadow: 0 2px 8px var(--log-tool-shadow);
+  -webkit-backdrop-filter: blur(7px) saturate(115%); backdrop-filter: blur(7px) saturate(115%);
+  font: 15px/24px sans-serif; opacity: 0; pointer-events: none; touch-action: none;
+  transition: opacity 0.12s ease, background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.log-image-control:hover { background: var(--log-tool-bg-hover); border-color: var(--log-tool-border-strong); box-shadow: 0 3px 10px var(--log-tool-shadow); }
+.log-image-control:active { transform: translateY(1px); box-shadow: 0 1px 4px var(--log-tool-shadow); }
+.log-image-control:focus-visible { outline: 2px solid var(--log-tool-border-strong); outline-offset: 1px; }
+.log-image-resize { right: 4px; cursor: nwse-resize; }
+.log-image-reset { right: 34px; cursor: pointer; }
+.log-design .log-image-box:hover > .log-image-control, .log-design .log-selected .log-image-control, .log-design .log-image-box:focus-within > .log-image-control, .log-design .log-image-resizing > .log-image-control { opacity: 1; pointer-events: auto; }
+.log-design .log-image-box:hover, .log-design .log-selected .log-image-box, .log-design .log-image-resizing { box-shadow: 0 0 0 1px var(--log-tool-border); }
+.log-design .log-image-resizing { box-shadow: 0 0 0 1px var(--log-tool-border-strong); user-select: none; }
+.log-design .log-node.log-selected[data-log-kind="element"][data-log-element-type="imagePlate"],
+.log-design .log-node.log-selected[data-log-kind="element"][data-log-element-type="cover"] {
+  box-shadow: inset 0 0 0 1px var(--log-tool-border-strong);
+  background: color-mix(in srgb, var(--log-workspace-bg) 12%, transparent);
+}
+@media (hover: none) { .log-design .log-image-control { opacity: 0.9; pointer-events: auto; } }
 .log-node:focus-visible { outline: 2px solid var(--log-selection); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .log-design .log-node.log-flash { animation: none; outline: 2px solid #f0b400; }
@@ -135,6 +176,6 @@ html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
   #log-root, .log-design #log-root { padding: 0; zoom: 1 !important; }
   .log-pages { display: block; gap: 0; }
   .log-page { box-shadow: none; break-after: page; content-visibility: visible !important; }
-  .log-message-actions, .log-drop-indicator { display: none !important; }
+  .log-message-actions, .log-drop-indicator, .log-image-control { display: none !important; }
   .log-design .log-node.log-selected, .log-design .log-node:hover { box-shadow: none; background: none; }
 }

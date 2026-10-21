@@ -313,6 +313,7 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 	// Keep the public clue boundary, but archive member-private clue sections that
 	// the publishing actor is authorized to read into the release snapshot.
 	display := newMessageDisplayResolver("", j.ActorID, messageDisplayLogArchive)
+	imageWidths := logMessageImageWidths(&d)
 	for _, section := range d.Sections {
 		addElements := func(kind, messageID, side string) error {
 			for _, e := range elements {
@@ -353,7 +354,7 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 					return logError("TOO_LARGE", "发布节点超过上限")
 				}
 				display = display.forChannel(m.ChannelID)
-				if err := logBuildMessage(ctx, &release, display, section.ID, m, ordinal); err != nil {
+				if err := logBuildMessage(ctx, &release, display, section.ID, m, ordinal, imageWidths[m.ID]); err != nil {
 					return err
 				}
 				if err := addElements("message", m.ID, "after"); err != nil {

@@ -67,7 +67,7 @@ export interface LogElement {
   anchor: LogAnchor;
   order: number;
   templateId: string;
-  content: Record<string, unknown>;
+  content: Record<string, unknown> & { imageWidth?: number };
   style: Record<string, unknown>;
 }
 
@@ -118,6 +118,8 @@ export interface LogDraft {
   themeTokens: Record<string, LogTokenValue>;
   /** 可选的工程图片素材登记；不随样式包切换。 */
   assets?: LogProjectAsset[];
+  /** 正文图片宽度 / 当前内容栏宽度，key 为 message:<id>:image:<index>。 */
+  imageWidths?: Record<string, number>;
 }
 
 export interface LogProjectContext {
@@ -285,6 +287,8 @@ export interface LogPublicMessageNode {
   messageType: LogPublicMessageType;
   speaker: { key: string; name: string; color: string | null; avatarAssetKey: string | null; variantKey: string | null };
   bodyHtml: string;
+  /** 发布时按正文图片序号投影，不公开源消息 ID。 */
+  imageWidths?: Record<string, number>;
   plainText: string;
   createdAt: string | null;
   quoteNodeId: string | null;
