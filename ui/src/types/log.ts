@@ -79,7 +79,10 @@ export interface LogPageSettings {
   gutterMm: number;
   columns: 1 | 2;
   backgroundColor: string;
+  /** 样式包内图片资源 id（样式资源）。 */
   backgroundAssetId: string | null;
+  /** 当前 LOG 工程素材 id（LogDraft.assets）；与 backgroundAssetId 互斥，旧草稿不存在。 */
+  backgroundProjectAssetId?: string | null;
   fontFamily: string;
   fontSizePt: number;
   lineHeight: number;
@@ -90,6 +93,17 @@ export interface LogPageSettings {
 }
 
 export type LogTokenValue = string | number | boolean;
+
+/**
+ * LOG 工程素材登记：文件本体是既有附件，登记只是本工程内的引用授权。
+ * 与样式包资源分开：元素 content.projectAssetId / 页面 backgroundProjectAssetId 引用它，
+ * content.assetId / backgroundAssetId 仍只指样式包资源。
+ */
+export interface LogProjectAsset {
+  id: string;
+  attachmentId: string;
+  name: string;
+}
 
 export interface LogDraft {
   schemaVersion: 1;
@@ -102,6 +116,8 @@ export interface LogDraft {
   stylePackageId: string;
   stylePackageVersion: string;
   themeTokens: Record<string, LogTokenValue>;
+  /** 可选的工程图片素材登记；不随样式包切换。 */
+  assets?: LogProjectAsset[];
 }
 
 export interface LogProjectContext {

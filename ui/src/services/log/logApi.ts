@@ -213,6 +213,12 @@ export const fetchAttachmentBytes = async (attachmentId: string, signal?: AbortS
   return { data: resp.data as ArrayBuffer, mime: String(resp.headers['content-type'] || '') };
 };
 
+/** LOG 工程素材：经工程权限读取已保存草稿中登记的图片，不直接使用附件地址。 */
+export const fetchLogProjectAssetBytes = async (projectId: string, assetId: string, signal?: AbortSignal) => {
+  const resp = await api.get(`api/v1/log/projects/${seg(projectId)}/assets/${seg(assetId)}`, { responseType: 'arraybuffer', signal, timeout: 30000 });
+  return { data: resp.data as ArrayBuffer, mime: String(resp.headers['content-type'] || '') };
+};
+
 export const fetchLogBodyAssetBytes = async (projectId: string, context: string, signal?: AbortSignal) => {
   const [sectionId, messageId, assetKey, extra] = context.split('/');
   if (extra !== undefined || !/^[A-Za-z0-9_-]{1,100}$/.test(sectionId || '') || !/^[A-Za-z0-9_-]{1,100}$/.test(messageId || '') || !/^[a-f0-9]{32}$/.test(assetKey || '')) {

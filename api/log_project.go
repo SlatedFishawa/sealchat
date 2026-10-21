@@ -25,6 +25,7 @@ func bindLogProjectRoutes(auth fiber.Router) {
 	auth.Post("/log/projects/:id/export", logAuthentication, logExportCreate)
 	auth.Get("/log/projects/:id/sections/:sectionId/messages", logAuthentication, logMessagesGet)
 	auth.Get("/log/projects/:id/sections/:sectionId/messages/:messageId/assets/:assetKey", logAuthentication, logBodyAssetGet)
+	auth.Get("/log/projects/:id/assets/:assetId", logAuthentication, logProjectAssetGet)
 	auth.Get("/log/projects/:id/sections/:sectionId/message-context/:messageId", logAuthentication, logMessagesGet)
 	auth.Put("/log/projects/:id/sections/:sectionId/exclusions", logAuthentication, logExclusionsPut)
 }
@@ -38,6 +39,23 @@ func logBodyAssetGet(c *fiber.Ctx) error {
 		return logResponse(c, nil, &service.LogError{Code: "UNAUTHENTICATED", Message: "请先登录"})
 	}
 	asset, err := service.GetLogBodyAsset(c.Context(), c.Params("id"), c.Params("sectionId"), c.Params("messageId"), c.Params("assetKey"), u.ID)
+	if err != nil {
+		return logResponse(c, nil, err)
+	}
+	c.Set("Content-Type", asset.MIME)
+	return c.Send(asset.Data)
+}
+
+// logProjectAssetGet serves images registered in the LOG draft to its designers only.
+func logProjectAssetGet(c *fiber.Ctx) error {
+	c.Set("Cache-Control", "no-store")
+	c.Set("X-Content-Type-Options", "nosniff")
+	c.Set("Referrer-Policy", "no-referrer")
+	u := getCurUser(c)
+	if u == nil {
+		return logResponse(c, nil, &service.LogError{Code: "UNAUTHENTICATED", Message: "请先登录"})
+	}
+	asset, err := service.GetLogProjectAsset(c.Context(), c.Params("id"), c.Params("assetId"), u.ID)
 	if err != nil {
 		return logResponse(c, nil, err)
 	}

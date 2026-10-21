@@ -1,5 +1,5 @@
 // 资源令牌 → 字节：外层按权限获取后交给隔离 iframe（转为 iframe 内的 Blob URL）。
-// 令牌：att:（历史聊天附件）、body:（LOG 正文）、style:（样式包）、pub:（公开快照）。
+// 令牌：att:（历史聊天附件）、body:（LOG 正文）、style:（样式包）、proj:（LOG 工程素材）、pub:（公开快照）。
 import { onBeforeUnmount } from 'vue';
 import {
   buildPlatformFontFileUrl,
@@ -15,6 +15,7 @@ import { buildLogFontPlan, collectLogFontText, logFontChunkToken, logPlatformFon
 import {
   fetchAttachmentBytes,
   fetchLogBodyAssetBytes,
+  fetchLogProjectAssetBytes,
   fetchLogStyleAssetBytes,
   fetchPublicAssetBytes,
   publicAssetPath,
@@ -26,8 +27,10 @@ const FONT_MIME = /^(font\/(ttf|otf|sfnt|woff|woff2)|application\/(x-font-ttf|x-
 
 export interface PreparedLogFrame { doc: FrameDocument; assets: FrameAsset[] }
 
+const PROJECT_ASSET_ID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 export interface AssetScope {
-  /** 设计态：服务端生成的正文资源上下文属于当前工程。 */
+  /** 设计态：服务端生成的正文资源上下文与 proj: 工程素材都属于当前工程。 */
   projectId?: () => string;
   /** 设计态：当前样式包（用于 style: 令牌）。 */
   stylePackage?: () => { id: string; version: string } | null;
@@ -109,6 +112,12 @@ export const useLogAssets = (scope: AssetScope) => {
         const r = await fetchLogBodyAssetBytes(projectId, id, controller.signal);
         return { token, data: r.data, mime: r.mime };
       }
+      if (kind === 'proj' && PROJECT_ASSET_ID.test(id)) {
+        const projectId = scope.projectId?.();
+        if (!projectId) return { token, data: null, mime: '' };
+        const r = await fetchLogProjectAssetBytes(projectId, id, controller.signal);
+        return { token, data: r.data, mime: r.mime };
+      }
       if (kind === 'style' && id) {
         const pkg = scope.stylePackage?.();
         if (!pkg) return { token, data: null, mime: '' };
@@ -154,10 +163,38 @@ export const useLogAssets = (scope: AssetScope) => {
     return { doc: { ...doc, css: `${plan.css}\n${doc.css}` }, assets };
   };
 
+  /**
+   * 刚上传的工程素材在草稿保存前服务端还读不到：上传者用本地字节预置缓存，
+   * 预览与缩略图立即可用；同一 proj: 令牌永远对应同一附件，无需失效。
+   */
+  const seed = (token: string, data: ArrayBuffer, mime: string) => {
+    if (!cache.has(token)) cache.set(token, Promise.resolve({ token, data, mime }));
+  };
+
+  // 外层界面（素材网格、图片选择）用的 Blob URL：与资源宿主同生命周期，卸载时统一回收。
+  const objectUrls = new Map<string, Promise<string | null>>();
+  const objectUrl = (token: string) => {
+    let task = objectUrls.get(token);
+    if (!task) {
+      task = ensure([token]).then(([asset]) => {
+        const mime = String(asset?.mime || '').split(';')[0].trim().toLowerCase();
+        if (controller.signal.aborted || !asset?.data || !/^image\/(png|jpeg|webp|gif|avif)$/.test(mime)) return null;
+        return URL.createObjectURL(new Blob([asset.data], { type: mime }));
+      });
+      objectUrls.set(token, task);
+    }
+    return task;
+  };
+
   /** 样式包切换后，style: 令牌指向另一个包版本，必须失效。 */
   const invalidate = (prefix: string) => {
     for (const key of Array.from(cache.keys())) {
       if (key.startsWith(prefix)) cache.delete(key);
+    }
+    for (const [key, task] of Array.from(objectUrls.entries())) {
+      if (!key.startsWith(prefix)) continue;
+      objectUrls.delete(key);
+      void task.then((url) => url && URL.revokeObjectURL(url));
     }
   };
 
@@ -165,7 +202,9 @@ export const useLogAssets = (scope: AssetScope) => {
     controller.abort();
     cache.clear();
     fontInfo.clear();
+    objectUrls.forEach((task) => void task.then((url) => url && URL.revokeObjectURL(url)));
+    objectUrls.clear();
   });
 
-  return { ensure, prepare, invalidate };
+  return { ensure, prepare, invalidate, seed, objectUrl };
 };

@@ -51,7 +51,13 @@ func logSnapshotBodyAsset(ctx context.Context, r *model.LogReleaseModel, display
 	if a == nil {
 		return "", nil
 	}
-	key := logPublicKey(r.ID, "attachment", a.ID)
+	return logSnapshotAttachment(ctx, r, a, logPublicKey(r.ID, "attachment", a.ID), nodeID)
+}
+
+// logSnapshotAttachment copies a validated stored image into the release once per key and
+// references it from nodeID ("" = publisher-approved page/element resource). Unreadable or
+// invalid images return an empty key so each caller decides whether that is fatal.
+func logSnapshotAttachment(ctx context.Context, r *model.LogReleaseModel, a *model.AttachmentModel, key, nodeID string) (string, error) {
 	var existing int64
 	if err := model.GetDB().Model(&model.LogReleaseAssetModel{}).Where("release_id = ? AND asset_key = ?", r.ID, key).Count(&existing).Error; err != nil {
 		return "", err
@@ -141,12 +147,21 @@ func logBuildMessage(ctx context.Context, r *model.LogReleaseModel, display *mes
 	row := model.LogReleaseNodeModel{ID: id, ReleaseID: r.ID, SectionID: section, Ordinal: ordinal, MessageID: m.ID, ChannelID: m.ChannelID, SourceVersion: m.Version, NodeJSON: string(b), SearchText: plain, QuoteMessageID: m.QuoteID}
 	return model.GetDB().Create(&row).Error
 }
-func logBuildElement(r *model.LogReleaseModel, e LogElement, ordinal int64) error {
+func logBuildElement(r *model.LogReleaseModel, e LogElement, ordinal int64, projectKeys map[string]string) error {
 	id := utils.NewID()
 	content := e.Content
 	if asset, ok := content["assetId"].(string); ok {
 		delete(content, "assetId")
 		content["assetKey"] = logPublicKey(r.ID, "style", asset)
+	}
+	// Readers only see assetKey; whether it came from the style or the project stays internal.
+	if asset, ok := content["projectAssetId"].(string); ok {
+		delete(content, "projectAssetId")
+		key := projectKeys[asset]
+		if key == "" {
+			return logProjectAssetsUnavailable([]string{asset})
+		}
+		content["assetKey"] = key
 	}
 	if body, ok := content["body"].(string); ok {
 		doc := buildRichDocumentForExport(body, false)
@@ -159,7 +174,7 @@ func logBuildElement(r *model.LogReleaseModel, e LogElement, ordinal int64) erro
 	row := model.LogReleaseNodeModel{ID: id, ReleaseID: r.ID, SectionID: e.Anchor.SectionID, Ordinal: ordinal, NodeJSON: string(b)}
 	return model.GetDB().Create(&row).Error
 }
-func logBuildPublicMetadata(r *model.LogReleaseModel, d *LogDraft) (map[string]any, error) {
+func logBuildPublicMetadata(r *model.LogReleaseModel, d *LogDraft, projectKeys map[string]string) (map[string]any, error) {
 	// d.Sections is already in publish order. In chapter mode a section's public title is its chapter's
 	// visual title (labels are editor-only); readers that predate chapters still get one entry per section.
 	chapterTitles := map[string]string{}
@@ -187,6 +202,15 @@ func logBuildPublicMetadata(r *model.LogReleaseModel, d *LogDraft) (map[string]a
 	}
 	if d.Page.BackgroundAssetID != nil {
 		page["backgroundAssetId"] = logPublicKey(r.ID, "style", *d.Page.BackgroundAssetID)
+	}
+	// A project background is published under the same public field as a style background.
+	delete(page, "backgroundProjectAssetId")
+	if id := d.Page.BackgroundProjectAssetID; id != nil {
+		key := projectKeys[*id]
+		if key == "" {
+			return nil, logProjectAssetsUnavailable([]string{*id})
+		}
+		page["backgroundAssetId"] = key
 	}
 	var style any
 	if d.StylePackageID != "" {

@@ -22,7 +22,13 @@ type LogElement struct {
 	Style      map[string]any `json:"style"`
 }
 
+// validateLogDraftStyle checks style references against the bound package and project image
+// references against the draft's own asset registry; neither source can stand in for the other.
 func validateLogDraftStyle(d *LogDraft, userID string) error {
+	projectAssets := logProjectAssetIDs(d)
+	if id := d.Page.BackgroundProjectAssetID; id != nil && (d.Page.BackgroundAssetID != nil || !projectAssets[*id]) {
+		return logTemplateError()
+	}
 	if d.StylePackageID == "" && d.StylePackageVersion == "" && len(d.Elements) == 0 && len(d.ThemeTokens) == 0 && d.Page.BackgroundAssetID == nil && d.Page.HeaderTemplateID == nil && d.Page.FooterTemplateID == nil {
 		return nil
 	}
@@ -105,7 +111,7 @@ func validateLogDraftStyle(d *LogDraft, userID string) error {
 		} else if (e.Anchor.Kind != "sectionStart" && e.Anchor.Kind != "sectionEnd") || e.Anchor.MessageID != "" || e.Anchor.Side != "" {
 			return logTemplateError()
 		}
-		if err := logElementContent(e, assets); err != nil {
+		if err := logElementContent(e, assets, projectAssets); err != nil {
 			return err
 		}
 		// Each template owns a closed settings schema; absence permits no settings.
@@ -127,13 +133,17 @@ func validateLogDraftStyle(d *LogDraft, userID string) error {
 	}
 	return nil
 }
-func logElementContent(e LogElement, assets map[string][]byte) error {
+
+// Image elements carry one image source: assetId (style package) or projectAssetId (LOG registry).
+// A cover may have none; an image plate needs exactly one.
+func logElementContent(e LogElement, assets map[string][]byte, projectAssets map[string]bool) error {
 	allowed := map[string]string{}
+	images := 0
 	switch e.Type {
 	case "cover":
-		allowed = map[string]string{"title": "string", "subtitle": "string", "assetId": "asset?"}
+		allowed = map[string]string{"title": "string", "subtitle": "string", "assetId": "asset?", "projectAssetId": "project?"}
 	case "imagePlate":
-		allowed = map[string]string{"assetId": "asset", "caption": "string", "fit": "fit"}
+		allowed = map[string]string{"assetId": "asset?", "projectAssetId": "project?", "caption": "string", "fit": "fit"}
 	case "pageBreak":
 	case "transition":
 		allowed = map[string]string{"label": "string"}
@@ -156,7 +166,7 @@ func logElementContent(e LogElement, assets map[string][]byte) error {
 	for key, kind := range allowed {
 		v, ok := e.Content[key]
 		if !ok {
-			if kind == "asset?" {
+			if kind == "asset?" || kind == "project?" {
 				continue
 			}
 			return logTemplateError()
@@ -167,10 +177,16 @@ func logElementContent(e LogElement, assets map[string][]byte) error {
 			if !isString || len(s) > 128<<10 {
 				return logTemplateError()
 			}
-		case "asset", "asset?":
+		case "asset?":
 			if !isString || assets[s] == nil {
 				return logTemplateError()
 			}
+			images++
+		case "project?":
+			if !isString || !projectAssets[s] {
+				return logTemplateError()
+			}
+			images++
 		case "fit":
 			if !isString || (s != "contain" && s != "cover") {
 				return logTemplateError()
@@ -185,6 +201,9 @@ func logElementContent(e LogElement, assets map[string][]byte) error {
 				return logTemplateError()
 			}
 		}
+	}
+	if images > 1 || (e.Type == "imagePlate" && images != 1) {
+		return logTemplateError()
 	}
 	return nil
 }

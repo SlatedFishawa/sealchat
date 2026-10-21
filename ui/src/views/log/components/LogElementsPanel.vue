@@ -6,7 +6,10 @@ import type { AnchorState } from '@/services/log/logRenderer';
 import { renderMessageBody } from '@/services/log/logContent';
 import { LOG_ELEMENT_LABELS, resolveDesignSpeakerName, schemaFieldsFor, templatesForElementType, type SchemaField } from '@/services/log/logRenderer';
 import type { LogAnchor, LogDesignMessage, LogDraft, LogElement, LogStylePackage } from '@/types/log';
-import { nextOrderAt, packageImageAssets, sameAnchor } from '../logDraftOps';
+import { nextOrderAt, sameAnchor } from '../logDraftOps';
+import { elementImageRef, setElementImageRef, type LogImageRef } from '../logAssetRefs';
+import type { LogAssetLibrary } from '../composables/useLogAssetLibrary';
+import LogImagePicker from './LogImagePicker.vue';
 
 const props = defineProps<{
   draft: LogDraft;
@@ -20,6 +23,7 @@ const props = defineProps<{
   focusElementId: string | null;
   /** 多来源章节中锚点范围是当前来源片段，文案用“片段”；默认“章节”。 */
   scopeLabel?: string;
+  library: LogAssetLibrary;
 }>();
 const scope = computed(() => props.scopeLabel || '章节');
 const emit = defineEmits<{
@@ -115,7 +119,7 @@ const applyRelocate = (e: LogElement) => {
 };
 
 // ---- 内容编辑 ----
-const imageOptions = computed(() => packageImageAssets(props.stylePackage).map((a) => ({ label: a.path, value: a.id })));
+const setImage = (id: string, image: LogImageRef | null) => mutate(id, (e) => setElementImageRef(e.content, image));
 const templateOptions = (e: LogElement) => {
   const pkg = props.stylePackage;
   if (!pkg) return [{ label: e.templateId, value: e.templateId }];
@@ -219,12 +223,12 @@ const anchorAt = (kind: 'sectionStart' | 'sectionEnd'): LogAnchor => ({ kind, se
             <n-form-item label="标题"><n-input :value="str(e.content.title)" maxlength="200" @update:value="(v: string) => setContent(e.id, 'title', v)" /></n-form-item>
             <n-form-item label="副标题"><n-input :value="str(e.content.subtitle)" maxlength="400" @update:value="(v: string) => setContent(e.id, 'subtitle', v)" /></n-form-item>
             <n-form-item label="图片">
-              <n-select :value="str(e.content.assetId) || null" clearable :options="imageOptions" placeholder="无（仅样式包内图片）" @update:value="(v: string | null) => setContent(e.id, 'assetId', v || undefined)" />
+              <LogImagePicker :value="elementImageRef(e.content)" :library="library" :disabled="!canEdit" empty-text="无图片" @update:value="(v: LogImageRef | null) => setImage(e.id, v)" />
             </n-form-item>
           </template>
           <template v-else-if="e.type === 'imagePlate'">
             <n-form-item label="图片">
-              <n-select :value="str(e.content.assetId) || null" :options="imageOptions" placeholder="选择样式包内图片" @update:value="(v: string) => setContent(e.id, 'assetId', v)" />
+              <LogImagePicker :value="elementImageRef(e.content)" :library="library" :disabled="!canEdit" required empty-text="请选择图片" @update:value="(v: LogImageRef | null) => v && setImage(e.id, v)" />
             </n-form-item>
             <n-form-item label="说明"><n-input :value="str(e.content.caption)" maxlength="400" @update:value="(v: string) => setContent(e.id, 'caption', v)" /></n-form-item>
             <n-form-item label="适配">

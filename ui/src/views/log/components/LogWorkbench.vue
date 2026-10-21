@@ -8,17 +8,12 @@ import { useRouter } from 'vue-router';
 import {
   AlertTriangle,
   ArrowLeft,
-  Blockquote,
   Book2,
-  Bookmark,
   Components,
   Download,
   Eye,
-  Heading,
   LayoutSidebarRight,
-  ListNumbers,
   Minus,
-  Movie,
   PageBreak,
   Palette,
   Pencil,
@@ -26,7 +21,6 @@ import {
   Plus,
   Rocket,
   Search,
-  SeparatorHorizontal,
   Stack2,
   Users,
   X,
@@ -45,8 +39,8 @@ import {
 import {
   buildFrameDocument,
   composeDesignSection,
+  designBackgroundToken,
   designStyleFromPackage,
-  LOG_ELEMENT_LABELS,
   type DesignNodeCacheEntry,
 } from '@/services/log/logRenderer';
 import type { FrameDocument, FrameEvent, FrameLayoutResult } from '@/services/log/pagination/logFrameHost';
@@ -55,8 +49,10 @@ import { LOG_ELEMENT_TYPES } from '@/types/log';
 import { useLogDraft } from '../composables/useLogDraft';
 import { useLogMessageWindow } from '../composables/useLogMessageWindow';
 import { useLogAssets } from '../composables/useLogAssets';
+import { useLogAssetLibrary } from '../composables/useLogAssetLibrary';
 import { useLogSelection } from '../composables/useLogSelection';
 import { createElement, downloadJson, elementAvailability } from '../logDraftOps';
+import type { LogImageRef } from '../logAssetRefs';
 import { chapterTitle, chapterViews, sectionLabel } from '../logChapterOps';
 import LogPreviewFrame from './LogPreviewFrame.vue';
 import LogSelectionBar from './LogSelectionBar.vue';
@@ -67,6 +63,8 @@ import LogElementsPanel from './LogElementsPanel.vue';
 import LogPagePanel from './LogPagePanel.vue';
 import LogStylePanel from './LogStylePanel.vue';
 import LogPublishPanel from './LogPublishPanel.vue';
+import LogAssetsPanel from './LogAssetsPanel.vue';
+import LogInsertElementDialog from './LogInsertElementDialog.vue';
 import LogStandardExportDialog from './LogStandardExportDialog.vue';
 
 const props = defineProps<{ context: LogProjectContext; slug: string }>();
@@ -149,6 +147,13 @@ const assets = useLogAssets({
   projectId: () => projectId.value,
   stylePackage: () => (activePkg.value ? { id: activePkg.value.id, version: activePkg.value.version } : null),
 });
+const assetLibrary = useLogAssetLibrary({
+  draft,
+  update: draftCtl.update,
+  stylePackage: () => activePkg.value,
+  canEdit: () => caps.value.editDraft,
+  assets,
+});
 let styleSeq = 0;
 watch(() => `${draft.value.stylePackageId}@${draft.value.stylePackageVersion}`, async () => {
   const id = ++styleSeq;
@@ -204,7 +209,7 @@ const rebuild = () => {
     sectionTitle: visualTitle.value,
     nodes: comp.nodes,
     toc: comp.toc,
-    backgroundToken: d.page.backgroundAssetId ? `style:${d.page.backgroundAssetId}` : null,
+    backgroundToken: designBackgroundToken(d.page),
   });
   const json = JSON.stringify(result.doc);
   if (json === lastDocJson && frame.value) return;
@@ -239,12 +244,13 @@ const selectedElement = computed(() => {
 const selectedIndex = computed(() => (selectedMessages.value.length === 1 ? win.indexOf(selectedMessages.value[0].message.id) : -1));
 
 // ---- 面板 ----
-type PanelTab = 'bulk' | 'elements' | 'page' | 'style' | 'publish';
+type PanelTab = 'bulk' | 'elements' | 'page' | 'style' | 'assets' | 'publish';
 const panelItems: Array<{ key: PanelTab; label: string; hint: string; icon: Component }> = [
   { key: 'elements', label: '元素', hint: '插入与编辑 LOG 元素', icon: Components },
   { key: 'page', label: '页面', hint: '纸张、边距、字体与页眉页脚', icon: PageBreak },
   { key: 'style', label: '样式', hint: '样式包、设计变量与模板', icon: Palette },
   { key: 'bulk', label: '批量', hint: '批量修改历史消息外观', icon: Users },
+  { key: 'assets', label: '素材', hint: '当前 LOG 的图片素材与样式资源', icon: Photo },
   { key: 'publish', label: '发布', hint: '发布前检查与发布历史', icon: Rocket },
 ];
 const panelTab = ref<PanelTab>('elements');
@@ -470,7 +476,7 @@ const insertShow = ref(false);
 const insertAnchor = ref<LogAnchor | null>(null);
 const insertOptions = computed(() => LOG_ELEMENT_TYPES.map((type) => {
   const a = elementAvailability(type, activePkg.value);
-  return { type, label: LOG_ELEMENT_LABELS[type], disabled: !a.templateId, reason: a.reason };
+  return { type, disabled: !a.templateId, reason: a.reason };
 }));
 const requestInsert = (anchor: LogAnchor) => {
   insertAnchor.value = anchor;
@@ -488,12 +494,12 @@ const insertAtMessage = (messageId: string, side: 'before' | 'after') => {
   selection.select(messageId);
   requestInsert({ kind: 'message', sectionId: sec.id, messageId, side });
 };
-const doInsert = (type: LogElementType) => {
+const doInsert = (type: LogElementType, image: LogImageRef | null) => {
   const anchor = insertAnchor.value;
   if (!anchor) return;
   let createdId = '';
   draftCtl.update((d) => {
-    const el = createElement(d, type, anchor, activePkg.value);
+    const el = createElement(d, type, anchor, activePkg.value, image);
     if (el) {
       d.elements.push(el);
       createdId = el.id;
@@ -625,20 +631,6 @@ const stepZoom = (dir: -1 | 1) => {
 };
 
 const issueCount = computed(() => (layoutInfo.value?.warnings.length || 0) + (layoutInfo.value?.missingAssets || 0) + (frame.value?.issues.length || 0));
-
-// ---- 插入元素选项的图标 ----
-const elementIcons: Record<LogElementType, Component> = {
-  cover: Book2,
-  imagePlate: Photo,
-  pageBreak: SeparatorHorizontal,
-  transition: Movie,
-  quote: Blockquote,
-  prologue: Bookmark,
-  epilogue: Bookmark,
-  heading: Heading,
-  toc: ListNumbers,
-  custom: Components,
-};
 
 // ---- 工作区底色跟随外层主题（含暗色与自定义主题） ----
 const canvasRef = ref<HTMLElement | null>(null);
@@ -917,9 +909,10 @@ onBeforeUnmount(() => {
               :focus-element-id="focusElementId"
               :scope-label="fragmentHint ? '片段' : '章节'"
               @locate="locate"
+              :library="assetLibrary"
               @request-insert="requestInsert"
             />
-            <LogPagePanel v-else-if="panelTab === 'page'" :draft="draft" :update="draftCtl.update" :style-package="activePkg" :can-edit="caps.editDraft" />
+            <LogPagePanel v-else-if="panelTab === 'page'" :draft="draft" :update="draftCtl.update" :style-package="activePkg" :can-edit="caps.editDraft" :library="assetLibrary" />
             <LogStylePanel
               v-else-if="panelTab === 'style'"
               :draft="draft"
@@ -927,6 +920,12 @@ onBeforeUnmount(() => {
               :style-package="stylePkg"
               :can-edit="caps.editDraft"
               @preview="(p: LogStylePackage | null) => (styleOverride = p)"
+            />
+            <LogAssetsPanel
+              v-else-if="panelTab === 'assets'"
+              :library="assetLibrary"
+              @locate-element="openElementFromPublish"
+              @open-page="openPanel('page')"
             />
             <LogPublishPanel
               v-else-if="panelTab === 'publish'"
@@ -1017,24 +1016,13 @@ onBeforeUnmount(() => {
       @select="(id: string) => (sectionId = id)"
     />
 
-    <n-modal v-model:show="insertShow" preset="card" title="插入 LOG 元素" style="width: min(560px, 94vw)">
-      <p class="log-wb__hint">元素只属于 LOG 排版，不会写入聊天。</p>
-      <div class="log-wb__insert-grid">
-        <button
-          v-for="opt in insertOptions"
-          :key="opt.type"
-          type="button"
-          class="log-wb__insert-card"
-          :disabled="opt.disabled || !caps.editDraft"
-          :title="opt.reason"
-          @click="doInsert(opt.type)"
-        >
-          <n-icon :component="elementIcons[opt.type]" size="22" />
-          <span class="log-wb__insert-label">{{ opt.label }}</span>
-          <span v-if="opt.disabled && opt.reason" class="log-wb__insert-reason">{{ opt.reason }}</span>
-        </button>
-      </div>
-    </n-modal>
+    <LogInsertElementDialog
+      v-model:show="insertShow"
+      :options="insertOptions"
+      :can-edit="caps.editDraft"
+      :library="assetLibrary"
+      @insert="doInsert"
+    />
 
     <n-modal v-model:show="moveToShow" preset="card" title="移到指定位置" style="width: min(560px, 94vw)">
       <p class="log-wb__hint">只能在同一频道内移动；会修改聊天原消息的显示顺序。</p>
@@ -1568,8 +1556,7 @@ onBeforeUnmount(() => {
 .log-wb__link-btn:focus-visible,
 .log-wb__chip:focus-visible,
 .log-wb__seg > button:focus-visible,
-.log-wb__rail-btn:focus-visible,
-.log-wb__insert-card:focus-visible {
+.log-wb__rail-btn:focus-visible {
   outline: 2px solid var(--log-wb-accent);
   outline-offset: -2px;
 }
@@ -1654,51 +1641,6 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--log-wb-muted);
   margin: 0 0 10px;
-}
-
-.log-wb__insert-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
-  gap: 8px;
-}
-
-.log-wb__insert-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 84px;
-  padding: 10px 8px;
-  border: 1px solid var(--log-wb-line);
-  border-radius: 10px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  transition: border-color 0.12s ease, background-color 0.12s ease, color 0.12s ease;
-}
-
-.log-wb__insert-card:hover:not(:disabled) {
-  border-color: var(--log-wb-accent);
-  color: var(--log-wb-accent);
-  background: color-mix(in srgb, var(--log-wb-accent) 7%, transparent);
-}
-
-.log-wb__insert-card:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.log-wb__insert-label {
-  font-weight: 600;
-}
-
-.log-wb__insert-reason {
-  font-size: 11px;
-  line-height: 1.3;
-  color: var(--log-wb-muted);
-  text-align: center;
 }
 
 /* ---- 窄屏 ---- */

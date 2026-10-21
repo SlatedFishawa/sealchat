@@ -67,6 +67,9 @@ type LogPageSettings struct {
 	FooterTemplateID  *string `json:"footerTemplateId"`
 	ShowPageNumbers   bool    `json:"showPageNumbers"`
 	MergeNeighbors    bool    `json:"mergeNeighbors"`
+
+	// BackgroundProjectAssetID references the LOG's own asset registry; backgroundAssetId stays a style asset.
+	BackgroundProjectAssetID *string `json:"backgroundProjectAssetId,omitempty"`
 }
 type LogDraft struct {
 	SchemaVersion       int               `json:"schemaVersion"`
@@ -78,6 +81,8 @@ type LogDraft struct {
 	StylePackageID      string            `json:"stylePackageId"`
 	StylePackageVersion string            `json:"stylePackageVersion"`
 	ThemeTokens         map[string]any    `json:"themeTokens"`
+	// Assets registers ordinary LOG images (attachments) independently of the style package.
+	Assets []LogProjectAsset `json:"assets,omitempty"`
 }
 type LogDraftUpdate struct {
 	ExpectedVersion int64           `json:"expectedVersion"`
@@ -132,6 +137,9 @@ func parseLogDraft(raw []byte) (LogDraft, error) {
 		}
 	}
 	if err := validateLogChapters(&draft); err != nil {
+		return draft, err
+	}
+	if err := validateLogProjectAssetRegistry(&draft); err != nil {
 		return draft, err
 	}
 	p := draft.Page
@@ -306,6 +314,9 @@ func SaveLogDraft(id, userID string, input LogDraftUpdate) (*LogDraftResult, err
 		}
 		if r.RowsAffected != 1 {
 			return logConflict(p.DraftVersion)
+		}
+		if err := claimLogProjectAssetRegistrations(tx, &old, &draft, id, userID); err != nil {
+			return err
 		}
 		binding := model.LogProjectStyleBindingModel{ProjectID: id, PackageID: draft.StylePackageID, Version: draft.StylePackageVersion}
 		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "project_id"}}, DoUpdates: clause.AssignmentColumns([]string{"package_id", "version"})}).Create(&binding).Error

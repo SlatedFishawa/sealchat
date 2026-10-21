@@ -4,13 +4,17 @@ import { computed, onMounted, ref, watch } from 'vue';
 import type { LogDraft, LogPageSettings, LogStylePackage } from '@/types/log';
 import { listPlatformFonts } from '@/services/font/platformFontApi';
 import type { PlatformFontAsset } from '@/services/font/platformFontTypes';
-import { cloneJson, packageFontAssets, packageImageAssets } from '../logDraftOps';
+import { cloneJson, packageFontAssets } from '../logDraftOps';
+import { pageBackgroundRef, setPageBackgroundRef, type LogImageRef } from '../logAssetRefs';
+import type { LogAssetLibrary } from '../composables/useLogAssetLibrary';
+import LogImagePicker from './LogImagePicker.vue';
 
 const props = defineProps<{
   draft: LogDraft;
   update: (mutate: (d: LogDraft) => void) => boolean;
   stylePackage: LogStylePackage | null;
   canEdit: boolean;
+  library: LogAssetLibrary;
 }>();
 
 const PRESETS: Record<'a4' | 'a5', { w: number; h: number }> = { a4: { w: 210, h: 297 }, a5: { w: 148, h: 210 } };
@@ -49,6 +53,13 @@ const set = <K extends keyof LogPageSettings>(key: K, value: LogPageSettings[K])
   local.value = { ...local.value, [key]: value };
   commit();
 };
+/** 背景图：样式资源写 backgroundAssetId，工程素材写 backgroundProjectAssetId，二者互斥。 */
+const setBackground = (image: LogImageRef | null) => {
+  const next = cloneJson(local.value);
+  setPageBackgroundRef(next, image);
+  local.value = next;
+  commit();
+};
 const setMargin = (key: 'top' | 'right' | 'bottom' | 'left', value: number | null) => {
   if (value === null) return;
   local.value = { ...local.value, marginsMm: { ...local.value.marginsMm, [key]: value } };
@@ -72,7 +83,6 @@ const setPreset = (preset: 'a4' | 'a5' | 'custom') => {
 };
 
 const templateOptions = computed(() => Object.keys(props.stylePackage?.templates || {}).map((id) => ({ label: id, value: id })));
-const backgroundOptions = computed(() => packageImageAssets(props.stylePackage).map((a) => ({ label: a.path, value: a.id })));
 const fontOptions = computed(() => [
   { label: '无衬线（系统）', value: 'sans-serif' },
   { label: '衬线/宋体（系统）', value: 'serif' },
@@ -134,7 +144,7 @@ onMounted(() => { void refreshPlatformFonts(); });
       <n-color-picker :value="local.backgroundColor" :modes="['hex']" :show-alpha="true" @update:value="(v: string) => set('backgroundColor', v)" />
     </n-form-item>
     <n-form-item label="背景图">
-      <n-select :value="local.backgroundAssetId" clearable :options="backgroundOptions" :placeholder="backgroundOptions.length ? '无' : '当前样式包没有图片资源'" @update:value="(v: string | null) => set('backgroundAssetId', v)" />
+      <LogImagePicker :value="pageBackgroundRef(local)" :library="library" :disabled="!canEdit" empty-text="无背景图" @update:value="setBackground" />
     </n-form-item>
     <n-form-item label="字体">
       <n-select :value="local.fontFamily" :options="fontOptions" :loading="loadingPlatformFonts" filterable @update:value="(v: string) => set('fontFamily', v)" />

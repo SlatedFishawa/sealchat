@@ -1,6 +1,7 @@
 // 草稿的纯函数操作：只产生合同合法的数据（元素、锚点、章节、样式绑定），不做网络请求。
 import type { LogAnchor, LogDraft, LogElement, LogElementType, LogSection, LogStylePackage } from '@/types/log';
 import { defaultElementContent, templatesForElementType } from '@/services/log/logRenderer';
+import { elementImageRef, elementNeedsImage, setElementImageRef, type LogImageRef } from './logAssetRefs';
 
 const IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const FONT_MIME = new Set(['font/ttf', 'font/otf']);
@@ -38,21 +39,23 @@ export const elementAvailability = (type: LogElementType, pkg: LogStylePackage |
   if (!pkg) return { templateId: null, reason: '样式包尚未加载' };
   const ids = templatesForElementType(type, pkg.templates, pkg.settingsSchema);
   if (!ids.length) return { templateId: null, reason: type === 'custom' ? '当前样式没有带参数 Schema 的 custom 模板' : `当前样式没有 ${type} 模板` };
-  if (type === 'imagePlate' && !packageImageAssets(pkg).length) return { templateId: null, reason: '插图页只能引用样式包内的图片资源，当前样式包没有图片' };
+  // 图片来源（工程素材或样式资源）在插入时选择，可用性只取决于模板。
   return { templateId: ids[0], reason: '' };
 };
 
-export const createElement = (draft: LogDraft, type: LogElementType, anchor: LogAnchor, pkg: LogStylePackage | null): LogElement | null => {
+/** 创建元素；插图页必须带图片，封面图片可选。 */
+export const createElement = (draft: LogDraft, type: LogElementType, anchor: LogAnchor, pkg: LogStylePackage | null, image: LogImageRef | null = null): LogElement | null => {
   const { templateId } = elementAvailability(type, pkg);
-  if (!templateId) return null;
-  const img = packageImageAssets(pkg)[0]?.id || null;
+  if (!templateId || (elementNeedsImage(type) && !image)) return null;
+  const content = defaultElementContent(type);
+  if (image && (type === 'cover' || type === 'imagePlate')) setElementImageRef(content, image);
   return {
     id: uuid(),
     type,
     anchor,
     order: nextOrderAt(draft, anchor),
     templateId,
-    content: defaultElementContent(type, img),
+    content,
     style: {},
   };
 };
@@ -81,6 +84,7 @@ export interface StyleBindProblem {
 /**
  * 切换样式包前的兼容性检查：服务端会整体拒绝引用不存在模板/资源的草稿，
  * 所以先在本地给出问题清单，并对可安全修复的项生成修复后的草稿。
+ * 只检查样式资源引用；工程素材（draft.assets 及其引用）与样式无关，原样保留。
  */
 export const rebindStyle = (draft: LogDraft, pkg: LogStylePackage): { next: LogDraft; problems: StyleBindProblem[] } => {
   const next = cloneJson(draft);
@@ -106,8 +110,9 @@ export const rebindStyle = (draft: LogDraft, pkg: LogStylePackage): { next: LogD
       e.style = {};
       problems.push({ kind: 'element', id: e.id, message: `模板 ${tid} 不接受局部样式，已清空`, fixable: true });
     }
-    const assetId = e.content?.assetId;
-    if (typeof assetId === 'string' && assetId && !assets.has(assetId)) {
+    const image = elementImageRef(e.content);
+    const assetId = image?.source === 'style' ? image.id : '';
+    if (assetId && !assets.has(assetId)) {
       if (e.type === 'cover') {
         delete e.content.assetId;
         problems.push({ kind: 'element', id: e.id, message: '封面图片不属于新样式包，已移除', fixable: true });
@@ -117,7 +122,7 @@ export const rebindStyle = (draft: LogDraft, pkg: LogStylePackage): { next: LogD
           e.content.assetId = img;
           problems.push({ kind: 'element', id: e.id, message: '插图不属于新样式包，已替换为包内第一张图片', fixable: true });
         } else {
-          problems.push({ kind: 'element', id: e.id, message: '插图页引用的图片不在新样式包中，请先删除该插图页', fixable: false });
+          problems.push({ kind: 'element', id: e.id, message: '插图页引用的样式图片不在新样式包中，请先把它换成工程素材或删除该插图页', fixable: false });
         }
       }
     }

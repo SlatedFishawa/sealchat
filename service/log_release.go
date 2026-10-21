@@ -70,6 +70,9 @@ func QueueLogRelease(projectID, userID string, input LogReleaseInput) (map[strin
 	if err := validateLogPublishAnchors(p, &d, userID); err != nil {
 		return nil, err
 	}
+	if err := validateLogProjectAssetsReadable(&d); err != nil {
+		return nil, err
+	}
 	inputJSON, _ := json.Marshal(logReleaseBuild{Draft: d, ExpectedVersion: input.ExpectedVersion})
 	job := model.LogJobModel{Kind: "release", ActorID: userID, ClientOpID: input.ClientOpID, ProjectID: projectID, PayloadHash: hash, InputJSON: string(inputJSON), Status: "queued"}
 	job.Init()
@@ -296,6 +299,10 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 	if err := logBuildStyleAssets(&release, &d); err != nil {
 		return err
 	}
+	projectKeys, err := logBuildProjectAssets(ctx, &release, &d)
+	if err != nil {
+		return err
+	}
 	elements, err := logDraftElements(&d)
 	if err != nil {
 		return err
@@ -313,7 +320,7 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 					continue
 				}
 				ordinal++
-				if err := logBuildElement(&release, e, ordinal); err != nil {
+				if err := logBuildElement(&release, e, ordinal, projectKeys); err != nil {
 					return err
 				}
 				used[e.ID] = true
@@ -385,7 +392,7 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 	} else if !admin {
 		return logError("PERMISSION_DENIED", "发布权限已撤销")
 	}
-	metadata, err := logBuildPublicMetadata(&release, &d)
+	metadata, err := logBuildPublicMetadata(&release, &d, projectKeys)
 	if err != nil {
 		return err
 	}

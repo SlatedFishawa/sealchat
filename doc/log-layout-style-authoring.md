@@ -200,8 +200,8 @@
 
 | 类型 | content | 推荐绑定 | 最小模板样例 |
 | --- | --- | --- | --- |
-| cover | `{title, subtitle, assetId?}` | title、subtitle、assetUrl | `<section class="cv"><h1 data-log-text="title"></h1><p data-log-if="subtitle" data-log-text="subtitle"></p><figure data-log-if="assetUrl"><img data-log-bind-src="assetUrl" alt=""></figure></section>` |
-| imagePlate | `{assetId, caption, fit}` | assetUrl、caption | `<figure class="ip"><img data-log-bind-src="assetUrl" alt=""><figcaption data-log-if="caption" data-log-text="caption"></figcaption></figure>` |
+| cover | `{title, subtitle, assetId? \| projectAssetId?}` | title、subtitle、assetUrl | `<section class="cv"><h1 data-log-text="title"></h1><p data-log-if="subtitle" data-log-text="subtitle"></p><figure data-log-if="assetUrl"><img data-log-bind-src="assetUrl" alt=""></figure></section>` |
+| imagePlate | `{assetId \| projectAssetId, caption, fit}` | assetUrl、caption | `<figure class="ip"><img data-log-bind-src="assetUrl" alt=""><figcaption data-log-if="caption" data-log-text="caption"></figcaption></figure>` |
 | pageBreak | `{}` | — | `<div class="pb" role="presentation"></div>`（分页器在其后强制换页） |
 | transition | `{label}` | label | `<p class="tr" role="separator" data-log-text="label"></p>` |
 | quote | `{body}` 富文本 | body slot | `<blockquote class="qt"><div data-log-slot="body"></div></blockquote>` |
@@ -209,6 +209,8 @@
 | heading | `{text, level:1\|2\|3}` | text；`data-log-level` 选择器 | `<h2 class="hd" data-log-text="text"></h2>` |
 | toc | `{depth:1\|2\|3}` | 目录由渲染器插入 body slot（无 slot 时追加到模板根元素内） | `<section class="toc"><h2>目录</h2><div data-log-slot="body"></div></section>` |
 | custom | `{props}` | `props.<键>` | `<aside class="cu"><p data-log-text="props.text"></p></aside>` |
+
+图片来源：`assetId` 始终指当前样式包内的图片资源；`projectAssetId` 指 LOG 工程素材（草稿 `assets` 登记的已上传图片，不随样式切换）。同一元素最多一个来源，插图页必须恰好一个，封面可以没有。两者在模板里都以 `assetUrl` 绑定，作者无需区分。页面背景同理：`page.backgroundAssetId` 为样式资源，`page.backgroundProjectAssetId` 为工程素材，二者互斥。
 
 页眉页脚不是元素，由页面设置的 `headerTemplateId` / `footerTemplateId` 选用任意模板，可绑定 `title`、`section.title`、`pageNumber`：`<div class="pf"><span data-log-text="pageNumber"></span></div>`。
 

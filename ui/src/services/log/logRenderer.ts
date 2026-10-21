@@ -247,9 +247,25 @@ const elementFields = (content: Record<string, unknown>) => {
   return fields;
 };
 
+const PROJECT_ASSET_ID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** 设计态图片令牌：projectAssetId → proj:（LOG 工程素材），assetId → style:（样式包资源）。 */
+export const designElementAssetToken = (content: Record<string, unknown>): string | null => {
+  const project = typeof content.projectAssetId === 'string' ? content.projectAssetId : '';
+  if (project) return PROJECT_ASSET_ID.test(project) ? `proj:${project}` : null;
+  const assetId = typeof content.assetId === 'string' && content.assetId ? content.assetId : '';
+  return assetId ? `style:${assetId}` : null;
+};
+
+/** 设计态页面背景令牌，规则同元素图片。 */
+export const designBackgroundToken = (page: LogPageSettings): string | null => {
+  const project = page.backgroundProjectAssetId;
+  if (project) return PROJECT_ASSET_ID.test(project) ? `proj:${project}` : null;
+  return page.backgroundAssetId ? `style:${page.backgroundAssetId}` : null;
+};
+
 export const designElementToNode = (e: LogElement): RenderElementNode => {
   const content = e.content || {};
-  const assetId = typeof content.assetId === 'string' && content.assetId ? content.assetId : '';
   const body = typeof content.body === 'string' && content.body ? renderMessageBody(content.body) : null;
   return {
     kind: 'element',
@@ -258,7 +274,7 @@ export const designElementToNode = (e: LogElement): RenderElementNode => {
     type: e.type,
     templateId: e.templateId,
     fields: elementFields(content),
-    assetToken: assetId ? `style:${assetId}` : null,
+    assetToken: designElementAssetToken(content),
     bodyHtml: body ? body.html : null,
     style: e.style || {},
     fit: content.fit === 'cover' ? 'cover' : content.fit === 'contain' ? 'contain' : null,
@@ -647,11 +663,11 @@ export const LOG_ELEMENT_LABELS: Record<LogElementType, string> = {
   custom: '自定义组件',
 };
 
-/** 每种元素的默认 content（符合合同最小 Schema）。 */
-export const defaultElementContent = (type: LogElementType, defaultAssetId: string | null): Record<string, unknown> => {
+/** 每种元素的默认 content（符合合同最小 Schema）；图片来源由调用方按选择写入。 */
+export const defaultElementContent = (type: LogElementType): Record<string, unknown> => {
   switch (type) {
     case 'cover': return { title: '标题', subtitle: '' };
-    case 'imagePlate': return { assetId: defaultAssetId || '', caption: '', fit: 'contain' };
+    case 'imagePlate': return { caption: '', fit: 'contain' };
     case 'pageBreak': return {};
     case 'transition': return { label: '※ ※ ※' };
     case 'quote':
