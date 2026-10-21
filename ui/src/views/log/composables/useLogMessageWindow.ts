@@ -2,11 +2,10 @@
 // SOURCE_CHANGED 时丢弃旧游标整体重建，绝不拼接不同版本的页。
 import { computed, onBeforeUnmount, ref, shallowRef, watch, type Ref } from 'vue';
 import { chatEvent } from '@/stores/chat';
-import { fetchLogSectionMessages, isLogError, describeLogError } from '@/services/log/logApi';
+import { fetchLogSectionMessages, isLogError, describeLogError, LogDomainError } from '@/services/log/logApi';
 import type { LogDesignMessage, LogProtocolMessage, LogSection } from '@/types/log';
 
-const PAGE_LIMIT = 200;
-const DEFAULT_CAP = 1000;
+const PAGE_LIMIT = 100;
 
 type ChatMessageEvent = { message?: LogProtocolMessage & { channel?: { id?: string } }; channel?: { id?: string } };
 
@@ -17,7 +16,6 @@ export const useLogMessageWindow = (projectId: Ref<string>, section: Ref<LogSect
   const loading = ref(false);
   const error = ref('');
   const errorCode = ref('');
-  const cap = ref(DEFAULT_CAP);
   const staleHint = ref(false);
   let generation = 0;
   let controller: AbortController | null = null;
@@ -35,65 +33,44 @@ export const useLogMessageWindow = (projectId: Ref<string>, section: Ref<LogSect
     controller = null;
   };
 
-  /** 从章节开头顺序加载，直至完成或达到上限；新数据整体替换旧窗口。 */
-  const load = async (opts: { append?: boolean } = {}) => {
+  /** 每次只请求一页；只有来源变化时才丢弃窗口并从第一页重建。 */
+  const loadPage = async (append = false, retries = 0): Promise<void> => {
+    cancel();
     const sec = section.value;
     const pid = projectId.value;
-    if (!sec || !pid) return;
-    cancel();
+    if (!sec || !pid) {
+      loading.value = false;
+      return;
+    }
     const gen = generation;
     const ctrl = new AbortController();
     controller = ctrl;
     loading.value = true;
     error.value = '';
     errorCode.value = '';
-    let collected: LogDesignMessage[] = opts.append ? items.value.slice() : [];
-    let cursor: string | null = opts.append ? nextCursor.value : null;
-    let version: number | null = opts.append ? sourceVersion.value : null;
-    let retries = 0;
+    const cursor = append ? nextCursor.value : null;
+    const version = append ? sourceVersion.value : null;
     try {
-      for (;;) {
-        let window;
-        try {
-          window = await fetchLogSectionMessages(pid, sec.id, cursor, PAGE_LIMIT, ctrl.signal);
-        } catch (err) {
-          if (isLogError(err, 'SOURCE_CHANGED') && retries < 3) {
-            // 来源或草稿版本变化：丢弃旧游标，从头重建。
-            retries += 1;
-            collected = [];
-            cursor = null;
-            version = null;
-            continue;
-          }
-          throw err;
-        }
-        if (gen !== generation) return;
-        if (version !== null && window.sourceVersion !== version) {
-          collected = [];
-          cursor = null;
-          version = null;
-          retries += 1;
-          if (retries > 3) throw new Error('来源持续变化，请稍后重试');
-          continue;
-        }
-        version = window.sourceVersion;
-        collected = collected.concat(window.items);
-        cursor = window.nextCursor;
-        // 首批到达即展示，后续批次在完成后整体替换。
-        if (!opts.append && collected.length === window.items.length) {
-          items.value = collected;
-          sourceVersion.value = version;
-          nextCursor.value = cursor;
-        }
-        if (!cursor || collected.length >= cap.value) break;
-      }
+      const window = await fetchLogSectionMessages(pid, sec.id, cursor, PAGE_LIMIT, ctrl.signal);
       if (gen !== generation) return;
-      items.value = collected;
-      sourceVersion.value = version;
-      nextCursor.value = cursor;
+      if (append && window.sourceVersion !== version) {
+        throw new LogDomainError('SOURCE_CHANGED', '来源消息已变化，需要重新加载');
+      }
+      items.value = append ? items.value.concat(window.items) : window.items;
+      sourceVersion.value = window.sourceVersion;
+      nextCursor.value = window.nextCursor;
       staleHint.value = false;
     } catch (err) {
       if (gen !== generation || ctrl.signal.aborted) return;
+      if (isLogError(err, 'SOURCE_CHANGED')) {
+        items.value = [];
+        nextCursor.value = null;
+        sourceVersion.value = null;
+        if (retries < 3) {
+          await loadPage(false, retries + 1);
+          return;
+        }
+      }
       error.value = describeLogError(err, '加载消息失败');
       errorCode.value = (err as any)?.code || '';
     } finally {
@@ -101,9 +78,12 @@ export const useLogMessageWindow = (projectId: Ref<string>, section: Ref<LogSect
     }
   };
 
+  /** 从章节开头加载一页，整体替换窗口，不预取后续页。 */
+  const load = () => loadPage();
+
   const loadMore = async () => {
-    cap.value += DEFAULT_CAP;
-    await load({ append: true });
+    if (loading.value || nextCursor.value === null) return;
+    await loadPage(true);
   };
 
   const scheduleReload = (delay = 800) => {
@@ -191,10 +171,12 @@ export const useLogMessageWindow = (projectId: Ref<string>, section: Ref<LogSect
   /** 轻量探测：比较 sourceVersion，不一致则整体重载。 */
   const probe = async () => {
     const sec = section.value;
+    const pid = projectId.value;
+    const gen = generation;
     if (!sec || sourceVersion.value === null || loading.value) return;
     try {
-      const w = await fetchLogSectionMessages(projectId.value, sec.id, null, 1);
-      if (section.value?.id !== sec.id) return;
+      const w = await fetchLogSectionMessages(pid, sec.id, null, 1);
+      if (gen !== generation || projectId.value !== pid || section.value?.id !== sec.id) return;
       if (w.sourceVersion !== sourceVersion.value) {
         staleHint.value = true;
         void load();
@@ -212,7 +194,10 @@ export const useLogMessageWindow = (projectId: Ref<string>, section: Ref<LogSect
     items.value = [];
     nextCursor.value = null;
     sourceVersion.value = null;
-    cap.value = DEFAULT_CAP;
+    error.value = '';
+    errorCode.value = '';
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = null;
     ownWrites.clear();
     void load();
   }, { immediate: true });

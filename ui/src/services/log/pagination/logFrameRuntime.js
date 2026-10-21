@@ -566,6 +566,7 @@
         nodes: host.querySelectorAll('.log-node').length,
         domNodes: document.getElementsByTagName('*').length,
       });
+      reportViewport();
     } finally {
       if (host.parentNode === document.body) host.remove();
     }
@@ -616,11 +617,18 @@
     }
   }
 
+  function reportViewport() {
+    var viewportHeight = window.innerHeight;
+    var height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+    var nearEnd = height - (window.scrollY + viewportHeight) <= Math.max(viewportHeight, 600);
+    post({ type: 'anchor', anchor: captureAnchor(), nearEnd: nearEnd });
+  }
+
   window.addEventListener('scroll', function () {
     if (scrollTimer) return;
     scrollTimer = setTimeout(function () {
       scrollTimer = 0;
-      post({ type: 'anchor', anchor: captureAnchor() });
+      reportViewport();
     }, 200);
   }, { passive: true });
 

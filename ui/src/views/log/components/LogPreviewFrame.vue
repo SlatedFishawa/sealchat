@@ -39,6 +39,7 @@ const emit = defineEmits<{
   (e: 'layout', result: FrameLayoutResult): void;
   (e: 'layout-error', message: string): void;
   (e: 'busy', busy: boolean): void;
+  (e: 'near-end'): void;
 }>();
 
 const iframeRef = ref<HTMLIFrameElement | null>(null);
@@ -53,7 +54,10 @@ const onEvent = (event: FrameEvent) => {
     if (event.revision === revision) progress.value = { done: event.done, total: event.total };
     return;
   }
-  if (event.type === 'anchor') lastAnchor = event.anchor;
+  if (event.type === 'anchor') {
+    lastAnchor = event.anchor;
+    if (event.nearEnd) emit('near-end');
+  }
   emit('frame-event', event);
 };
 

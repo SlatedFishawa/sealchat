@@ -32,6 +32,8 @@ class Element {
   get scrollWidth() { return 0; }
   getBoundingClientRect() { return { top: 0, bottom: 80 }; }
   matches(selector) {
+    const anchor = selector.match(/^\[data-log-node="([^"]+)"\]$/);
+    if (anchor) return this.attrs['data-log-node'] === anchor[1];
     if (selector === '[data-log-node]') return 'data-log-node' in this.attrs;
     if (selector.startsWith('.')) return this.classList.contains(selector.slice(1));
     return false;
@@ -48,6 +50,11 @@ const createRuntime = (options = {}) => {
   const body = new Element('body');
   const nodes = { 'log-root': root, 'log-package': pkg, 'log-page-rule': new Element('style') };
   const messages = [];
+  const listeners = {};
+  const scrolls = [];
+  const window = { innerHeight: 800, scrollY: 0,
+    addEventListener: (type, fn) => { listeners[type] = fn; },
+    scrollBy: (x, y) => { scrolls.push(y); window.scrollY += y; }, CSS: { escape: value => value } };
   let releaseFont = () => {};
   const fontReady = options.neverReady ? new Promise(() => {}) : new Promise(resolve => { releaseFont = resolve; });
   let loadCalls = 0;
@@ -61,7 +68,7 @@ const createRuntime = (options = {}) => {
     } }) },
   };
   const context = {
-    document, window: { addEventListener() {}, scrollBy() {}, CSS: { escape: value => value } },
+    document, window,
     URL: { createObjectURL: () => 'blob:chunk' }, Blob, ArrayBuffer, CSS: { escape: value => value },
     performance,
     setTimeout: options.fastTimeout ? ((fn, ms) => setTimeout(fn, ms === 3000 ? 0 : ms)) : setTimeout,
@@ -73,7 +80,7 @@ const createRuntime = (options = {}) => {
   vm.runInNewContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.hooks = { render, receiveAssets, setPort: value => { port = value; } };})();'), context);
   context.hooks.setPort({ postMessage: message => messages.push(message) });
   context.hooks.receiveAssets([{ token: 'platform-font:font:chunk:aa', data: new ArrayBuffer(3), mime: 'font/woff2' }]);
-  return { ...context.hooks, root, messages, releaseFont, loadCalls: () => loadCalls };
+  return { ...context.hooks, root, messages, releaseFont, window, document, listeners, scrolls, loadCalls: () => loadCalls };
 };
 
 const input = (revision, mode = 'paged') => ({
@@ -137,7 +144,8 @@ test('真实 LogFrameEngine 对已投递字体只补充新 chunk，不重复传�
     } },
   });
   const iframe = { setAttribute() {}, addEventListener() {}, removeEventListener() {}, contentWindow: { postMessage() {} } };
-  const engine = new module.exports.LogFrameEngine(iframe, () => {});
+  const events = [];
+  const engine = new module.exports.LogFrameEngine(iframe, event => events.push(event));
   engine.handshake(); engine.receive({ type: 'ready' });
   const a = { token: 'platform-font:font:chunk:aa', data: new ArrayBuffer(3), mime: 'font/woff2' };
   const b = { ...a, token: 'platform-font:font:chunk:bb' };
@@ -148,5 +156,38 @@ test('真实 LogFrameEngine 对已投递字体只补充新 chunk，不重复传�
   assert.equal(a.data.byteLength, 3, '发送后字节缓存不被转移/清空');
   assert.ok(engine.hasAsset(a.token));
   assert.ok(engine.hasAsset(b.token));
+  engine.receive({ type: 'anchor', anchor: null, nearEnd: true });
+  assert.equal(events[0].nearEnd, true);
   engine.dispose();
+});
+
+test('iframe 中间位置不触发 nearEnd；接近底部提前触发并沿用 200ms 节流', async () => {
+  const runtime = createRuntime();
+  Object.defineProperty(runtime.document.documentElement, 'scrollHeight', { value: 5000 });
+  runtime.window.scrollY = 1000;
+  runtime.releaseFont();
+  await runtime.render(input(1, 'flow'));
+  assert.equal(runtime.messages.at(-1).type, 'anchor', 'layout 完成后主动报告视口');
+  assert.equal(runtime.messages.at(-1).nearEnd, false);
+  runtime.messages.length = 0;
+  runtime.window.scrollY = 3500;
+  runtime.listeners.scroll(); runtime.listeners.scroll(); runtime.listeners.scroll();
+  assert.equal(runtime.messages.length, 0);
+  await new Promise(resolve => setTimeout(resolve, 230));
+  assert.equal(runtime.messages.length, 1);
+  assert.equal(runtime.messages[0].nearEnd, true, '距底部还有 700px，无需滚到最后一个像素');
+});
+
+test('首屏不足一屏时 layout 主动报告 nearEnd；追加后恢复 anchor 再检查视口', async () => {
+  const runtime = createRuntime();
+  runtime.releaseFont();
+  await runtime.render(input(1, 'flow'));
+  assert.equal(runtime.messages.at(-1).nearEnd, true);
+  const next = input(2, 'flow');
+  next.doc.blocks.push({ id: 'c', kind: 'message', html: '80' });
+  next.anchor = { nodeId: 'b', fragmentIndex: 0, offsetWithinViewport: -24 };
+  await runtime.render(next);
+  assert.equal(runtime.scrolls.at(-1), 24, '既有 restoreAnchor 修正原节点相对视口偏移');
+  assert.equal(runtime.messages.at(-2).type, 'layout');
+  assert.equal(runtime.messages.at(-1).nearEnd, true);
 });

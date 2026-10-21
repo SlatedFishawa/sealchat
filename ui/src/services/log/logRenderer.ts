@@ -652,7 +652,7 @@ export const composeDesignSection = (
     nodes.push(cached.node);
     pushElements(`${item.message.id}:after`);
   }
-  pushElements('sectionEnd');
+  if (complete) pushElements('sectionEnd');
   for (const e of own) {
     if (!anchorStates.has(e.id)) anchorStates.set(e.id, complete ? 'orphaned' : 'unloaded');
   }

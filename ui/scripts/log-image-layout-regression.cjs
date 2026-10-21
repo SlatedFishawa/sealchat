@@ -64,6 +64,22 @@ const style = { templates: { imagePlate: '', cover: '', message: '' }, assets: [
 const draft = () => ({ schemaVersion: 1, elements: [{ id: 'e1', type: 'imagePlate', templateId: 'imagePlate', content: { assetId: 'bg' }, style: {} }], page: { fontFamily: 'sans-serif' }, themeTokens: {} });
 const build = (nodes, extra = {}) => renderer.buildFrameDocument({ style, page: { fontFamily: 'sans-serif', backgroundColor: '#ffffff' }, title: '', sectionTitle: '', nodes, toc: [], ...extra }).doc;
 
+test('不完整窗口保留末尾与未加载消息锚点，只有完整后才插入章节末尾元素', () => {
+  const elements = [
+    { id: 'start', type: 'pageBreak', anchor: { kind: 'sectionStart', sectionId: 's1' }, order: 0, content: {}, style: {} },
+    { id: 'end', type: 'pageBreak', anchor: { kind: 'sectionEnd', sectionId: 's1' }, order: 1, content: {}, style: {} },
+    { id: 'future', type: 'pageBreak', anchor: { kind: 'message', sectionId: 's1', messageId: 'm200', side: 'after' }, order: 2, content: {}, style: {} },
+  ];
+  const partial = renderer.composeDesignSection('s1', '章节', [], elements, false, new Map());
+  assert.deepEqual(partial.nodes.map(node => node.id), ['el-start']);
+  assert.equal(partial.anchorStates.get('end'), 'unloaded');
+  assert.equal(partial.anchorStates.get('future'), 'unloaded');
+  const complete = renderer.composeDesignSection('s1', '章节', [], elements, true, new Map());
+  assert.deepEqual(complete.nodes.map(node => node.id), ['el-start', 'el-end']);
+  assert.equal(complete.anchorStates.get('end'), 'attached');
+  assert.equal(complete.anchorStates.get('future'), 'orphaned');
+});
+
 test('element 自动/显式比例、非法值、cover 和模板切换', () => {
   const d = draft();
   const render = () => build([renderer.designElementToNode(d.elements[0])]).blocks[0].html;

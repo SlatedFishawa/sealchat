@@ -138,6 +138,11 @@ watch(sections, (list) => {
 });
 
 const win = useLogMessageWindow(projectId, querySection);
+const onNearEnd = () => {
+  if (!querySection.value || querySection.value.id !== currentSection.value?.id
+    || !win.nextCursor.value || win.loading.value || win.error.value) return;
+  void win.loadMore();
+};
 
 // ---- 样式包 ----
 const stylePkg = shallowRef<LogStylePackage | null>(null);
@@ -830,6 +835,7 @@ onBeforeUnmount(() => {
           :canvas="canvasTone"
           :title="`${draft.title} 排版预览`"
           @frame-event="onFrameEvent"
+          @near-end="onNearEnd"
           @layout="onLayout"
           @layout-error="(m: string) => (layoutError = m)"
           @busy="(b: boolean) => (layoutBusy = b)"

@@ -48,7 +48,7 @@ export type FrameEvent =
   | { type: 'open'; nodeId: string; kind?: string }
   | { type: 'drop'; nodeId: string; targetId: string; side: 'before' | 'after' }
   | { type: 'action'; nodeId: string; action: 'edit' | 'insert-before' | 'insert-after' }
-  | { type: 'anchor'; anchor: FrameAnchor | null }
+  | { type: 'anchor'; anchor: FrameAnchor | null; nearEnd?: boolean }
   | { type: 'key'; key: string }
   | { type: 'progress'; revision: number; done: number; total: number }
   | { type: 'scrollMiss'; nodeId: string };
