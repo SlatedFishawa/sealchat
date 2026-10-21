@@ -1,12 +1,11 @@
 <script setup lang="ts">
-// 发布与历史：发布前确保草稿已保存并检查孤立元素/模板问题；发布期间暂停自动保存，
+// 发布管理：发布前确保草稿已保存并检查孤立元素/模板问题；发布期间暂停自动保存，
 // 用幂等 clientOpId 提交并轮询任务；完成后以“版本 +1”采纳新工程版本。构建失败不影响旧发布版。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useDialog, useMessage } from 'naive-ui';
 import {
   describeLogError,
   fetchLogReleaseJob,
-  fetchLogReleases,
   isLogError,
   LogDomainError,
   queueLogRelease,
@@ -15,7 +14,7 @@ import {
 import { newClientOpId } from '@/services/log/logMessageCommands';
 import type { AnchorState } from '@/services/log/logRenderer';
 import type { FrameLayoutResult } from '@/services/log/pagination/logFrameHost';
-import type { LogProjectContext, LogReleaseJob, LogReleaseSummary, LogSection } from '@/types/log';
+import type { LogProjectContext, LogReleaseJob, LogSection } from '@/types/log';
 import type { LogDraftController } from '../composables/useLogDraft';
 import { chapterViews } from '../logChapterOps';
 
@@ -103,7 +102,6 @@ const finishJob = (j: LogReleaseJob) => {
     publishedReleaseId.value = j.releaseId || publishedReleaseId.value;
     serverBadElements.value = [];
     toast.success('发布完成');
-    void loadHistory();
     return;
   }
   const code = j.error?.code || 'BUILD_FAILED';
@@ -177,29 +175,12 @@ const confirmPublish = () => {
   });
 };
 
-// ---- 历史与下架 ----
-const history = ref<LogReleaseSummary[]>([]);
-const historyCursor = ref<string | null>(null);
-const historyError = ref('');
-const loadHistory = async (more = false) => {
-  if (!caps.value.publish) return;
-  try {
-    const r = await fetchLogReleases(props.context.projectId, more ? historyCursor.value : null, 20);
-    history.value = more ? [...history.value, ...r.items] : r.items;
-    historyCursor.value = r.nextCursor || null;
-    historyError.value = '';
-    const active = r.items.find((x) => x.status === 'active');
-    if (!more) publishedReleaseId.value = active?.id || null;
-  } catch (error) {
-    historyError.value = describeLogError(error, '读取发布历史失败');
-  }
-};
-
+// ---- 下架 ----
 const withdrawing = ref(false);
 const withdraw = () => {
   dialog.warning({
     title: '下架发布',
-    content: '下架后公开链接立即不可访问；草稿与历史记录保留，可再次发布。',
+    content: '下架后公开链接立即不可访问；当前发布快照会删除，草稿保留，可随时重新发布。',
     positiveText: '下架',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -211,7 +192,6 @@ const withdraw = () => {
         });
         publishedReleaseId.value = null;
         toast.success('已下架');
-        void loadHistory();
       } catch (error) {
         toast.error(describeLogError(error, '下架失败'));
       } finally {
@@ -231,14 +211,12 @@ const copyLink = async () => {
   }
 };
 
-const statusText = (s: LogReleaseSummary['status']) => ({ active: '当前', superseded: '已替换', withdrawn: '已下架' }[s]);
 const progressPct = computed(() => {
   const p = job.value?.progress;
   return p && p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : 0;
 });
 
 onMounted(() => {
-  void loadHistory();
   void resumePending();
 });
 onBeforeUnmount(() => {
@@ -304,16 +282,8 @@ onBeforeUnmount(() => {
     <n-alert v-else type="info" :show-icon="false">只有世界管理者可以发布和下架。</n-alert>
 
     <section v-if="caps.publish">
-      <div class="log-pub__title">发布历史</div>
-      <n-alert v-if="historyError" type="error" :show-icon="false">{{ historyError }}</n-alert>
-      <div v-for="r in history" :key="r.id" class="log-pub__line">
-        <n-tag size="tiny" :type="r.status === 'active' ? 'success' : 'default'">{{ statusText(r.status) }}</n-tag>
-        <span>{{ new Date(r.createdAt).toLocaleString() }}</span>
-        <span class="log-pub__hint">草稿 v{{ r.draftVersion }}</span>
-      </div>
-      <n-empty v-if="!history.length && !historyError" size="small" description="暂无发布" />
-      <n-button v-if="historyCursor" size="tiny" @click="loadHistory(true)">更多</n-button>
-      <n-button v-if="publishedReleaseId" size="small" type="error" secondary :loading="withdrawing" style="margin-top: 8px" @click="withdraw">下架当前发布</n-button>
+      <div class="log-pub__title">发布管理</div>
+      <n-button v-if="publishedReleaseId" size="small" type="error" secondary :loading="withdrawing" @click="withdraw">下架当前发布</n-button>
       <p class="log-pub__hint">更换展示链接、启用/停用排版器请在世界详情的“LOG 排版与发布”中操作。</p>
     </section>
   </div>

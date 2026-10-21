@@ -253,7 +253,7 @@ const panelItems: Array<{ key: PanelTab; label: string; hint: string; icon: Comp
   { key: 'style', label: '样式', hint: '样式包、设计变量与模板', icon: Palette },
   { key: 'bulk', label: '批量', hint: '批量修改历史消息外观', icon: Users },
   { key: 'assets', label: '素材', hint: '当前 LOG 的图片素材与样式资源', icon: Photo },
-  { key: 'publish', label: '发布', hint: '发布前检查与发布历史', icon: Rocket },
+  { key: 'publish', label: '发布', hint: '发布前检查与发布管理', icon: Rocket },
 ];
 const panelTab = ref<PanelTab>('elements');
 const panelMeta = computed(() => panelItems.find((p) => p.key === panelTab.value) || panelItems[0]);

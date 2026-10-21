@@ -13,7 +13,6 @@ import type {
   LogPublicItems,
   LogPublicSearchHit,
   LogReleaseJob,
-  LogReleaseSummary,
   LogStylePackage,
   LogStyleSummary,
 } from '@/types/log';
@@ -146,11 +145,6 @@ export const queueLogRelease = (projectId: string, expectedVersion: number, clie
 
 export const fetchLogReleaseJob = (projectId: string, jobId: string) =>
   unwrap<LogReleaseJob>(api.get(`api/v1/log/projects/${seg(projectId)}/jobs/${seg(jobId)}`));
-
-export const fetchLogReleases = (projectId: string, cursor: string | null = null, limit = 20) =>
-  unwrap<{ items: LogReleaseSummary[]; nextCursor: string | null }>(
-    api.get(`api/v1/log/projects/${seg(projectId)}/releases`, { params: cursor ? { cursor, limit } : { limit } }),
-  );
 
 export const withdrawLogPublication = async (projectId: string, expectedVersion: number) => {
   try {

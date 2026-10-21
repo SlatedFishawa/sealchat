@@ -52,7 +52,6 @@ func logPublicRateLimit(c *fiber.Ctx) error {
 
 func bindLogReleaseRoutes(r fiber.Router) {
 	r.Post("/log/projects/:id/releases", logAuthentication, logReleaseCreate)
-	r.Get("/log/projects/:id/releases", logAuthentication, logReleaseList)
 	r.Get("/log/projects/:id/jobs/:jobId", logAuthentication, logReleaseJobGet)
 	r.Delete("/log/projects/:id/publication", logAuthentication, logReleaseWithdraw)
 	public := r.Group("/public/log", func(c *fiber.Ctx) error {
@@ -90,18 +89,6 @@ func logReleaseJobGet(c *fiber.Ctx) error {
 		return logResponse(c, nil, &service.LogError{Code: "UNAUTHENTICATED", Message: "请先登录"})
 	}
 	data, err := service.GetLogJob(c.Params("id"), c.Params("jobId"), u.ID)
-	return logResponse(c, data, err)
-}
-func logReleaseList(c *fiber.Ctx) error {
-	u := getCurUser(c)
-	if u == nil {
-		return logResponse(c, nil, &service.LogError{Code: "UNAUTHENTICATED", Message: "请先登录"})
-	}
-	limit, err := strconv.Atoi(c.Query("limit", "50"))
-	if err != nil {
-		return logResponse(c, nil, &service.LogError{Code: "INVALID_INPUT", Message: "limit 无效"})
-	}
-	data, err := service.ListLogReleases(c.Params("id"), u.ID, c.Query("cursor"), limit)
 	return logResponse(c, data, err)
 }
 func logReleaseWithdraw(c *fiber.Ctx) error {

@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -117,41 +116,28 @@ func GetLogJob(projectID, jobID, userID string) (map[string]any, error) {
 	}
 	return out, nil
 }
-func ListLogReleases(projectID, userID, cursor string, limit int) (map[string]any, error) {
-	_, admin, err := loadLogProjectForDesign(projectID, userID)
-	if err != nil {
-		return nil, err
-	}
-	if !admin {
-		return nil, logError("PERMISSION_DENIED", "仅管理者可以读取发布历史")
-	}
-	if limit < 1 || limit > 50 || len(cursor) > 300 {
-		return nil, logError("INVALID_INPUT", "分页参数无效")
-	}
-	last := ""
-	if cursor != "" {
-		b, err := base64.RawURLEncoding.DecodeString(cursor)
-		if err != nil {
-			return nil, logError("INVALID_INPUT", "游标无效")
+func deleteLogReleaseSnapshots(tx *gorm.DB, releaseIDs ...string) error {
+	ids := make([]string, 0, len(releaseIDs))
+	for _, id := range releaseIDs {
+		if id != "" {
+			ids = append(ids, id)
 		}
-		last = string(b)
 	}
-	var rows []model.LogReleaseModel
-	if err := model.GetDB().Where("project_id = ? AND status IN ? AND id > ?", projectID, []string{"active", "superseded", "withdrawn"}, last).Order("id").Limit(limit + 1).Find(&rows).Error; err != nil {
-		return nil, err
+	if len(ids) == 0 {
+		return nil
 	}
-	var next *string
-	if len(rows) > limit {
-		rows = rows[:limit]
-		s := base64.RawURLEncoding.EncodeToString([]byte(rows[len(rows)-1].ID))
-		next = &s
+	if err := tx.Where("release_id IN ?", ids).Delete(&model.LogAssetReferenceModel{}).Error; err != nil {
+		return err
 	}
-	items := []map[string]any{}
-	for _, r := range rows {
-		items = append(items, map[string]any{"id": r.ID, "draftVersion": r.DraftVersion, "createdAt": r.CreatedAt, "status": r.Status})
+	if err := tx.Where("release_id IN ?", ids).Delete(&model.LogReleaseAssetModel{}).Error; err != nil {
+		return err
 	}
-	return map[string]any{"items": items, "nextCursor": next}, nil
+	if err := tx.Where("release_id IN ?", ids).Delete(&model.LogReleaseNodeModel{}).Error; err != nil {
+		return err
+	}
+	return tx.Unscoped().Where("id IN ?", ids).Delete(&model.LogReleaseModel{}).Error
 }
+
 func WithdrawLogPublication(projectID, userID string, expected int64) error {
 	p, admin, err := loadLogProjectForDesign(projectID, userID)
 	if err != nil {
@@ -171,7 +157,11 @@ func WithdrawLogPublication(projectID, userID string, expected int64) error {
 		if r.RowsAffected != 1 {
 			return logConflict(p.DraftVersion)
 		}
-		return tx.Model(&model.LogReleaseModel{}).Where("id = ? AND project_id = ?", p.ActiveReleaseID, projectID).Update("status", "withdrawn").Error
+		var staleIDs []string
+		if err := tx.Model(&model.LogReleaseModel{}).Where("project_id = ? AND status <> ?", projectID, "building").Pluck("id", &staleIDs).Error; err != nil {
+			return err
+		}
+		return deleteLogReleaseSnapshots(tx, staleIDs...)
 	})
 }
 
@@ -293,7 +283,9 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 	}
 	defer func() {
 		if resultErr != nil {
-			model.GetDB().Model(&model.LogReleaseModel{}).Where("id = ? AND status = ?", release.ID, "building").Update("status", "failed")
+			_ = model.GetDB().Transaction(func(tx *gorm.DB) error {
+				return deleteLogReleaseSnapshots(tx, release.ID)
+			})
 		}
 	}()
 	if err := logBuildStyleAssets(&release, &d); err != nil {
@@ -424,9 +416,13 @@ func buildLogRelease(ctx context.Context, j *model.LogJobModel) (resultErr error
 		if r.RowsAffected != 1 {
 			return logConflict(p.DraftVersion)
 		}
-		if err := tx.Model(&model.LogReleaseModel{}).Where("id = ?", p.ActiveReleaseID).Update("status", "superseded").Error; err != nil {
+		if err := tx.Model(&release).Updates(map[string]any{"status": "active", "public_json": string(b), "source_versions_json": string(v)}).Error; err != nil {
 			return err
 		}
-		return tx.Model(&release).Updates(map[string]any{"status": "active", "public_json": string(b), "source_versions_json": string(v)}).Error
+		var staleIDs []string
+		if err := tx.Model(&model.LogReleaseModel{}).Where("project_id = ? AND id <> ?", p.ID, release.ID).Pluck("id", &staleIDs).Error; err != nil {
+			return err
+		}
+		return deleteLogReleaseSnapshots(tx, staleIDs...)
 	})
 }

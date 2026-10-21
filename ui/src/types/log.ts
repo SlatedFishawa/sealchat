@@ -220,13 +220,6 @@ export interface LogReleaseJob {
   error?: { code: string; message: string };
 }
 
-export interface LogReleaseSummary {
-  id: string;
-  draftVersion: number;
-  createdAt: string;
-  status: 'active' | 'superseded' | 'withdrawn';
-}
-
 export interface LogStyleSummary {
   id: string;
   version: string;
