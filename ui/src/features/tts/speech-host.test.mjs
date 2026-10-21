@@ -10,11 +10,13 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 const moduleURL = code => `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 const transpile = source => ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText
 const runtimeURL = moduleURL(transpile(readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8')))
+const quickURL = moduleURL(transpile(readFileSync(new URL('./quick-control.ts', import.meta.url), 'utf8')))
 const { descriptor } = parse(readFileSync(new URL('./SpeechHost.vue', import.meta.url), 'utf8'))
 const stubs = { vue: 'vue', '@/stores/user': 'user', '@/stores/chat': 'chat', './store': 'store', './player': 'player', './api': 'api', '@/stores/_config': 'config' }
 const hostCode = transpile(compileScript(descriptor, { id: 'speech-host', inlineTemplate: true }).content)
   .replace(/^import (\{[^}]*\}) from ['"]([^'"]+)['"];$/gm, (line, names, from) => {
     if (from === './runtime') return `import ${names} from '${runtimeURL}';`
+    if (from === './quick-control') return `import ${names} from '${quickURL}';`
     assert.ok(stubs[from], `unexpected import ${from}`)
     return `const ${names.replace(/ as /g, ': ')} = globalThis.__hostTest['${stubs[from]}'];`
   })
@@ -44,7 +46,7 @@ let mountedHooks = []
 let unmountHooks = []
 const user = vue.reactive({ info: { id: 'u' } })
 const chat = vue.reactive({ curChannel: { id: 'c1' } })
-const speech = vue.reactive({ scopeChannel: '', messageStates: {}, visible: false, temporary: {}, quota: null, reset() {}, async refresh(channelId = '') { calls.refresh.push(channelId) }, open() {}, setTemporary() {} })
+const speech = vue.reactive({ scopeChannel: '', messageStates: {}, visible: false, temporary: {}, quickStates: {}, quickControlVisible: true, roleConfigRevision: 0, quota: null, reset() {}, async refresh(channelId = '') { calls.refresh.push(channelId) }, open() {}, setTemporary() {} })
 const state = vue.reactive({ preferred: true, automatic: true, loading: false, playing: false, key: '', error: '' })
 const player = {
   state,
@@ -60,9 +62,11 @@ function finish(entry, result) {
 globalThis.window = globalThis
 globalThis.parent = globalThis
 globalThis.location = { href: 'http://chat.test/', origin: 'http://chat.test' }
-globalThis.addEventListener = () => {}
-globalThis.removeEventListener = () => {}
-globalThis.document = { querySelectorAll: () => [] }
+const domListeners = new Map()
+const frames = []
+globalThis.addEventListener = (name, listener) => domListeners.set(name, listener)
+globalThis.removeEventListener = (name, listener) => { if (domListeners.get(name) === listener) domListeners.delete(name) }
+globalThis.document = { querySelectorAll: () => frames }
 globalThis.WebSocket = FakeSocket
 globalThis.__hostTest = {
   vue: { ...vue, onMounted: fn => mountedHooks.push(fn), onBeforeUnmount: fn => unmountHooks.push(fn) },
@@ -121,6 +125,9 @@ test.beforeEach(() => {
   chat.curChannel = { id: 'c1' }
   speech.scopeChannel = ''
   speech.messageStates = {}
+  speech.quickStates = {}
+  speech.quickControlVisible = true
+  frames.length = 0
 })
 
 test('metadata takes one entry snapshot and never polls, including with autoplay disabled', async (t) => {
@@ -476,5 +483,45 @@ test('turning the preference off closes the socket and stops reconnecting', asyn
   t.mock.timers.tick(20000)
   await settle()
   assert.equal(calls.tickets.length, 1)
+  scope.stop()
+})
+
+test('quick override bridge checks origin, frame source and account before applying sanitized state', async () => {
+  const received = []
+  speech.syncQuickState = (...args) => received.push(args)
+  const frame = { postMessage() {} }
+  frames.push({ contentWindow: frame })
+  const scope = mount()
+  await settle()
+  const message = domListeners.get('message')
+  const data = { type: 'sealchat:tts-intent', action: 'quick', userId: 'u', channelId: 'c1', identityId: 'role-a', state: { override: { instruction: '开心', rate: 5, volume: 0 }, presetId: 'happy' } }
+  message({ origin: 'http://other.test', source: frame, data })
+  message({ origin: location.origin, source: {}, data })
+  message({ origin: location.origin, source: frame, data: { ...data, userId: 'someone-else' } })
+  message({ origin: location.origin, source: frame, data: { ...data, identityId: '' } })
+  assert.equal(received.length, 0)
+  message({ origin: location.origin, source: frame, data })
+  assert.deepEqual(received, [['c1', 'role-a', { override: { instruction: '开心', volume: 0 }, presetId: 'happy' }]])
+  message({ origin: location.origin, source: frame, data: { ...data, state: null } })
+  assert.deepEqual(received[1], ['c1', 'role-a', null])
+  scope.stop()
+  assert.equal(domListeners.has('message'), false)
+})
+
+test('parent broadcasts role-scoped quick state and the one ball preference to same-tab frames', async () => {
+  const sent = []
+  frames.push({ contentWindow: { postMessage: (...args) => sent.push(args) } })
+  const scope = mount()
+  await settle()
+  speech.quickStates = { '["c1","role-a"]': { override: { rate: 1.5, instruction: '开心' }, presetId: 'happy' } }
+  speech.quickControlVisible = false
+  await settle()
+  const [packet, origin] = sent.at(-1)
+  assert.equal(origin, location.origin)
+  assert.equal(packet.userId, 'u')
+  assert.equal(packet.quickControlVisible, false)
+  assert.deepEqual(packet.quickStates, speech.quickStates)
+  speech.quickStates['["c1","role-a"]'].override.instruction = '温柔'
+  assert.equal(packet.quickStates['["c1","role-a"]'].override.instruction, '开心')
   scope.stop()
 })

@@ -371,6 +371,7 @@ onBeforeUnmount(() => { alive = false; serial++; replaceSerial++; clearTimeout(t
         <div class="sp-settings">
           <label class="sp-check">自动合成 <NSwitch :value="speech.quota?.autoSynthesis ?? false" :loading="busy" @update:value="value => run(async () => { await speechAPI.settings(value); await speech.refresh(currentChannel || '') })" /></label>
           <label class="sp-check">当前浏览器自动播放 <NSwitch :value="speechPlayer.state.preferred" @update:value="value => run(() => speechPlayer.setAutomatic(value))" /></label>
+          <label class="sp-check">显示 TTS 快捷悬浮球 <NSwitch :value="speech.quickControlVisible" @update:value="speech.setQuickControlVisible" /></label>
           <span v-if="speechPlayer.state.preferred && !speechPlayer.state.automatic" class="autoplay-pending">等待页面交互后自动启用</span>
           <span>已保存音色 {{ speech.quota?.saved ?? 0 }} / {{ speech.quota?.slots ?? 0 }}</span>
         </div>

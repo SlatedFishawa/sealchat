@@ -1,7 +1,7 @@
 import { api } from '@/stores/_config'
 import type { AdminAIUsageLogListResult } from '@/types'
 import { SpeechRequestKeys } from './runtime'
-import type { SpeechCleanupResult, SpeechCleanupSelection, SpeechPurgeResult, SpeechStorageSummary } from './types'
+import type { RoleSpeechQuickState, SpeechCleanupResult, SpeechCleanupSelection, SpeechPurgeResult, SpeechStorageSummary } from './types'
 import type { AdminSpeechWorld, AdminSpeechWorldList, SpeechWorldPatch, MessageSpeech, ResolvedSpeechModel, ResolvedSpeechProvider, RoleSpeechConfig, SpeechConfig, SpeechJob, SpeechPolicy, SpeechProviderResolveRequest, SpeechQuota, SpeechRequest, SpeechVoice, SystemPreviewJob, UnknownSpeechUsage, VoiceCreationProvider, VoiceDirectory, VoiceDirectoryQuery } from './types'
 
 const root = 'api/v1/tts'
@@ -60,6 +60,7 @@ export const speechAPI = {
   async forceDeleteVoice(voiceId: string) { await api.post(`${root}/voices/${id(voiceId)}/force-delete`) },
   async remove(voiceId: string) { await api.delete(`${root}/voices/${id(voiceId)}`) },
   async role(identityId: string) { return (await api.get<RoleSpeechConfig>(`${root}/roles/${id(identityId)}`)).data },
+  async roleQuickState(identityId: string) { return (await api.get<RoleSpeechQuickState>(`${root}/roles/${id(identityId)}`, { params: { resolved: true } })).data },
   async saveRole(identityId: string, value: RoleSpeechConfig) { await api.put(`${root}/roles/${id(identityId)}`, value) },
   async message(messageId: string) { return (await api.get<{ tts: MessageSpeech | null }>(`${root}/messages/${id(messageId)}`)).data.tts },
   // The server derives a durable request key from the message and its revision.

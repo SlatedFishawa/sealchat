@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import type { TTSQuickOverride } from '@/features/tts/types'
 import { defineStore } from 'pinia'
 import { WebSocketSubject, webSocket } from 'rxjs/webSocket';
 import type { User, Opcode, GatewayPayloadStructure, Channel, Event, GuildMember } from '@satorijs/protocol'
@@ -5021,12 +5022,14 @@ export const useChatStore = defineStore({
       icMode?: 'ic' | 'ooc',
       channelIdOverride?: string,
       ttsAuto = false,
+      ttsOverride?: TTSQuickOverride,
     ) {
       const payload: Record<string, any> = {
         channel_id: channelIdOverride || this.curChannel?.id,
         content,
         ic_mode: icMode || this.icMode,
         tts_auto: ttsAuto === true,
+        ...(ttsAuto && ttsOverride ? { tts_override: { ...ttsOverride } } : {}),
       };
       if (quote_id) {
         payload.quote_id = quote_id;

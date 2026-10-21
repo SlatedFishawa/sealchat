@@ -35,6 +35,12 @@ JSON/YAML 中旧实例缺少 `providerKind` 时按阿里云处理；读取时补
 
 ## 角色绑定与个人资产
 
+聊天快捷控制使用 `GET /api/v1/tts/roles/:id?resolved=true` 读取经过角色权限检查的实际 `voiceName`、`providerKind`、`modelId`、`disabled` 和 `parameters`（rate / pitch / volume / instruction）。解析复用自动消息的 provider 路由及个人音色默认参数，响应不含凭证，不修改绑定。普通角色 GET / PUT 协议保持不变。
+
+`message.create` 可在 `tts_auto: true` 时附带 `tts_override: { rate?, pitch?, volume?, instruction? }`。省略字段继承角色/音色参数；显式空 instruction 表示无指令。后端读取绑定后应用 override，继续经过范围与 provider 校验，冻结在既有 `TTSIntent` snapshot 中；worker/cache/resource 复用该 snapshot，不保存临时配置。取消临时情绪通过省略 instruction 实现。旧请求省略 `tts_override` 时保留原行为；尝试合成时非法 override 会拒绝此次发送。命令、不可朗读内容及禁用音色的角色仍按原有规则跳过 TTS，不阻断消息发送。
+
+临时 override 在现有 speech store 内按当前账号、标签页、频道和角色隔离，仅驻内存，同标签页嵌入视图通过已有 origin/source/account 校验的 TTS bridge 同步。悬浮球显示偏好使用客户端 `sealchat:tts:quick-control-visible:v1`，默认开启。情绪预设仅对实际 Aliyun Qwen-Audio provider/model 开放，腾讯传统 TTS 禁用 pitch/instruction，腾讯 MPS 当前禁用 instruction；不依赖音色 kind，也不引入结构化 emotion。
+
 新系统绑定保存 `systemVoice`、`systemVoiceProvider`（ProviderKind）、`systemVoiceProviderId`（具体管理员实例）和 `systemVoiceModel`。数据库由现有 AutoMigrate 增列，不批量迁移历史数据。角色保存验证成功后回写实际完整 route；清空系统音色时同时清空三个 namespace 字段。自动消息朗读读取全部字段。
 `TTSRequest.providerId/modelId` 专门用于 design/clone 创建目标；系统合成使用独立的 `systemVoiceProviderId`，不改变 `systemVoiceProvider` 的品牌含义。
 

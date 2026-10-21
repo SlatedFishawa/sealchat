@@ -23,6 +23,7 @@ declare module '@satorijs/protocol' {
   interface Message {
     tts?: import('@/features/tts/types').MessageSpeech | null;
     _ttsAutoRequested?: boolean;
+    _ttsQuickOverride?: import('@/features/tts/types').TTSQuickOverride;
     whisperMeta?: WhisperMeta;
     whisperToIds?: User[];
     senderRoleId?: string;

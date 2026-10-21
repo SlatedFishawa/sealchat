@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ const TTSAutoPreference = "tts.autoSynthesis"
 const ttsMessageSynthesisMaxRunes = 20000
 
 type TTSRequest struct {
+	instructionSet        bool
 	RequestKey            string  `json:"requestKey"`
 	ChannelID             string  `json:"channelId,omitempty"`
 	Text                  string  `json:"text"`
@@ -280,7 +282,7 @@ func ttsSnapshotForOperation(userID string, r TTSRequest, scope string, automati
 			if voice.Parameters != "" {
 				var defaults TTSRequest
 				if json.Unmarshal([]byte(voice.Parameters), &defaults) == nil {
-					if r.Instruction == "" {
+					if r.Instruction == "" && !r.instructionSet {
 						r.Instruction = defaults.Instruction
 					}
 					if r.Rate == 0 {
@@ -422,17 +424,51 @@ func ttsPlainText(content string, maxRunes int) (string, error) {
 	return text, nil
 }
 
-func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn bool) {
-	if !optIn || user == nil || user.IsBot || m.ICMode != "ic" || len(m.ChannelID) >= 30 || m.WidgetData != "" || !TTSAutomaticEnabled(user.ID) {
-		return
+// TTSQuickOverride is request-only. Omitted fields continue to inherit role defaults.
+type TTSQuickOverride struct {
+	Rate        *float64 `json:"rate,omitempty"`
+	Pitch       *float64 `json:"pitch,omitempty"`
+	Volume      *int     `json:"volume,omitempty"`
+	Instruction *string  `json:"instruction,omitempty"`
+}
+
+func (o TTSQuickOverride) apply(r *TTSRequest) error {
+	for _, v := range []*float64{o.Rate, o.Pitch} {
+		if v != nil && (math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0.5 || *v > 2) {
+			return TTSValidationError("语音参数超出范围")
+		}
 	}
-	_ = ttsPrepareMessageIntent(m, user, 0, "")
+	if o.Volume != nil && (*o.Volume < 0 || *o.Volume > 100) || o.Instruction != nil && utf8.RuneCountInString(*o.Instruction) > 500 {
+		return TTSValidationError("语音参数超出范围")
+	}
+	if o.Rate != nil {
+		r.Rate = *o.Rate
+	}
+	if o.Pitch != nil {
+		r.Pitch = *o.Pitch
+	}
+	if o.Volume != nil {
+		v := *o.Volume
+		r.Volume = &v
+	}
+	if o.Instruction != nil {
+		r.Instruction = *o.Instruction
+		r.instructionSet = true
+	}
+	return nil
+}
+
+func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn bool, overrides ...*TTSQuickOverride) error {
+	if !optIn || user == nil || user.IsBot || m.ICMode != "ic" || len(m.ChannelID) >= 30 || m.WidgetData != "" || !TTSAutomaticEnabled(user.ID) {
+		return nil
+	}
+	return ttsPrepareMessageIntent(m, user, 0, "", overrides...)
 }
 
 // Both entry points freeze the same current role settings and audience. Manual
 // historical synthesis is strict about stale legacy voice routes so it never
 // silently substitutes the platform default voice.
-func ttsPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, manualRequestedAt int64, manualRequestKey string) error {
+func ttsPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, manualRequestedAt int64, manualRequestKey string, overrides ...*TTSQuickOverride) error {
 	if user == nil || user.IsBot || m.ICMode != "ic" || len(m.ChannelID) >= 30 || m.WidgetData != "" {
 		return TTSValidationError("此消息类型不朗读")
 	}
@@ -463,6 +499,11 @@ func ttsPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, manua
 			r.Rate = role.Rate
 			r.Pitch = role.Pitch
 			r.Volume = &role.Volume
+		}
+	}
+	if len(overrides) > 0 && overrides[0] != nil {
+		if err := overrides[0].apply(&r); err != nil {
+			return err
 		}
 	}
 	// Start with an isolated scope, then freeze the actual audience below. Only

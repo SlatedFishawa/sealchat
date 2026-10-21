@@ -148,6 +148,19 @@ export interface RoleSpeechConfig {
   volume: number
   revision: number
 }
+export interface TTSQuickOverride {
+  rate?: number
+  pitch?: number
+  volume?: number
+  instruction?: string
+}
+export interface RoleSpeechQuickState {
+  disabled: boolean
+  voiceName: string
+  providerKind: string
+  modelId: string
+  parameters: TTSQuickOverride
+}
 export interface SpeechProvider {
   id: string; providerKind: string; enabled: boolean; credentialScope: string; region: string; workspace: string
   apiKey: string; hasApiKey?: boolean; synthesisEndpoint: string; voiceEndpoint: string; model: string

@@ -221,6 +221,13 @@ func BindTTSRoutes(auth fiber.Router) {
 		return c.JSON(ttsJobResponse(&j))
 	})
 	r.Get("/roles/:id", func(c *fiber.Ctx) error {
+		if c.Query("resolved") == "true" {
+			v, err := service.TTSResolveRoleQuickState(getCurUser(c).ID, c.Params("id"))
+			if err != nil {
+				return ttsError(c, err)
+			}
+			return c.JSON(v)
+		}
 		v, err := service.TTSRoleConfig(getCurUser(c).ID, c.Params("id"))
 		if err != nil {
 			return ttsError(c, err)

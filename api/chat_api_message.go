@@ -2022,20 +2022,21 @@ func apiMessageUnarchive(ctx *ChatContext, data *struct {
 }
 
 func apiMessageCreate(ctx *ChatContext, data *struct {
-	TTSAuto           bool     `json:"tts_auto"`
-	ChannelID         string   `json:"channel_id"`
-	QuoteID           string   `json:"quote_id"`
-	Content           string   `json:"content"`
-	WhisperTo         string   `json:"whisper_to"`
-	WhisperToIds      []string `json:"whisper_to_ids"`
-	ClientID          string   `json:"client_id"`
-	IdentityID        string   `json:"identity_id"`
-	IdentityVariantID string   `json:"identity_variant_id"`
-	ICMode            string   `json:"ic_mode"`
-	BeforeID          string   `json:"before_id"`
-	AfterID           string   `json:"after_id"`
-	DisplayOrder      *float64 `json:"display_order"`
-	TypingDurationMs  *int64   `json:"typing_duration_ms"`
+	TTSAuto           bool                      `json:"tts_auto"`
+	TTSOverride       *service.TTSQuickOverride `json:"tts_override,omitempty"`
+	ChannelID         string                    `json:"channel_id"`
+	QuoteID           string                    `json:"quote_id"`
+	Content           string                    `json:"content"`
+	WhisperTo         string                    `json:"whisper_to"`
+	WhisperToIds      []string                  `json:"whisper_to_ids"`
+	ClientID          string                    `json:"client_id"`
+	IdentityID        string                    `json:"identity_id"`
+	IdentityVariantID string                    `json:"identity_variant_id"`
+	ICMode            string                    `json:"ic_mode"`
+	BeforeID          string                    `json:"before_id"`
+	AfterID           string                    `json:"after_id"`
+	DisplayOrder      *float64                  `json:"display_order"`
+	TypingDurationMs  *int64                    `json:"typing_duration_ms"`
 }) (any, error) {
 	trace := perfprofiler.BeginMessageCreateTrace()
 	defer trace.Finish()
@@ -2526,7 +2527,10 @@ func apiMessageCreate(ctx *ChatContext, data *struct {
 			m.WhisperTargetMemberName = whisperMember.Nickname
 		}
 	}
-	service.TTSPrepareMessageIntent(&m, ctx.User, data.TTSAuto && botMsgContext == nil && !strings.HasPrefix(trimmedClientID, "iform_embed:") && (renderResult == nil || len(renderResult.Rolls) == 0))
+	ttsErr := service.TTSPrepareMessageIntent(&m, ctx.User, data.TTSAuto && botMsgContext == nil && !strings.HasPrefix(trimmedClientID, "iform_embed:") && (renderResult == nil || len(renderResult.Rolls) == 0), data.TTSOverride)
+	if data.TTSOverride != nil && ttsErr != nil && m.TTSStatus != "skipped" {
+		return nil, ttsErr
+	}
 	trace.StageDone(perfprofiler.MessageStagePrepare, prepareStarted)
 	persistStarted := trace.StageStart()
 	createResult := db.Create(&m)

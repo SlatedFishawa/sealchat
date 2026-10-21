@@ -3,7 +3,13 @@ import { computed, ref } from 'vue'
 import { clearSpeechSubmissionKeys, speechAPI } from './api'
 import { speechPlayer } from './player'
 import { useUserStore } from '@/stores/user'
-import type { MessageSpeech, SpeechQuota } from './types'
+import type { MessageSpeech, SpeechQuota, TTSQuickOverride } from './types'
+import { patchQuickState, quickScopeKey, sanitizeQuickOverride, type QuickSpeechState } from './quick-control'
+
+const quickVisibilityKey = 'sealchat:tts:quick-control-visible:v1'
+function initialQuickVisibility() {
+  try { return localStorage.getItem(quickVisibilityKey) !== 'false' } catch { return true }
+}
 
 export const useSpeechStore = defineStore('tts', () => {
   const visible = ref(false)
@@ -16,6 +22,46 @@ export const useSpeechStore = defineStore('tts', () => {
     ? quota.value.inputTokenPrice != null && quota.value.outputTokenPrice != null
     : quota.value.characterPrice != null))
   const temporary = ref<Record<string, boolean>>({})
+  const quickStates = ref<Record<string, QuickSpeechState>>({})
+  const quickControlVisible = ref(initialQuickVisibility())
+  const roleConfigRevision = ref(0)
+  function setQuickControlVisible(value: boolean) {
+    quickControlVisible.value = value
+    try { localStorage.setItem(quickVisibilityKey, String(value)) } catch { /* UI preference remains usable without storage. */ }
+    if (window.parent !== window) window.parent.postMessage({ type: 'sealchat:tts-intent', action: 'quick-visible', value, userId: useUserStore().info.id }, window.location.origin)
+  }
+  function quickState(channelId: string, identityId: string) {
+    return quickStates.value[quickScopeKey(channelId, identityId)]
+  }
+  function syncQuickState(channelId: string, identityId: string, state: QuickSpeechState | null) {
+    if (!channelId || !identityId) return
+    const key = quickScopeKey(channelId, identityId)
+    if (state) quickStates.value[key] = { override: sanitizeQuickOverride(state.override), presetId: typeof state.presetId === 'string' ? state.presetId : undefined }
+    else delete quickStates.value[key]
+    if (window.parent !== window) window.parent.postMessage({ type: 'sealchat:tts-intent', action: 'quick', channelId, identityId, state: quickStates.value[key] ?? null, userId: useUserStore().info.id }, window.location.origin)
+  }
+  function setQuickOverride(channelId: string, identityId: string, patch: TTSQuickOverride, presetId?: string) {
+    const state = patchQuickState(quickState(channelId, identityId), patch, presetId)
+    syncQuickState(channelId, identityId, Object.keys(state.override).length ? state : null)
+  }
+  function resetQuickOverride(channelId: string, identityId: string) { syncQuickState(channelId, identityId, null) }
+  function snapshotQuickOverride(channelId: string, identityId: string): TTSQuickOverride | undefined {
+    const override = quickState(channelId, identityId)?.override
+    return override && Object.keys(override).length ? { ...override } : undefined
+  }
+  function replaceQuickStates(value: unknown) {
+    if (!value || typeof value !== 'object') return
+    const states: Record<string, QuickSpeechState> = {}
+    for (const [key, state] of Object.entries(value).slice(0, 512)) {
+      try {
+        const ids: unknown = JSON.parse(key)
+        if (!Array.isArray(ids) || ids.length !== 2 || !ids.every(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(id)) || !state || typeof state !== 'object') continue
+        const item = state as QuickSpeechState
+        states[key] = { override: sanitizeQuickOverride(item.override), presetId: typeof item.presetId === 'string' ? item.presetId : undefined }
+      } catch { /* Ignore malformed frame state. */ }
+    }
+    quickStates.value = states
+  }
   let generation = 0
   let quotaChannel = ''
   function reset() {
@@ -28,6 +74,7 @@ export const useSpeechStore = defineStore('tts', () => {
     messageStates.value = {}
     messageFallbackSuppressedChannel.value = ''
     temporary.value = {}
+    quickStates.value = {}
     speechPlayer.stop()
   }
   async function refresh(channelId = '') {
@@ -71,5 +118,5 @@ export const useSpeechStore = defineStore('tts', () => {
     temporary.value[channelId] = enabled
     if (window.parent !== window) window.parent.postMessage({ type: 'sealchat:tts-intent', action: 'temporary', channelId, enabled, userId: useUserStore().info.id }, window.location.origin)
   }
-  return { visible, quota, canSynthesize, temporary, messageStates, messageFallbackSuppressed, scopeChannel, reset, refresh, optIn, open, suppressMessageFallback, setTemporary }
+  return { visible, quota, canSynthesize, temporary, quickStates, quickControlVisible, roleConfigRevision, quickState, setQuickOverride, resetQuickOverride, snapshotQuickOverride, syncQuickState, replaceQuickStates, setQuickControlVisible, messageStates, messageFallbackSuppressed, scopeChannel, reset, refresh, optIn, open, suppressMessageFallback, setTemporary }
 })

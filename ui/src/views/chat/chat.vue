@@ -1,6 +1,7 @@
 <script setup lang="tsx">
 import { useSpeechStore } from '@/features/tts/store'
 import RoleVoiceDialog from '@/features/tts/RoleVoiceDialog.vue'
+import TTSQuickControl from '@/features/tts/TTSQuickControl.vue'
 import { speechAPI } from '@/features/tts/api'
 import type { RoleSpeechConfig } from '@/features/tts/types'
 import ChatItem from './components/chat-item.vue';
@@ -13126,9 +13127,10 @@ const retrySendMessage = async (target?: Message) => {
       undefined,
       identityVariantId,
       undefined,
-      undefined,
+      requestChannelId,
       currentData._ttsAutoRequested === true
-        && useSpeechStore().optIn(chat.curChannel?.id || ''),
+        && useSpeechStore().optIn(requestChannelId),
+      current._ttsQuickOverride,
     );
 	  if (!newMsg) {
 	    throw new Error('message.create returned empty result');
@@ -13391,6 +13393,7 @@ const performSend = async (options?: {
   }
   (tmpMsg as any).clientId = clientId;
   tmpMsg._ttsAutoRequested = useSpeechStore().optIn(chat.curChannel?.id || '');
+  tmpMsg._ttsQuickOverride = useSpeechStore().snapshotQuickOverride(activeChannelId, activeIdentity?.id || '');
   if (chat.curChannel) {
     (tmpMsg as any).channel = chat.curChannel;
   }
@@ -13458,15 +13461,16 @@ const performSend = async (options?: {
       replyTo?.id,
       whisperTargetIds[0],
       clientId,
-      identityIdOverride,
+      activeIdentity?.id || identityIdOverride || null,
       explicitDisplayOrder,
       whisperTargetIds,
       typingDurationMs,
       insertPlacement ? { beforeId: insertPlacement.beforeId, afterId: insertPlacement.afterId } : undefined,
-      identityVariantIdOverride,
-      undefined,
-      undefined,
+      activeAppearance?.variantId || identityVariantIdOverride,
+      sendIcMode,
+      activeChannelId,
       tmpMsg._ttsAutoRequested === true,
+      tmpMsg._ttsQuickOverride,
     );
 	  if (!newMsg) {
 	    throw new Error('message.create returned empty result');
@@ -16214,6 +16218,7 @@ onBeforeUnmount(() => {
     :data-rich-message-world-id="chat.currentWorldId || undefined"
     :data-rich-message-channel-id="chat.curChannel?.id || undefined"
   >
+    <TTSQuickControl :channel-id="chat.curChannel?.id || ''" :compact="isTheaterEmbedMode || isMobileInteractionMode" />
     <!-- 频道背景层 -->
     <div v-if="channelBackgroundStyle" class="channel-background-layer" :style="channelBackgroundStyle"></div>
     <div v-if="channelBackgroundOverlayStyle" class="channel-background-overlay" :style="channelBackgroundOverlayStyle"></div>
