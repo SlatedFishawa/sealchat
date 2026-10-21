@@ -202,18 +202,39 @@ defineExpose({
 }
 
 .rich-text-content :deep(.tiptap-ruby) {
+  position: relative;
+  display: inline-block;
+  padding-top: 0.52em;
   ruby-align: center;
+  ruby-position: over;
   font-family: var(--ruby-base-font-family, var(--ruby-font-family, inherit));
   font-size: var(--ruby-base-font-size, var(--ruby-font-size, inherit));
   color: var(--ruby-color, inherit);
   font-weight: var(--ruby-font-weight, inherit);
   font-style: var(--ruby-font-style, inherit);
+  text-decoration: var(--ruby-text-decoration, inherit);
   background-color: var(--ruby-background-color, transparent);
 }
 
 .rich-text-content :deep(.tiptap-ruby rt) {
+  display: none;
+}
+
+.rich-text-content :deep(.tiptap-ruby::before) {
+  content: attr(data-ruby-text);
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
   font-family: var(--ruby-rt-font-family, var(--ruby-font-family, inherit));
-  font-size: var(--ruby-rt-font-size, 0.58em);
+  font-size: var(--ruby-rt-font-size, calc(var(--ruby-base-font-size, var(--ruby-font-size, 1em)) * 0.58));
+  font-weight: var(--ruby-font-weight, inherit);
+  font-style: var(--ruby-font-style, inherit);
+  text-decoration: var(--ruby-text-decoration, inherit);
+  background-color: var(--ruby-background-color, transparent);
+  line-height: 0.82;
+  white-space: nowrap;
   color: var(--ruby-color, inherit);
+  pointer-events: none;
 }
 </style>
