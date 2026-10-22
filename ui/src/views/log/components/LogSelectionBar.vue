@@ -8,6 +8,7 @@ import {
   ArrowUp,
   Ban,
   Dots,
+  Focus2,
   Palette,
   Pencil,
   RowInsertBottom,
@@ -27,12 +28,14 @@ const props = defineProps<{
   busy: boolean;
   isFirst: boolean;
   isLast: boolean;
+  relocatingCount?: number;
 }>();
 
 const emit = defineEmits<{
   edit: [tab: 'content' | 'identity' | 'appearance'];
   move: [dir: -1 | 1];
-  'move-to': [];
+  relocate: [];
+  'cancel-relocate': [];
   insert: [side: 'before' | 'after'];
   remove: [];
   exclude: [];
@@ -65,8 +68,14 @@ const onMore = (key: string) => {
 </script>
 
 <template>
-  <div class="log-ctx" role="toolbar" aria-label="选中内容操作">
-    <template v-if="element">
+  <div class="log-ctx" :class="{ 'log-ctx--relocating': relocatingCount }" role="toolbar" :aria-label="relocatingCount ? '重定位消息' : '选中内容操作'">
+    <template v-if="relocatingCount">
+      <span class="log-ctx__label" role="status">
+        <n-icon :component="Focus2" size="16" />
+        <span>正在重定位 {{ relocatingCount }} 条消息 · 点击目标消息，将所选消息移动到其后</span>
+      </span>
+    </template>
+    <template v-else-if="element">
       <span class="log-ctx__label">
         <span class="log-ctx__kind is-element">元素</span>
         <span class="log-ctx__name">{{ LOG_ELEMENT_LABELS[element.type] || element.type }}</span>
@@ -101,8 +110,8 @@ const onMore = (key: string) => {
       <button type="button" class="log-ctx__btn" :disabled="busy || !caps?.reorder || isLast" :title="tip('下移', caps?.reorder, reorderWhy)" aria-label="下移" @click="emit('move', 1)">
         <n-icon :component="ArrowDown" size="16" />
       </button>
-      <button type="button" class="log-ctx__btn has-text" :disabled="busy || !caps?.reorder" :title="tip('移到指定位置', caps?.reorder, reorderWhy)" @click="emit('move-to')">
-        <span>移到…</span>
+      <button type="button" class="log-ctx__btn has-text" :disabled="busy || !caps?.reorder" :title="tip('重定位', caps?.reorder, reorderWhy)" @click="emit('relocate')">
+        <n-icon :component="Focus2" size="16" /><span>重定位</span>
       </button>
       <span class="log-ctx__sep" />
       <button type="button" class="log-ctx__btn" :disabled="!canEditDraft" title="在此消息前插入元素" aria-label="前插元素" @click="emit('insert', 'before')">
@@ -139,7 +148,10 @@ const onMore = (key: string) => {
     </template>
 
     <span class="log-ctx__sep" />
-    <button type="button" class="log-ctx__btn" title="取消选择 (Esc)" aria-label="取消选择" @click="emit('clear')">
+    <button v-if="relocatingCount" type="button" class="log-ctx__btn has-text" title="取消重定位 (Esc)" @click="emit('cancel-relocate')">
+      <n-icon :component="X" size="16" /><span>取消</span>
+    </button>
+    <button v-else type="button" class="log-ctx__btn" title="取消选择 (Esc)" aria-label="取消选择" @click="emit('clear')">
       <n-icon :component="X" size="16" />
     </button>
   </div>
@@ -172,6 +184,11 @@ const onMore = (key: string) => {
   padding: 0 6px 0 4px;
   white-space: nowrap;
   font-size: 12px;
+}
+
+.log-ctx--relocating .log-ctx__label {
+  min-width: 0;
+  white-space: normal;
 }
 
 .log-ctx__kind {

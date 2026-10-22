@@ -238,6 +238,10 @@ const previewRef = ref<InstanceType<typeof LogPreviewFrame> | null>(null);
 const onLayout = (r: FrameLayoutResult) => {
   layoutInfo.value = r;
   layoutError.value = '';
+  if (relocateScrollId && r.map[relocateScrollId]) {
+    previewRef.value?.scrollTo(relocateScrollId, true);
+    relocateScrollId = null;
+  }
 };
 
 // ---- 选择 ----
@@ -371,15 +375,16 @@ const runCommand = async (label: string, fn: () => Promise<unknown>, after: () =
   }
 };
 
-const placeAt = (item: LogDesignMessage, toIndex: number) => {
+const placeAt = (item: LogDesignMessage, toIndex: number, onMoved?: () => void) => {
   // toIndex：移动后在当前窗口中的目标下标（不含自身）。
   const rest = win.items.value.filter((it) => it.message.id !== item.message.id);
   const afterId = rest[toIndex - 1]?.message.id;
   const beforeId = rest[toIndex]?.message.id;
   if (!afterId && !beforeId) return;
-  void runCommand('移动', () => reorderMessage(target(item), { afterId, beforeId }), () => {
+  return runCommand('移动', () => reorderMessage(target(item), { afterId, beforeId }), () => {
     win.markOwnWrite(item.message.id, item.version + 1);
     void win.load();
+    onMoved?.();
   });
 };
 
@@ -407,21 +412,90 @@ const onDrop = (nodeId: string, targetId: string, side: 'before' | 'after') => {
   placeAt(item, side === 'before' ? t : t + 1);
 };
 
-const moveToShow = ref(false);
-const moveToIndex = ref<number | null>(null);
-const moveToSide = ref<'before' | 'after'>('before');
-const moveToOptions = computed(() => win.items.value.map((it, i) => ({
-  label: `#${i + 1} ${(nodeCache.get(it.message.id)?.node.speakerName || '')}：${(nodeCache.get(it.message.id)?.node.plainText || '').slice(0, 40)}`,
-  value: i,
-})));
-const confirmMoveTo = () => {
-  const item = selectedMessages.value[0];
-  if (!item || moveToIndex.value === null) return;
-  const targetItem = win.items.value[moveToIndex.value];
-  if (!targetItem) return;
-  moveToShow.value = false;
-  onDrop(item.message.id, targetItem.message.id, moveToSide.value);
+interface LogRelocateState {
+  active: boolean;
+  sourceMessageIds: string[];
+  targetMessageId: string | null;
+  placement: 'after';
+}
+const relocation = ref<LogRelocateState>({ active: false, sourceMessageIds: [], targetMessageId: null, placement: 'after' });
+const frameRelocation = computed(() => relocation.value.active ? { sourceMessageIds: relocation.value.sourceMessageIds.slice() } : null);
+let relocateDialog: ReturnType<typeof dialog.warning> | null = null;
+let relocateScrollId: string | null = null;
+const cancelRelocate = () => {
+  relocation.value = { active: false, sourceMessageIds: [], targetMessageId: null, placement: 'after' };
+  relocateDialog?.destroy();
+  relocateDialog = null;
 };
+const startRelocate = (ids: string[]) => {
+  if (busy.value || previewPublish.value || ids.length !== 1 || !win.byId(ids[0])?.capabilities.reorder) return;
+  cancelRelocate();
+  selection.select(ids[0]);
+  relocation.value = { active: true, sourceMessageIds: ids.slice(), targetMessageId: null, placement: 'after' };
+};
+const relocateDestination = (targetId: string) => {
+  const state = relocation.value;
+  if (!state.active || state.sourceMessageIds.length !== 1 || state.sourceMessageIds.includes(targetId)) return null;
+  const item = win.byId(state.sourceMessageIds[0]);
+  if (!item?.capabilities.reorder || !win.byId(targetId)) return null;
+  const rest = win.items.value.filter((it) => it.message.id !== item.message.id);
+  const toIndex = rest.findIndex((it) => it.message.id === targetId) + 1;
+  if (toIndex === win.indexOf(item.message.id)) {
+    toast.info('消息已在此位置之后，请选择其他消息');
+    return null;
+  }
+  return { item, toIndex };
+};
+const confirmRelocate = () => {
+  if (busy.value || !relocation.value.targetMessageId) return false;
+  const destination = relocateDestination(relocation.value.targetMessageId);
+  if (!destination) return;
+  const state = relocation.value;
+  return placeAt(destination.item, destination.toIndex, () => {
+    if (relocation.value !== state) return;
+    const id = destination.item.message.id;
+    selection.select(id);
+    relocateScrollId = id;
+    cancelRelocate();
+  });
+};
+const relocateSummary = (id: string) => {
+  const node = nodeCache.get(id)?.node;
+  if (node?.kind !== 'message') return '原消息';
+  const text = node.plainText.replace(/\s+/g, ' ').trim();
+  return `${node.speakerName.slice(0, 24) || '未命名角色'}：${text.slice(0, 40) || '（无文字内容）'}${text.length > 40 ? '…' : ''}`;
+};
+const pickRelocateTarget = (targetId: string | null) => {
+  if (!targetId || busy.value || relocateDialog || !relocateDestination(targetId)) return;
+  relocation.value.targetMessageId = targetId;
+  const confirmation = dialog.warning({
+    title: '确认重定位',
+    content: `将「${relocateSummary(relocation.value.sourceMessageIds[0])}」移动到「${relocateSummary(targetId)}」之后？`,
+    positiveText: '确认重定位',
+    negativeText: '取消',
+    onPositiveClick: confirmRelocate,
+    onEsc: cancelRelocate,
+    onAfterLeave: () => {
+      if (relocateDialog !== confirmation) return;
+      relocateDialog = null;
+      relocation.value.targetMessageId = null;
+    },
+  });
+  relocateDialog = confirmation;
+};
+watch([sectionId, projectId, () => JSON.stringify(currentSection.value?.source), previewPublish], () => {
+  cancelRelocate();
+  relocateScrollId = null;
+}, { flush: 'sync' });
+watch(win.items, () => {
+  if (!relocation.value.active) return;
+  if (relocation.value.sourceMessageIds.some((id) => !win.byId(id)?.capabilities.reorder)) cancelRelocate();
+  else if (relocation.value.targetMessageId && !win.byId(relocation.value.targetMessageId)) {
+    relocateDialog?.destroy();
+    relocateDialog = null;
+    relocation.value.targetMessageId = null;
+  }
+});
 
 const removeSelected = () => {
   const item = selectedMessages.value[0];
@@ -528,6 +602,7 @@ const removeElement = (id: string) => {
 
 // ---- iframe 事件 ----
 const onFrameEvent = (event: FrameEvent) => {
+  if (relocation.value.active && ['imageResize', 'open', 'drop', 'action'].includes(event.type)) return;
   switch (event.type) {
     case 'imageResize':
       if (caps.value.editDraft && orderedIds.value.includes(event.nodeId)) {
@@ -535,6 +610,10 @@ const onFrameEvent = (event: FrameEvent) => {
       }
       break;
     case 'select':
+      if (relocation.value.active) {
+        pickRelocateTarget(event.nodeId);
+        break;
+      }
       selection.select(event.nodeId, { shift: event.shift, additive: event.additive });
       if (event.nodeId?.startsWith('el-')) focusElementId.value = event.nodeId.slice(3);
       break;
@@ -564,7 +643,10 @@ const onFrameEvent = (event: FrameEvent) => {
       break;
     }
     case 'key':
-      if (event.key === 'Escape') selection.clear();
+      if (event.key === 'Escape') {
+        if (relocation.value.active) cancelRelocate();
+        else selection.clear();
+      }
       break;
     case 'scrollMiss':
       if (win.nextCursor.value) toast.info('目标位置尚未加载，请先加载更多消息');
@@ -574,7 +656,9 @@ const onFrameEvent = (event: FrameEvent) => {
   }
 };
 const onGlobalKey = (e: KeyboardEvent) => {
-  if (e.key === 'Escape' && !editorShow.value && !insertShow.value && !moveToShow.value) selection.clear();
+  if (e.key !== 'Escape') return;
+  if (relocation.value.active) cancelRelocate();
+  else if (!editorShow.value && !insertShow.value) selection.clear();
 };
 window.addEventListener('keydown', onGlobalKey);
 
@@ -646,7 +730,7 @@ const issueCount = computed(() => (layoutInfo.value?.warnings.length || 0) + (la
 
 // ---- 工作区底色跟随外层主题（含暗色与自定义主题） ----
 const canvasRef = ref<HTMLElement | null>(null);
-const canvasTone = shallowRef<{ color: string; dark: boolean } | null>(null);
+const canvasTone = shallowRef<{ color: string; dark: boolean; accent: string } | null>(null);
 /** 将任意 CSS 颜色（含 color-mix 结果）规范为 rgb()，供 iframe 校验后使用。 */
 const readCanvasTone = () => {
   const el = canvasRef.value;
@@ -658,8 +742,12 @@ const readCanvasTone = () => {
   ctx.fillRect(0, 0, 1, 1);
   const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
   const color = `rgb(${r}, ${g}, ${b})`;
+  ctx.fillStyle = getComputedStyle(el).getPropertyValue('--log-wb-accent').trim();
+  ctx.fillRect(0, 0, 1, 1);
+  const [ar, ag, ab] = ctx.getImageData(0, 0, 1, 1).data;
+  const accent = `rgb(${ar}, ${ag}, ${ab})`;
   const dark = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.45;
-  if (canvasTone.value?.color !== color || canvasTone.value.dark !== dark) canvasTone.value = { color, dark };
+  if (canvasTone.value?.color !== color || canvasTone.value.dark !== dark || canvasTone.value.accent !== accent) canvasTone.value = { color, dark, accent };
 };
 let themeObserver: MutationObserver | null = null;
 onMounted(() => {
@@ -670,6 +758,7 @@ onMounted(() => {
 const goWorld = () => router.push({ name: 'world-detail', params: { worldId: props.context.worldId } });
 
 onBeforeUnmount(() => {
+  cancelRelocate();
   if (buildTimer) clearTimeout(buildTimer);
   themeObserver?.disconnect();
   window.removeEventListener('keydown', onGlobalKey);
@@ -830,6 +919,7 @@ onBeforeUnmount(() => {
           :spread="viewMode === 'spread'"
           :design="!previewPublish"
           :can-resize-images="caps.editDraft && !previewPublish"
+          :relocation="frameRelocation"
           :selection="selection.selected.value"
           :zoom="zoom"
           :canvas="canvasTone"
@@ -844,7 +934,7 @@ onBeforeUnmount(() => {
         <div class="log-wb__float log-wb__float--top">
           <Transition name="log-wb-pop">
             <LogSelectionBar
-              v-if="selection.selected.value.length"
+              v-if="relocation.active || selection.selected.value.length"
               :messages="selectedMessages"
               :element="selectedElement"
               :can-edit-draft="caps.editDraft"
@@ -852,9 +942,11 @@ onBeforeUnmount(() => {
               :busy="busy"
               :is-first="selectedIndex <= 0"
               :is-last="selectedIndex < 0 || selectedIndex >= win.items.value.length - 1"
+              :relocating-count="relocation.active ? relocation.sourceMessageIds.length : 0"
               @edit="(tab) => selectedMessages[0] && openEditor(selectedMessages[0].message.id, tab)"
               @move="moveSelected"
-              @move-to="moveToIndex = null; moveToShow = true"
+              @relocate="startRelocate(selection.messageIds.value)"
+              @cancel-relocate="cancelRelocate"
               @insert="insertAtSelection"
               @remove="removeSelected"
               @exclude="excludeSelected"
@@ -1037,18 +1129,6 @@ onBeforeUnmount(() => {
       :library="assetLibrary"
       @insert="doInsert"
     />
-
-    <n-modal v-model:show="moveToShow" preset="card" title="移到指定位置" style="width: min(560px, 94vw)">
-      <p class="log-wb__hint">只能在同一频道内移动；会修改聊天原消息的显示顺序。</p>
-      <n-space vertical>
-        <n-select v-model:value="moveToIndex" :options="moveToOptions" filterable placeholder="选择参照消息" />
-        <n-radio-group v-model:value="moveToSide">
-          <n-radio value="before">放在它之前</n-radio>
-          <n-radio value="after">放在它之后</n-radio>
-        </n-radio-group>
-        <n-button type="primary" :disabled="moveToIndex === null || busy" @click="confirmMoveTo">移动</n-button>
-      </n-space>
-    </n-modal>
   </div>
 </template>
 
@@ -1648,13 +1728,6 @@ onBeforeUnmount(() => {
 
 .log-wb__spacer {
   flex: 1;
-}
-
-/* ---- 弹窗 ---- */
-.log-wb__hint {
-  font-size: 12px;
-  color: var(--log-wb-muted);
-  margin: 0 0 10px;
 }
 
 /* ---- 窄屏 ---- */

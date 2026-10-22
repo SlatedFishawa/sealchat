@@ -143,6 +143,17 @@ html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
 .log-drop-indicator::before { left: -3px; }
 .log-drop-indicator::after { right: -3px; }
 .log-dragging { opacity: 0.45; }
+/* 重定位只改变设计态绘制，不参与消息测量与分页。 */
+.log-design.log-relocating .log-node.log-relocate-source { opacity: 0.5; }
+.log-design.log-relocating .log-node:hover { box-shadow: none; }
+.log-design.log-relocating .log-node.log-relocate-target::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  border-radius: 2px; background: var(--log-selection); pointer-events: none; opacity: 0;
+}
+.log-design.log-relocating .log-node.log-relocate-target:hover::after,
+.log-design.log-relocating .log-node.log-relocate-target:focus-visible::after { opacity: 1; }
+.log-design.log-relocating .log-message-actions,
+.log-design.log-relocating .log-image-control { display: none; }
 .log-image-control {
   position: absolute; bottom: 4px; z-index: 14; width: 26px; height: 26px; padding: 0;
   border: 1px solid var(--log-tool-border); border-radius: 7px;
@@ -178,4 +189,6 @@ html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
   .log-page { box-shadow: none; break-after: page; content-visibility: visible !important; }
   .log-message-actions, .log-drop-indicator, .log-image-control { display: none !important; }
   .log-design .log-node.log-selected, .log-design .log-node:hover { box-shadow: none; background: none; }
+  .log-design.log-relocating .log-node.log-relocate-source { opacity: 1; }
+  .log-design.log-relocating .log-node.log-relocate-target::after { display: none; }
 }
