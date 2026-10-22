@@ -92,7 +92,7 @@ assert.match(frameCss, /\.log-body\s*\{[^}]*font-family:\s*var\(--log-font-famil
   assert.deepEqual(authRequests.map((r) => r.url), [
     `api/v1/log/projects/project/sections/section/messages/message/assets/${'a'.repeat(32)}`,
     `api/v1/log/projects/project/sections/section/messages/message/assets/${'b'.repeat(32)}`,
-    'api/v1/attachment/ordinary-image',
+    'api/v1/attachment/ordinary-image?proxy=1',
     'api/v1/log/styles/style/versions/1.0.0/assets/paper',
   ])
   assert.equal(publicRequests[0].url, `api/v1/public/log/publicslug/assets/${'c'.repeat(32)}`)

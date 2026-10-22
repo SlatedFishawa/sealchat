@@ -203,7 +203,7 @@ export const fetchLogStyleAssetBytes = async (id: string, version: string, asset
 };
 
 export const fetchAttachmentBytes = async (attachmentId: string, signal?: AbortSignal) => {
-  const resp = await api.get(`api/v1/attachment/${seg(attachmentId)}`, { responseType: 'arraybuffer', signal, timeout: 30000 });
+  const resp = await api.get(`api/v1/attachment/${seg(attachmentId)}?proxy=1`, { responseType: 'arraybuffer', signal, timeout: 30000 });
   return { data: resp.data as ArrayBuffer, mime: String(resp.headers['content-type'] || '') };
 };
 

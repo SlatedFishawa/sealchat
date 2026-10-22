@@ -198,14 +198,15 @@ type LogBodyAssetBytes struct {
 	MIME string
 }
 
-// Read stored image bytes only (local/S3); no external URLs or redirects.
+// Read authorized image bytes through current storage first, then the attachment subsystem's
+// historical compatibility path. Callers must resolve/authorize the attachment before reaching here.
 func logReadBodyAsset(ctx context.Context, a *model.AttachmentModel) (*LogBodyAssetBytes, error) {
 	if a == nil || GetStorageManager() == nil {
 		return nil, logBodyAssetNotFound()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	r, err := OpenAttachmentRead(ctx, a)
+	r, err := OpenAttachmentReadCompatible(ctx, a)
 	if err != nil {
 		return nil, logBodyAssetNotFound()
 	}
