@@ -154,6 +154,23 @@ html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
 .log-design.log-relocating .log-node.log-relocate-target:focus-visible::after { opacity: 1; }
 .log-design.log-relocating .log-message-actions,
 .log-design.log-relocating .log-image-control { display: none; }
+.log-design.log-relocating .log-node.log-relocate-source.log-selected { box-shadow: none; outline: 1.5px dashed var(--log-selection); outline-offset: -2px; }
+/* 多选：单条快捷操作与图片手柄让位；原消息首个片段右上角绘制勾选标记（绝对定位，不参与测量）。元素不参与多选。 */
+.log-design.log-multi .log-message-actions,
+.log-design.log-multi .log-image-control { display: none; }
+.log-design.log-multi .log-node[data-log-kind="message"] { cursor: pointer; }
+.log-design.log-multi .log-node[data-log-kind="element"] { cursor: default; }
+.log-design.log-multi .log-node[data-log-kind="element"]:hover { box-shadow: none; }
+.log-design.log-multi .log-node[data-log-kind="message"][data-log-fragment="0"]::before {
+  content: ''; position: absolute; top: 5px; right: 5px; z-index: 12; box-sizing: border-box; width: 18px; height: 18px;
+  border-radius: 50%; border: 1.5px solid rgba(100, 116, 139, 0.6); background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12); pointer-events: none; transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.log-design.log-multi .log-node[data-log-kind="message"]:hover::before { border-color: var(--log-selection); }
+.log-design.log-multi .log-node.log-selected[data-log-kind="message"][data-log-fragment="0"]::before {
+  border-color: var(--log-selection);
+  background: var(--log-selection) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.4l2.6 2.6L12 5.6' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 12px no-repeat;
+}
 .log-image-control {
   position: absolute; bottom: 4px; z-index: 14; width: 26px; height: 26px; padding: 0;
   border: 1px solid var(--log-tool-border); border-radius: 7px;
@@ -191,4 +208,6 @@ html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
   .log-design .log-node.log-selected, .log-design .log-node:hover { box-shadow: none; background: none; }
   .log-design.log-relocating .log-node.log-relocate-source { opacity: 1; }
   .log-design.log-relocating .log-node.log-relocate-target::after { display: none; }
+  .log-design.log-relocating .log-node.log-relocate-source.log-selected { outline: none; }
+  .log-design.log-multi .log-node::before { display: none !important; }
 }

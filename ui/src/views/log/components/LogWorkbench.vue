@@ -2,7 +2,7 @@
 // 设计工作台：页面级编排。草稿控制器、章节消息窗口、样式包、预览与选择在此组合；
 // 具体面板各自负责一块交互。认证与写入只发生在外层，iframe 只接收安全渲染模型。
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, toRaw, watch, type Component } from 'vue';
-import { useDialog, useMessage } from 'naive-ui';
+import { useDialog, useMessage, type DropdownOption } from 'naive-ui';
 import { useMediaQuery } from '@vueuse/core';
 import { useRouter } from 'vue-router';
 import {
@@ -13,6 +13,7 @@ import {
   Download,
   Eye,
   LayoutSidebarRight,
+  ListCheck,
   Minus,
   PageBreak,
   Palette,
@@ -33,7 +34,9 @@ import {
 } from '@/services/log/logApi';
 import {
   listWorldChannels,
+  relocateMessagesBatch,
   removeMessage,
+  removeMessagesBatch,
   reorderMessage,
 } from '@/services/log/logMessageCommands';
 import {
@@ -53,10 +56,12 @@ import { useLogAssets } from '../composables/useLogAssets';
 import { useLogAssetLibrary } from '../composables/useLogAssetLibrary';
 import { useLogSelection } from '../composables/useLogSelection';
 import { createElement, downloadJson, elementAvailability } from '../logDraftOps';
+import { planBatchRelocate, planBatchStep, type LogBatchMovePlan } from '../logBatchOps';
 import type { LogImageRef } from '../logAssetRefs';
 import { chapterTitle, chapterViews, sectionLabel } from '../logChapterOps';
 import LogPreviewFrame from './LogPreviewFrame.vue';
 import LogSelectionBar from './LogSelectionBar.vue';
+import LogMultiSelectBar from './LogMultiSelectBar.vue';
 import LogMessageEditor from './LogMessageEditor.vue';
 import LogSectionsDialog from './LogSectionsDialog.vue';
 import LogBulkPanel from './LogBulkPanel.vue';
@@ -247,7 +252,12 @@ const onLayout = (r: FrameLayoutResult) => {
 // ---- 选择 ----
 const selection = useLogSelection(orderedIds);
 watch(orderedIds, (ids) => selection.prune(new Set(ids)));
-const selectedMessages = computed(() => selection.messageIds.value.map((id) => win.byId(id)).filter((x): x is LogDesignMessage => !!x));
+/** 当前来源片段已加载消息的可见顺序（批量移动按此计算）。 */
+const windowOrder = computed(() => win.items.value.map((it) => it.message.id));
+const selectedMessages = computed(() => {
+  const picked = new Set(selection.messageIds.value);
+  return win.items.value.filter((it) => picked.has(it.message.id));
+});
 const selectedElement = computed(() => {
   const id = selection.elementId.value;
   return id ? draft.value.elements.find((e) => e.id === id) || null : null;
@@ -427,37 +437,64 @@ const cancelRelocate = () => {
   relocateDialog?.destroy();
   relocateDialog = null;
 };
+/** 单选模式只重定位一条；多选模式重定位整个选中集合（按显示顺序）。 */
 const startRelocate = (ids: string[]) => {
-  if (busy.value || previewPublish.value || ids.length !== 1 || !win.byId(ids[0])?.capabilities.reorder) return;
+  const multi = selection.multi.value;
+  if (busy.value || previewPublish.value || !ids.length || (!multi && ids.length !== 1) || ids.length > 200) return;
+  if (ids.some((id) => !win.byId(id)?.capabilities.reorder)) return;
   cancelRelocate();
-  selection.select(ids[0]);
-  relocation.value = { active: true, sourceMessageIds: ids.slice(), targetMessageId: null, placement: 'after' };
+  if (!multi) selection.select(ids[0]);
+  const picked = new Set(ids);
+  relocation.value = { active: true, sourceMessageIds: windowOrder.value.filter((id) => picked.has(id)), targetMessageId: null, placement: 'after' };
 };
-const relocateDestination = (targetId: string) => {
+type RelocateDestination =
+  | { items: [LogDesignMessage]; toIndex: number; plan?: undefined }
+  | { items: LogDesignMessage[]; plan: LogBatchMovePlan; toIndex?: undefined };
+const relocateDestination = (targetId: string): RelocateDestination | null => {
   const state = relocation.value;
-  if (!state.active || state.sourceMessageIds.length !== 1 || state.sourceMessageIds.includes(targetId)) return null;
-  const item = win.byId(state.sourceMessageIds[0]);
-  if (!item?.capabilities.reorder || !win.byId(targetId)) return null;
+  if (!state.active || !state.sourceMessageIds.length || state.sourceMessageIds.includes(targetId)) return null;
+  const items = state.sourceMessageIds.map((id) => win.byId(id));
+  if (items.some((it) => !it?.capabilities.reorder) || !win.byId(targetId)) return null;
+  const sources = items as LogDesignMessage[];
+  if (sources.length > 1) {
+    // 批量：由 message.relocate.batch 按原有顺序放到目标之后；位置不变时不提交。
+    const plan = planBatchRelocate(windowOrder.value, new Set(state.sourceMessageIds), targetId);
+    if (!plan) {
+      toast.info('所选消息已按原顺序位于此消息之后，请选择其他消息');
+      return null;
+    }
+    return { items: sources, plan };
+  }
+  const item = sources[0];
   const rest = win.items.value.filter((it) => it.message.id !== item.message.id);
   const toIndex = rest.findIndex((it) => it.message.id === targetId) + 1;
   if (toIndex === win.indexOf(item.message.id)) {
     toast.info('消息已在此位置之后，请选择其他消息');
     return null;
   }
-  return { item, toIndex };
+  return { items: [item], toIndex };
 };
 const confirmRelocate = () => {
   if (busy.value || !relocation.value.targetMessageId) return false;
   const destination = relocateDestination(relocation.value.targetMessageId);
   if (!destination) return;
   const state = relocation.value;
-  return placeAt(destination.item, destination.toIndex, () => {
+  const finish = () => {
     if (relocation.value !== state) return;
-    const id = destination.item.message.id;
-    selection.select(id);
+    const id = destination.items[0].message.id;
+    // 单选模式保持源消息选中；多选模式保留整个选中集合，便于继续调整。
+    if (!selection.multi.value) selection.select(id);
     relocateScrollId = id;
     cancelRelocate();
-  });
+  };
+  if (destination.plan) {
+    const { items, plan } = destination;
+    return runCommand('重定位', () => relocateMessagesBatch(batchTarget(items), plan), () => {
+      afterBatchMove(items);
+      finish();
+    });
+  }
+  return placeAt(destination.items[0], destination.toIndex, finish);
 };
 const relocateSummary = (id: string) => {
   const node = nodeCache.get(id)?.node;
@@ -468,9 +505,12 @@ const relocateSummary = (id: string) => {
 const pickRelocateTarget = (targetId: string | null) => {
   if (!targetId || busy.value || relocateDialog || !relocateDestination(targetId)) return;
   relocation.value.targetMessageId = targetId;
+  const sources = relocation.value.sourceMessageIds;
   const confirmation = dialog.warning({
-    title: '确认重定位',
-    content: `将「${relocateSummary(relocation.value.sourceMessageIds[0])}」移动到「${relocateSummary(targetId)}」之后？`,
+    title: sources.length > 1 ? '确认批量重定位' : '确认重定位',
+    content: sources.length > 1
+      ? `将选中的 ${sources.length} 条消息按原有顺序移动到「${relocateSummary(targetId)}」之后？`
+      : `将「${relocateSummary(sources[0])}」移动到「${relocateSummary(targetId)}」之后？`,
     positiveText: '确认重定位',
     negativeText: '取消',
     onPositiveClick: confirmRelocate,
@@ -486,6 +526,9 @@ const pickRelocateTarget = (targetId: string | null) => {
 watch([sectionId, projectId, () => JSON.stringify(currentSection.value?.source), previewPublish], () => {
   cancelRelocate();
   relocateScrollId = null;
+  // 多选属于当前片段的瞬时状态：切换片段、来源、项目或进入发布预览时整体退出。
+  closeBatchDialog();
+  selection.exitMulti();
 }, { flush: 'sync' });
 watch(win.items, () => {
   if (!relocation.value.active) return;
@@ -496,6 +539,126 @@ watch(win.items, () => {
     relocation.value.targetMessageId = null;
   }
 });
+
+// ---- 多选模式：工作台局部瞬时状态；批量命令按整个选中集合一次提交，不做部分执行 ----
+const multiMode = computed(() => selection.multi.value);
+const selectedSet = computed(() => new Set(selection.messageIds.value));
+const multiAtTop = computed(() => !planBatchStep(windowOrder.value, selectedSet.value, -1));
+const multiAtBottom = computed(() => !planBatchStep(windowOrder.value, selectedSet.value, 1));
+let batchDialog: ReturnType<typeof dialog.warning> | null = null;
+const closeBatchDialog = () => {
+  batchDialog?.destroy();
+  batchDialog = null;
+};
+const openBatchDialog = (kind: 'warning' | 'error', options: Parameters<typeof dialog.warning>[0]) => {
+  closeBatchDialog();
+  const instance = dialog[kind]({
+    ...options,
+    onAfterLeave: () => {
+      if (batchDialog === instance) batchDialog = null;
+    },
+  });
+  batchDialog = instance;
+};
+const enterMulti = (seedId?: string | null) => {
+  if (previewPublish.value) return;
+  cancelRelocate();
+  selection.enterMulti(seedId);
+};
+const exitMulti = () => {
+  cancelRelocate();
+  closeBatchDialog();
+  selection.exitMulti();
+};
+
+const batchTarget = (items: LogDesignMessage[]) => ({
+  channelId: sourceChannelId.value,
+  items: items.map((it) => ({ messageId: it.message.id, expectedVersion: it.version })),
+});
+const afterBatchMove = (items: LogDesignMessage[]) => {
+  items.forEach((it) => win.markOwnWrite(it.message.id, it.version + 1));
+  void win.load();
+};
+const canBatch = (items: LogDesignMessage[], key: 'reorder' | 'remove') => items.length > 0 && items.length <= 200 && items.every((it) => it.capabilities[key]);
+
+/** 整体上移/下移一位：每个连续段与相邻的未选消息交换，直接执行。 */
+const moveMulti = (dir: -1 | 1) => {
+  const items = selectedMessages.value;
+  if (busy.value || !canBatch(items, 'reorder')) return;
+  const plan = planBatchStep(windowOrder.value, selectedSet.value, dir);
+  if (!plan) return;
+  return runCommand('移动', () => relocateMessagesBatch(batchTarget(items), plan), () => afterBatchMove(items));
+};
+
+const excludeMulti = () => {
+  const items = selectedMessages.value.slice();
+  if (busy.value || !items.length || items.length > 200 || !caps.value.manageSources) return;
+  openBatchDialog('warning', {
+    title: '从本 LOG 排除',
+    content: `将选中的 ${items.length} 条消息从当前 LOG 中排除。只从当前 LOG 排除，不影响聊天原消息；本次会话内可在“发布”面板撤销。`,
+    positiveText: `排除 ${items.length} 条`,
+    negativeText: '取消',
+    onPositiveClick: () => excludeSelected(items),
+  });
+};
+
+const removeMulti = () => {
+  const items = selectedMessages.value.slice();
+  if (busy.value || !canBatch(items, 'remove')) return;
+  openBatchDialog('error', {
+    title: '删除聊天原消息',
+    content: `将从聊天记录中删除选中的 ${items.length} 条原消息。这不只是从 LOG 移除：频道中的这些消息也会被删除，且无法在这里恢复。若只想不在 LOG 中显示，请改用“排除”。`,
+    positiveText: `删除 ${items.length} 条原消息`,
+    negativeText: '取消',
+    onPositiveClick: () => runCommand('删除', () => removeMessagesBatch(batchTarget(items)), () => {
+      items.forEach((it) => win.removeLocal(it.message.id));
+      selection.clear();
+      win.scheduleReload(300);
+      toast.success(`已删除 ${items.length} 条原消息`);
+    }),
+  });
+};
+
+const selectAllMulti = () => {
+  selection.selectAll();
+  if (!win.complete.value) toast.info(`已选中已加载的 ${selection.messageIds.value.length} 条消息；本片段尚未完整加载`);
+};
+
+// ---- 右键菜单：原消息上的轻量入口 ----
+const ctxMenu = ref({ show: false, x: 0, y: 0, nodeId: '' });
+const ctxOptions = computed<DropdownOption[]>(() => {
+  const item = win.byId(ctxMenu.value.nodeId);
+  if (!item) return [];
+  if (multiMode.value) {
+    return [
+      { key: 'toggle', label: selection.selected.value.includes(item.message.id) ? '取消选中此消息' : '选中此消息' },
+      { type: 'divider', key: 'd1' },
+      { key: 'exit', label: '退出多选' },
+    ];
+  }
+  return [
+    { key: 'multi', label: '多选（从此消息开始）' },
+    { type: 'divider', key: 'd1' },
+    { key: 'edit', label: '编辑正文', disabled: !item.capabilities.edit },
+    { key: 'relocate', label: '重定位…', disabled: busy.value || !item.capabilities.reorder },
+  ];
+});
+const openContextMenu = (nodeId: string, x: number, y: number) => {
+  if (previewPublish.value || !win.byId(nodeId)) return;
+  ctxMenu.value = { show: true, x, y, nodeId };
+};
+const onContextSelect = (key: string) => {
+  const id = ctxMenu.value.nodeId;
+  ctxMenu.value.show = false;
+  if (!win.byId(id)) return;
+  if (key === 'multi') enterMulti(id);
+  else if (key === 'toggle') selection.select(id);
+  else if (key === 'exit') exitMulti();
+  else if (key === 'edit') {
+    selection.select(id);
+    openEditor(id, 'content');
+  } else if (key === 'relocate') startRelocate([id]);
+};
 
 const removeSelected = () => {
   const item = selectedMessages.value[0];
@@ -530,8 +693,7 @@ const setExcluded = async (sectionIdValue: string, ids: string[], excluded: bool
     busy.value = false;
   }
 };
-const excludeSelected = async () => {
-  const items = selectedMessages.value;
+const excludeSelected = async (items: LogDesignMessage[] = selectedMessages.value) => {
   const sec = querySection.value;
   if (!items.length || !sec) return;
   const ids = items.map((it) => it.message.id);
@@ -602,7 +764,9 @@ const removeElement = (id: string) => {
 
 // ---- iframe 事件 ----
 const onFrameEvent = (event: FrameEvent) => {
-  if (relocation.value.active && ['imageResize', 'open', 'drop', 'action'].includes(event.type)) return;
+  // iframe 内的点击不会冒泡到外层，菜单在画布有任何交互时关闭。
+  if (ctxMenu.value.show && event.type !== 'progress' && event.type !== 'context') ctxMenu.value.show = false;
+  if ((relocation.value.active || selection.multi.value) && ['imageResize', 'open', 'drop', 'action'].includes(event.type)) return;
   switch (event.type) {
     case 'imageResize':
       if (caps.value.editDraft && orderedIds.value.includes(event.nodeId)) {
@@ -615,7 +779,10 @@ const onFrameEvent = (event: FrameEvent) => {
         break;
       }
       selection.select(event.nodeId, { shift: event.shift, additive: event.additive });
-      if (event.nodeId?.startsWith('el-')) focusElementId.value = event.nodeId.slice(3);
+      if (!selection.multi.value && event.nodeId?.startsWith('el-')) focusElementId.value = event.nodeId.slice(3);
+      break;
+    case 'context':
+      if (!relocation.value.active) openContextMenu(event.nodeId, event.x, event.y);
       break;
     case 'open':
       if (event.nodeId.startsWith('el-')) {
@@ -643,10 +810,7 @@ const onFrameEvent = (event: FrameEvent) => {
       break;
     }
     case 'key':
-      if (event.key === 'Escape') {
-        if (relocation.value.active) cancelRelocate();
-        else selection.clear();
-      }
+      if (event.key === 'Escape') onEscape();
       break;
     case 'scrollMiss':
       if (win.nextCursor.value) toast.info('目标位置尚未加载，请先加载更多消息');
@@ -655,15 +819,22 @@ const onFrameEvent = (event: FrameEvent) => {
       break;
   }
 };
+/** Esc 分层：先关菜单；正在选择重定位目标时只取消重定位（保留多选）；多选时退出多选；否则清除选择。 */
+const onEscape = () => {
+  if (ctxMenu.value.show) ctxMenu.value.show = false;
+  else if (relocation.value.active) cancelRelocate();
+  else if (batchDialog || editorShow.value || insertShow.value) return;
+  else if (selection.multi.value) exitMulti();
+  else selection.clear();
+};
 const onGlobalKey = (e: KeyboardEvent) => {
-  if (e.key !== 'Escape') return;
-  if (relocation.value.active) cancelRelocate();
-  else if (!editorShow.value && !insertShow.value) selection.clear();
+  if (e.key === 'Escape') onEscape();
 };
 window.addEventListener('keydown', onGlobalKey);
 
 const locate = (nodeId: string) => {
-  selection.select(nodeId);
+  // 多选模式下定位只滚动，不改变选中集合。
+  if (!selection.multi.value) selection.select(nodeId);
   previewRef.value?.scrollTo(nodeId, true);
 };
 
@@ -759,6 +930,7 @@ const goWorld = () => router.push({ name: 'world-detail', params: { worldId: pro
 
 onBeforeUnmount(() => {
   cancelRelocate();
+  closeBatchDialog();
   if (buildTimer) clearTimeout(buildTimer);
   themeObserver?.disconnect();
   window.removeEventListener('keydown', onGlobalKey);
@@ -830,6 +1002,17 @@ onBeforeUnmount(() => {
             <n-icon :component="Eye" size="14" /><span>{{ currentIsFragment ? '片段发布效果' : '发布效果' }}</span>
           </button>
         </div>
+        <button
+          type="button"
+          class="log-wb__text-btn log-wb__multi-btn"
+          :class="{ 'is-on': multiMode }"
+          :aria-pressed="multiMode"
+          :disabled="previewPublish || !sections.length"
+          :title="previewPublish ? '在设计视图中使用多选' : multiMode ? '退出多选 (Esc)' : '多选消息：批量移动、重定位、排除与删除（也可右键消息进入）'"
+          @click="multiMode ? exitMulti() : enterMulti()"
+        >
+          <n-icon :component="ListCheck" size="16" /><span>多选</span>
+        </button>
       </div>
 
       <div class="log-wb__group log-wb__group--actions">
@@ -902,7 +1085,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="log-wb__main">
-      <section ref="canvasRef" class="log-wb__canvas" aria-label="纸张预览">
+      <section ref="canvasRef" class="log-wb__canvas" :class="{ 'is-multi': multiMode }" aria-label="纸张预览">
         <div v-if="!sections.length" class="log-wb__empty">
           <n-icon :component="Book2" size="40" class="log-wb__empty-icon" />
           <div class="log-wb__empty-title">还没有章节</div>
@@ -920,6 +1103,7 @@ onBeforeUnmount(() => {
           :design="!previewPublish"
           :can-resize-images="caps.editDraft && !previewPublish"
           :relocation="frameRelocation"
+          :multi="multiMode"
           :selection="selection.selected.value"
           :zoom="zoom"
           :canvas="canvasTone"
@@ -932,9 +1116,32 @@ onBeforeUnmount(() => {
         />
 
         <div class="log-wb__float log-wb__float--top">
-          <Transition name="log-wb-pop">
+          <Transition name="log-wb-pop" mode="out-in">
+            <LogMultiSelectBar
+              v-if="multiMode"
+              key="multi"
+              :messages="selectedMessages"
+              :total="win.items.value.length"
+              :complete="win.complete.value"
+              :at-top="multiAtTop"
+              :at-bottom="multiAtBottom"
+              :can-manage-sources="caps.manageSources"
+              :busy="busy"
+              :range-mode="selection.rangeMode.value"
+              :range-anchored="!!selection.rangeAnchor.value"
+              :relocating="relocation.active"
+              @select-all="selectAllMulti"
+              @toggle-range="selection.toggleRangeMode()"
+              @move="moveMulti"
+              @relocate="startRelocate(selection.messageIds.value)"
+              @cancel-relocate="cancelRelocate"
+              @exclude="excludeMulti"
+              @remove="removeMulti"
+              @exit="exitMulti"
+            />
             <LogSelectionBar
-              v-if="relocation.active || selection.selected.value.length"
+              v-else-if="relocation.active || selection.selected.value.length"
+              key="single"
               :messages="selectedMessages"
               :element="selectedElement"
               :can-edit-draft="caps.editDraft"
@@ -952,10 +1159,23 @@ onBeforeUnmount(() => {
               @exclude="excludeSelected"
               @edit-element="openPanel('elements')"
               @remove-element="selectedElement && removeElement(selectedElement.id)"
+              @multi="enterMulti()"
               @clear="selection.clear()"
             />
           </Transition>
         </div>
+
+        <n-dropdown
+          trigger="manual"
+          placement="bottom-start"
+          size="small"
+          :show="ctxMenu.show"
+          :x="ctxMenu.x"
+          :y="ctxMenu.y"
+          :options="ctxOptions"
+          @select="onContextSelect"
+          @clickoutside="ctxMenu.show = false"
+        />
 
         <div v-if="sections.length" class="log-wb__float log-wb__float--zoom" role="group" aria-label="缩放">
           <button type="button" class="log-wb__icon-btn is-sm" :disabled="zoom <= zoomSteps[0]" title="缩小" aria-label="缩小" @click="stepZoom(-1)">
@@ -1482,6 +1702,29 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   pointer-events: none;
+  container-type: inline-size;
+}
+
+/* 多选模式：画布内缘一圈强调色细框，与单条编辑区分且不遮挡内容。 */
+.log-wb__canvas.is-multi::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--log-wb-accent) 55%, transparent);
+}
+
+.log-wb__multi-btn.is-on {
+  color: var(--log-wb-accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--log-wb-accent) 13%, var(--log-wb-chrome));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--log-wb-accent) 40%, var(--log-wb-line));
+}
+
+.log-wb__multi-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .log-wb__float--top > * {

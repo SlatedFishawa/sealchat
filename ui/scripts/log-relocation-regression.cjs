@@ -14,7 +14,8 @@ const ast = ts.createSourceFile('workbench.ts', source, ts.ScriptTarget.Latest, 
 function setup(t) {
   const names = new Set(['placeAt', 'onDrop', 'relocation', 'frameRelocation', 'relocateDialog', 'relocateScrollId',
     'cancelRelocate', 'startRelocate', 'relocateDestination', 'confirmRelocate', 'relocateSummary',
-    'pickRelocateTarget', 'onFrameEvent', 'onGlobalKey']);
+    'pickRelocateTarget', 'onFrameEvent', 'onGlobalKey', 'onEscape', 'windowOrder', 'ctxMenu', 'openContextMenu',
+    'batchDialog', 'closeBatchDialog', 'exitMulti', 'batchTarget', 'afterBatchMove']);
   const statements = ast.statements.filter(node => {
     if (ts.isVariableStatement(node)) return node.declarationList.declarations.some(decl => names.has(decl.name.getText(ast)));
     return ts.isExpressionStatement(node) && /^(watch|onBeforeUnmount)\(/.test(node.getText(ast)) && node.getText(ast).includes('cancelRelocate');
@@ -32,7 +33,8 @@ function setup(t) {
     window: { removeEventListener() {} }, onResizeEnd() {},
     sectionId: vue.ref('s1'), projectId: vue.ref('p1'), currentSection: vue.ref({ source: { channelId: 'ch1' } }),
     previewPublish: vue.ref(false), busy: vue.ref(false), win,
-    selection: { select: (...args) => selected.push(args), clear: () => selected.push(['clear']) },
+    selection: { select: (...args) => selected.push(args), clear: () => selected.push(['clear']), multi: vue.ref(false), exitMulti() {} },
+    planBatchRelocate: () => null, relocateMessagesBatch: async () => {}, sourceChannelId: vue.ref('ch1'),
     nodeCache: new Map(['a', 'b', 'c'].map(id => [id, { node: { kind: 'message', speakerName: id, plainText: '<正文> '.repeat(80) } }])),
     toast: { info: text => notices.push(text) },
     dialog: { warning: options => { const entry = { ...options, destroy() { entry.destroyed = true; } }; dialogs.push(entry); return entry; } },

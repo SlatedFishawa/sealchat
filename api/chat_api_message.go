@@ -4006,13 +4006,65 @@ func apiMessageReorderBatch(ctx *ChatContext, data *struct {
 	}{MessageIDs: ids}, nil
 }
 
+type messageRelocateGroup struct {
+	MessageIDs      []string `json:"message_ids"`
+	TargetMessageID string   `json:"target_message_id"`
+}
+
+// normalizeMessageRelocateGroups 把单组参数与 groups 统一成分组列表：
+// 各组消息互不重叠、目标互不相同且不在任何组内；组内顺序在执行时按当前显示顺序确定。
+func normalizeMessageRelocateGroups(messageIDs []string, targetMessageID string, groups []messageRelocateGroup) ([]messageRelocateGroup, []string, error) {
+	if len(groups) > 0 {
+		if len(collectMessageIDs(messageIDs)) > 0 || strings.TrimSpace(targetMessageID) != "" {
+			return nil, nil, fmt.Errorf("groups 不能与 message_ids/target_message_id 同时使用")
+		}
+	} else {
+		groups = []messageRelocateGroup{{MessageIDs: messageIDs, TargetMessageID: targetMessageID}}
+	}
+	normalized := make([]messageRelocateGroup, 0, len(groups))
+	ids := []string{}
+	seen := map[string]struct{}{}
+	targets := map[string]struct{}{}
+	for _, group := range groups {
+		groupIDs := lo.Uniq(collectMessageIDs(group.MessageIDs))
+		if len(groupIDs) == 0 {
+			return nil, nil, fmt.Errorf("message_ids 不能为空")
+		}
+		target := strings.TrimSpace(group.TargetMessageID)
+		if target == "" {
+			return nil, nil, fmt.Errorf("target_message_id 不能为空")
+		}
+		if _, ok := targets[target]; ok {
+			return nil, nil, fmt.Errorf("多个分组不能使用同一目标消息")
+		}
+		targets[target] = struct{}{}
+		for _, id := range groupIDs {
+			if _, ok := seen[id]; ok {
+				return nil, nil, fmt.Errorf("同一消息不能出现在多个分组中")
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+		normalized = append(normalized, messageRelocateGroup{MessageIDs: groupIDs, TargetMessageID: target})
+	}
+	for target := range targets {
+		if _, ok := seen[target]; ok {
+			return nil, nil, fmt.Errorf("不能定位到已选消息内部")
+		}
+	}
+	return normalized, ids, nil
+}
+
+// apiMessageRelocateBatch 在一个事务中把一组或多组消息移动到各自目标消息之后（placement=after，默认）
+// 或之前（placement=before），每组保持原有相对顺序；任一校验失败则整体不生效。
 func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
-	ChannelID        string           `json:"channel_id"`
-	MessageIDs       []string         `json:"message_ids"`
-	TargetMessageID  string           `json:"target_message_id"`
-	Placement        string           `json:"placement"`
-	ClientOpID       string           `json:"client_op_id"`
-	ExpectedVersions map[string]int64 `json:"expected_versions"`
+	ChannelID        string                 `json:"channel_id"`
+	MessageIDs       []string               `json:"message_ids"`
+	TargetMessageID  string                 `json:"target_message_id"`
+	Placement        string                 `json:"placement"`
+	Groups           []messageRelocateGroup `json:"groups"`
+	ClientOpID       string                 `json:"client_op_id"`
+	ExpectedVersions map[string]int64       `json:"expected_versions"`
 }) (any, error) {
 	opHash, replay, replayErr := service.MessageOperationReplay(ctx.User.ID, data.ClientOpID, "message.relocate.batch", data)
 	if replayErr != nil {
@@ -4025,26 +4077,23 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 	if channelID == "" {
 		return nil, fmt.Errorf("channel_id 不能为空")
 	}
-	ids := lo.Uniq(collectMessageIDs(data.MessageIDs))
+	groups, ids, groupErr := normalizeMessageRelocateGroups(data.MessageIDs, data.TargetMessageID, data.Groups)
+	if groupErr != nil {
+		return nil, groupErr
+	}
 	if len(ids) > 200 {
 		return nil, fmt.Errorf("TOO_LARGE: 每次最多移动 200 条消息")
 	}
 	if err := service.ValidateMessageExpectedVersions(ids, data.ExpectedVersions); err != nil {
 		return nil, err
 	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("message_ids 不能为空")
-	}
-	targetMessageID := strings.TrimSpace(data.TargetMessageID)
-	if targetMessageID == "" {
-		return nil, fmt.Errorf("target_message_id 不能为空")
-	}
+	targetMessageID := groups[0].TargetMessageID
 	placement := strings.TrimSpace(data.Placement)
-	if placement != "" && placement != "after" {
-		return nil, fmt.Errorf("placement 仅支持 after")
+	if placement == "" {
+		placement = "after"
 	}
-	if lo.Contains(ids, targetMessageID) {
-		return nil, fmt.Errorf("不能定位到已选消息内部")
+	if placement != "after" && placement != "before" {
+		return nil, fmt.Errorf("placement 仅支持 after 或 before")
 	}
 
 	channel, err := model.ChannelGet(channelID)
@@ -4080,11 +4129,13 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 	}
 
 	type reorderResult struct {
-		message model.MessageModel
+		message  model.MessageModel
+		targetID string
 	}
+	targetIDs := lo.Map(groups, func(group messageRelocateGroup, _ int) string { return group.TargetMessageID })
 	results := make([]reorderResult, 0, len(ids))
 	err = db.Transaction(func(tx *gorm.DB) error {
-		loadMessages := func() ([]model.MessageModel, model.MessageModel, error) {
+		loadMessages := func() ([]model.MessageModel, error) {
 			var messages []model.MessageModel
 			q := tx.Preload("User", func(db *gorm.DB) *gorm.DB {
 				return db.Select("id, username, nickname, avatar, is_bot")
@@ -4092,83 +4143,96 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 				return db.Select("id, nickname, channel_id, user_id")
 			}).Where("channel_id = ? AND is_deleted = ?", channelID, false)
 			if err := q.Order("display_order asc").Order("created_at asc").Order("id asc").Find(&messages).Error; err != nil {
-				return nil, model.MessageModel{}, err
+				return nil, err
 			}
-			var target model.MessageModel
-			for _, msg := range messages {
-				if msg.ID == targetMessageID {
-					target = msg
-					break
-				}
-			}
-			if target.ID == "" {
-				return nil, model.MessageModel{}, fmt.Errorf("目标消息已不可用，请重新选择")
-			}
-			return messages, target, nil
+			return messages, nil
 		}
 
 		assignOrders := func(messages []model.MessageModel) error {
-			selectedSet := map[string]struct{}{}
-			for _, id := range ids {
-				selectedSet[id] = struct{}{}
+			groupOf := map[string]int{}
+			for gi, group := range groups {
+				for _, id := range group.MessageIDs {
+					groupOf[id] = gi
+				}
 			}
-			selected := make([]model.MessageModel, 0, len(ids))
-			remaining := make([]model.MessageModel, 0, len(messages)-len(ids))
+			selected := make([][]model.MessageModel, len(groups))
+			remaining := make([]model.MessageModel, 0, len(messages))
+			count := 0
 			for _, msg := range messages {
-				if _, ok := selectedSet[msg.ID]; ok {
-					selected = append(selected, msg)
+				if gi, ok := groupOf[msg.ID]; ok {
+					selected[gi] = append(selected[gi], msg)
+					count++
 				} else {
 					remaining = append(remaining, msg)
 				}
 			}
-			if len(selected) != len(ids) {
+			if count != len(ids) {
 				return fmt.Errorf("未找到可调整顺序的消息或无权限操作")
 			}
-
-			targetIndex := -1
+			remainingIndex := make(map[string]int, len(remaining))
 			for i, msg := range remaining {
-				if msg.ID == targetMessageID {
-					targetIndex = i
-					break
-				}
-			}
-			if targetIndex < 0 {
-				return fmt.Errorf("目标消息已不可用，请重新选择")
+				remainingIndex[msg.ID] = i
 			}
 
-			afterOrder := remaining[targetIndex].DisplayOrder
-			var beforeOrder float64
-			hasBefore := false
-			if targetIndex+1 < len(remaining) {
-				beforeOrder = remaining[targetIndex+1].DisplayOrder
-				hasBefore = true
+			// 每组插入到 remaining 中的一个空隙：after 为目标与其后一条之间，before 为目标与其前一条之间；
+			// 各组目标互不相同且放置方向一致，因此空隙互不重叠。
+			type slot struct {
+				lower, upper       float64
+				hasLower, hasUpper bool
+			}
+			slots := make([]slot, len(groups))
+			for gi, group := range groups {
+				targetIndex, ok := remainingIndex[group.TargetMessageID]
+				if !ok {
+					return fmt.Errorf("目标消息已不可用，请重新选择")
+				}
+				gap := targetIndex
+				if placement == "before" {
+					gap = targetIndex - 1
+				}
+				var s slot
+				if gap >= 0 {
+					s.lower, s.hasLower = remaining[gap].DisplayOrder, true
+				}
+				if gap+1 < len(remaining) {
+					s.upper, s.hasUpper = remaining[gap+1].DisplayOrder, true
+				}
+				if s.hasLower && s.hasUpper && s.upper <= s.lower+displayOrderEpsilon*float64(len(selected[gi])+1) {
+					if err := model.RebalanceChannelDisplayOrderTx(tx, channelID); err != nil {
+						return err
+					}
+					return fmt.Errorf("__sealchat_retry_relocate__")
+				}
+				slots[gi] = s
 			}
 
-			if hasBefore && beforeOrder <= afterOrder+displayOrderEpsilon*float64(len(selected)+1) {
-				if err := model.RebalanceChannelDisplayOrderTx(tx, channelID); err != nil {
-					return err
+			updated := make([]reorderResult, 0, len(ids))
+			for gi, group := range groups {
+				s := slots[gi]
+				n := float64(len(selected[gi]) + 1)
+				lower := s.lower
+				step := displayOrderGap
+				switch {
+				case s.hasLower && s.hasUpper:
+					step = (s.upper - s.lower) / n
+				case s.hasUpper:
+					lower = s.upper - displayOrderGap
+					step = displayOrderGap / n
 				}
-				return fmt.Errorf("__sealchat_retry_relocate__")
-			}
-
-			step := displayOrderGap
-			if hasBefore {
-				step = (beforeOrder - afterOrder) / float64(len(selected)+1)
-			}
-			nextOrder := afterOrder
-			updated := make([]reorderResult, 0, len(selected))
-			for _, msg := range selected {
-				nextOrder += step
-				if err := tx.Model(&model.MessageModel{}).
-					Where("id = ?", msg.ID).
-					UpdateColumn("display_order", nextOrder).Error; err != nil {
-					return err
+				nextOrder := lower
+				for _, msg := range selected[gi] {
+					nextOrder += step
+					if err := tx.Model(&model.MessageModel{}).
+						Where("id = ?", msg.ID).
+						UpdateColumn("display_order", nextOrder).Error; err != nil {
+						return err
+					}
+					msg.DisplayOrder = nextOrder
+					if err := tx.Select("version").Where("id = ?", msg.ID).Take(&msg).Error; err != nil {
+						return err
+					}
+					updated = append(updated, reorderResult{message: msg, targetID: group.TargetMessageID})
 				}
-				msg.DisplayOrder = nextOrder
-				if err := tx.Select("version").Where("id = ?", msg.ID).Take(&msg).Error; err != nil {
-					return err
-				}
-				updated = append(updated, reorderResult{message: msg})
 			}
 			results = updated
 			return nil
@@ -4184,13 +4248,13 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 				return err
 			}
 		}
-		messages, _, loadErr := loadMessages()
+		messages, loadErr := loadMessages()
 		if loadErr != nil {
 			return loadErr
 		}
 		assignErr := assignOrders(messages)
 		if assignErr != nil && assignErr.Error() == "__sealchat_retry_relocate__" {
-			messages, _, loadErr = loadMessages()
+			messages, loadErr = loadMessages()
 			if loadErr != nil {
 				return loadErr
 			}
@@ -4199,7 +4263,14 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 		if assignErr != nil {
 			return assignErr
 		}
-		return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, map[string]any{"message_ids": ids, "target_message_id": targetMessageID})
+		record := map[string]any{"message_ids": ids, "target_message_id": targetMessageID}
+		if len(data.Groups) > 0 {
+			record["target_message_ids"] = targetIDs
+		}
+		if placement != "after" {
+			record["placement"] = placement
+		}
+		return service.RecordMessageOperation(tx, ctx.User.ID, data.ClientOpID, opHash, record)
 	})
 	if err != nil {
 		return nil, err
@@ -4216,19 +4287,24 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 			msg.WhisperTargets = loadWhisperTargetsForMessage(channelID, msg.ID, msg.WhisperTarget)
 		}
 		messageData := buildProtocolMessage(&msg, channelData)
+		reorder := &protocol.MessageReorder{
+			MessageID:    msg.ID,
+			ChannelID:    channelID,
+			DisplayOrder: msg.DisplayOrder,
+			ClientOpID:   data.ClientOpID,
+		}
+		if placement == "before" {
+			reorder.BeforeID = result.targetID
+		} else {
+			reorder.AfterID = result.targetID
+		}
 		ev := &protocol.Event{
 			Type:     protocol.EventMessageReordered,
 			Message:  messageData,
 			Channel:  channelData,
 			User:     operatorData,
 			Operator: operatorData,
-			Reorder: &protocol.MessageReorder{
-				MessageID:    msg.ID,
-				ChannelID:    channelID,
-				DisplayOrder: msg.DisplayOrder,
-				AfterID:      targetMessageID,
-				ClientOpID:   data.ClientOpID,
-			},
+			Reorder:  reorder,
 		}
 		if msg.IsWhisper {
 			recipients := []string{ctx.User.ID}
@@ -4247,13 +4323,22 @@ func apiMessageRelocateBatch(ctx *ChatContext, data *struct {
 		}
 	}
 
-	return &struct {
-		MessageIDs      []string `json:"message_ids"`
-		TargetMessageID string   `json:"target_message_id"`
+	response := struct {
+		MessageIDs       []string `json:"message_ids"`
+		TargetMessageID  string   `json:"target_message_id"`
+		TargetMessageIDs []string `json:"target_message_ids,omitempty"`
+		Placement        string   `json:"placement,omitempty"`
 	}{
 		MessageIDs:      ids,
 		TargetMessageID: targetMessageID,
-	}, nil
+	}
+	if len(data.Groups) > 0 {
+		response.TargetMessageIDs = targetIDs
+	}
+	if placement != "after" {
+		response.Placement = placement
+	}
+	return &response, nil
 }
 
 func apiMessageEditHistory(ctx *ChatContext, data *struct {

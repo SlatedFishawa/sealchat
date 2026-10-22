@@ -90,6 +90,54 @@ export const updateMessageAppearance = async (t: MessageTarget, patch: Pick<LogA
 export const removeMessage = (t: MessageTarget) =>
   send<{ success?: boolean; message_ids?: string[] } | null>('message.remove', base(t, 'remove'));
 
+export interface BatchMessageTarget {
+  channelId: string;
+  /** 每条消息的已知版本；服务端按全部版本做 CAS，任一冲突则整体不生效。 */
+  items: Array<{ messageId: string; expectedVersion: number }>;
+}
+
+const batchBase = (t: BatchMessageTarget, prefix: string) => ({
+  channel_id: t.channelId,
+  message_ids: t.items.map((it) => it.messageId),
+  expected_versions: Object.fromEntries(t.items.map((it) => [it.messageId, it.expectedVersion])),
+  client_op_id: newClientOpId(prefix),
+});
+
+/** 批量删除原消息（message.remove + message_ids）：同一事务，全部成功或全部失败。 */
+export const removeMessagesBatch = async (t: BatchMessageTarget) => {
+  const result = await send<{ success?: boolean; message_ids?: string[] } | null>('message.remove', batchBase(t, 'remove-batch'));
+  if (!result?.success || (result.message_ids?.length || 0) !== t.items.length) {
+    throw new LogDomainError('COMMAND_FAILED', '删除结果与所选消息不一致，请重新加载后确认');
+  }
+  return result;
+};
+
+/**
+ * 批量移动（message.relocate.batch）：每组按原有相对顺序放到各自目标消息之后/之前，
+ * 服务端在一个事务内完成权限、版本与 display order 调整。
+ */
+export const relocateMessagesBatch = async (
+  t: BatchMessageTarget,
+  plan: { placement: 'before' | 'after'; groups: Array<{ messageIds: string[]; targetMessageId: string }> },
+) => {
+  const base = batchBase(t, 'relocate-batch');
+  const single = plan.groups.length === 1 ? plan.groups[0] : null;
+  const payload: Record<string, unknown> = {
+    channel_id: base.channel_id,
+    expected_versions: base.expected_versions,
+    client_op_id: base.client_op_id,
+    placement: plan.placement,
+    ...(single
+      ? { message_ids: single.messageIds, target_message_id: single.targetMessageId }
+      : { groups: plan.groups.map((g) => ({ message_ids: g.messageIds, target_message_id: g.targetMessageId })) }),
+  };
+  const result = await send<{ message_ids?: string[] } | null>('message.relocate.batch', payload);
+  if ((result?.message_ids?.length || 0) !== t.items.length) {
+    throw new LogDomainError('COMMAND_FAILED', '移动结果与所选消息不一致，请重新加载后确认');
+  }
+  return result;
+};
+
 /**
  * 频道内移动：after_id 为移动后紧邻的上一条，before_id 为紧邻的下一条
  * （与服务端 resolveMessageDisplayOrderForPlacement 一致）。

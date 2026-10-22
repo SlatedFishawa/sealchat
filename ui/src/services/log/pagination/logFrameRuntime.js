@@ -12,7 +12,7 @@
   var port = null;
   var revision = 0;
   var assetUrls = new Map();
-  var current = { doc: null, design: false, canResizeImages: false, mode: 'paged', spread: false, selection: new Set(), relocation: null, zoom: 1 };
+  var current = { doc: null, design: false, canResizeImages: false, mode: 'paged', spread: false, selection: new Set(), relocation: null, multi: false, zoom: 1 };
   var root = document.getElementById('log-root');
   var pkgStyle = document.getElementById('log-package');
   var pageStyle = document.getElementById('log-page-rule');
@@ -39,6 +39,7 @@
       case 'render': render(msg).catch(function (err) { post({ type: 'error', revision: msg.revision, message: String(err && err.message || err) }); }); break;
       case 'select': current.selection = new Set(msg.ids || []); applySelection(); break;
       case 'relocate': current.relocation = msg.state || null; applyRelocation(); break;
+      case 'multi': current.multi = msg.active === true; applyMulti(); break;
       case 'scrollTo': scrollToNode(msg.nodeId, msg.flash !== false); break;
       case 'zoom': endImageResize(false); current.zoom = clampZoom(msg.zoom); root.style.zoom = String(current.zoom); break;
       case 'canvas': setCanvas(msg.color, msg.dark, msg.accent); break;
@@ -567,6 +568,7 @@
     current.spread = !!msg.spread;
     current.selection = new Set(msg.selection || []);
     current.relocation = msg.relocation || null;
+    current.multi = msg.multi === true;
     var doc = msg.doc;
     applyRoot(doc);
     var host = document.createElement('div');
@@ -606,6 +608,7 @@
       requestAnimationFrame(function () { host.classList.add('log-laid-out'); });
       applySelection();
       applyRelocation();
+      applyMulti();
       restoreAnchor(anchor);
       post({
         type: 'layout', revision: rev, pageCount: host.querySelectorAll('.log-page').length,
@@ -642,6 +645,19 @@
       nodes[i].classList.toggle('log-relocate-source', source);
       nodes[i].classList.toggle('log-relocate-target', active && message && !source);
     }
+  }
+
+  // 多选模式只改变设计态绘制与点击语义：隐藏单条快捷操作，元素不参与选择。
+  function applyMulti() {
+    document.body.classList.toggle('log-multi', current.design && current.multi);
+  }
+
+  function messageNodeAt(target) {
+    return target && target.closest ? target.closest('.log-node[data-log-kind="message"]') : null;
+  }
+
+  function postContext(node, x, y) {
+    post({ type: 'context', nodeId: node.getAttribute('data-log-node'), x: x, y: y });
   }
 
   function cssEscape(v) { return window.CSS && CSS.escape ? CSS.escape(v) : String(v).replace(/[^a-zA-Z0-9_-]/g, ''); }
@@ -701,6 +717,14 @@
       if (picked) post({ type: 'select', nodeId: picked.getAttribute('data-log-node'), kind: 'message' });
       return;
     }
+    if (current.multi) {
+      // 多选：只按节点上报，元素与空白由外层忽略；单条快捷操作与图片手柄此时已隐藏。
+      var multiSel = window.getSelection();
+      if (multiSel && String(multiSel).length > 0) return;
+      var multiNode = e.target.closest ? e.target.closest('[data-log-node]') : null;
+      post({ type: 'select', nodeId: multiNode ? multiNode.getAttribute('data-log-node') : null, kind: multiNode ? multiNode.getAttribute('data-log-kind') : undefined, shift: e.shiftKey, additive: e.ctrlKey || e.metaKey });
+      return;
+    }
     var imageAction = e.target.closest ? e.target.closest('[data-log-image-action]') : null;
     if (imageAction) {
       e.preventDefault();
@@ -726,7 +750,7 @@
   });
 
   root.addEventListener('dblclick', function (e) {
-    if (!current.design || current.relocation) return;
+    if (!current.design || current.relocation || current.multi) return;
     if (e.target.closest && e.target.closest('[data-log-image-action]')) return;
     var node = e.target.closest ? e.target.closest('[data-log-node]') : null;
     if (node) post({ type: 'open', nodeId: node.getAttribute('data-log-node'), kind: node.getAttribute('data-log-kind') });
@@ -739,10 +763,25 @@
     if (e.target.closest && e.target.closest('[data-log-image-action]')) return;
     var node = document.activeElement && document.activeElement.closest ? document.activeElement.closest('[data-log-node]') : null;
     if (!node) return;
+    if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && !current.relocation && node.getAttribute('data-log-kind') === 'message') {
+      e.preventDefault();
+      var rect = node.getBoundingClientRect();
+      postContext(node, rect.left + 12, rect.top + 12);
+      return;
+    }
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       post({ type: 'select', nodeId: node.getAttribute('data-log-node'), kind: node.getAttribute('data-log-kind'), shift: e.shiftKey, additive: e.ctrlKey || e.metaKey });
     }
+  });
+
+  // 右键原消息：交给外层显示轻量菜单（进入多选等）；元素与空白处保留浏览器默认行为。
+  root.addEventListener('contextmenu', function (e) {
+    if (!current.design || current.relocation) return;
+    var node = messageNodeAt(e.target);
+    if (!node) return;
+    e.preventDefault();
+    postContext(node, e.clientX, e.clientY);
   });
 
   // ---------- 拖动排序（仅消息、仅同章节；最终由外层校验并调用 message.reorder） ----------
@@ -755,7 +794,7 @@
 
   root.addEventListener('pointerdown', function (e) {
     var control = e.target.closest ? e.target.closest('[data-log-image-action]') : null;
-    if (!control || !current.design || !current.canResizeImages || current.relocation) return;
+    if (!control || !current.design || !current.canResizeImages || current.relocation || current.multi) return;
     e.stopImmediatePropagation();
     if (control.getAttribute('data-log-image-action') !== 'resize') return;
     if (e.button !== 0 || imageResize || drag) return;
@@ -813,7 +852,7 @@
 
   root.addEventListener('pointerdown', function (e) {
     var handle = e.target.closest ? e.target.closest('.log-handle') : null;
-    if (!handle || handle.disabled || !current.design || current.relocation) return;
+    if (!handle || handle.disabled || !current.design || current.relocation || current.multi) return;
     var node = handle.closest('[data-log-node]');
     if (!node) return;
     e.preventDefault();

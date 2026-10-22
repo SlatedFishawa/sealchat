@@ -50,6 +50,8 @@ export type FrameEvent =
   | { type: 'action'; nodeId: string; action: 'edit' | 'insert-before' | 'insert-after' }
   | { type: 'anchor'; anchor: FrameAnchor | null; nearEnd?: boolean }
   | { type: 'key'; key: string }
+  /** 设计态在原消息上打开右键菜单；x/y 为 iframe 视口坐标。 */
+  | { type: 'context'; nodeId: string; x: number; y: number }
   | { type: 'progress'; revision: number; done: number; total: number }
   | { type: 'scrollMiss'; nodeId: string };
 
@@ -65,6 +67,8 @@ export interface LayoutRequest {
   canResizeImages: boolean;
   selection: string[];
   relocation?: FrameRelocation | null;
+  /** 多选模式：隐藏单条快捷操作与图片手柄，点击只切换选择。 */
+  multi?: boolean;
   anchor?: FrameAnchor | null;
 }
 
@@ -176,6 +180,7 @@ export class LogFrameEngine {
       case 'action':
       case 'anchor':
       case 'key':
+      case 'context':
       case 'progress':
       case 'scrollMiss':
         this.onEvent(msg as FrameEvent);
@@ -226,6 +231,10 @@ export class LogFrameEngine {
 
   relocate(state: FrameRelocation | null) {
     this.channel?.port1.postMessage({ type: 'relocate', state });
+  }
+
+  multi(active: boolean) {
+    this.channel?.port1.postMessage({ type: 'multi', active });
   }
 
   scrollTo(nodeId: string, flash = true) {

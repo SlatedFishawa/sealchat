@@ -22,6 +22,8 @@ const props = withDefaults(defineProps<{
   canResizeImages?: boolean;
   selection?: string[];
   relocation?: FrameRelocation | null;
+  /** 多选模式（仅设计态生效）。 */
+  multi?: boolean;
   zoom?: number;
   title?: string;
   /** 工作区底色（纸张之外）；不传时使用 iframe 默认底色。 */
@@ -33,6 +35,7 @@ const props = withDefaults(defineProps<{
   canResizeImages: false,
   selection: () => [],
   relocation: null,
+  multi: false,
   zoom: 1,
   title: 'LOG 预览',
   canvas: null,
@@ -62,6 +65,15 @@ const onEvent = (event: FrameEvent) => {
     lastAnchor = event.anchor;
     if (event.nearEnd) emit('near-end');
   }
+  if (event.type === 'context') {
+    // iframe 视口坐标换算为外层页面坐标，供外层菜单定位。
+    const rect = iframeRef.value?.getBoundingClientRect();
+    const x = Number(event.x);
+    const y = Number(event.y);
+    if (!rect || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    emit('frame-event', { ...event, x: rect.left + Math.min(Math.max(x, 0), rect.width), y: rect.top + Math.min(Math.max(y, 0), rect.height) });
+    return;
+  }
   emit('frame-event', event);
 };
 
@@ -86,6 +98,7 @@ const run = async () => {
       canResizeImages: props.canResizeImages,
       selection: props.selection.slice(),
       relocation: props.design ? props.relocation : null,
+      multi: props.design && props.multi,
       anchor: lastAnchor,
     }, rev);
     if (!result || rev !== revision) return;
@@ -116,6 +129,7 @@ watch(() => [props.doc, props.mode, props.spread, props.design, props.canResizeI
 });
 watch(() => props.selection, (ids) => engine.value?.select(ids.slice()), { deep: false });
 watch(() => props.relocation, (state) => engine.value?.relocate(props.design ? state : null));
+watch(() => props.multi, (active) => engine.value?.multi(props.design && active));
 watch(() => props.zoom, (z) => engine.value?.zoom(z));
 watch(() => props.canvas, (c) => engine.value?.canvas(c?.color ?? null, c?.dark ?? false, c?.accent));
 

@@ -9,6 +9,7 @@ import {
   Ban,
   Dots,
   Focus2,
+  ListCheck,
   Palette,
   Pencil,
   RowInsertBottom,
@@ -41,6 +42,8 @@ const emit = defineEmits<{
   exclude: [];
   'edit-element': [];
   'remove-element': [];
+  /** 进入多选模式，当前已选消息成为初始选择。 */
+  multi: [];
   clear: [];
 }>();
 
@@ -129,6 +132,10 @@ const onMore = (key: string) => {
           <n-icon :component="Dots" size="16" />
         </button>
       </n-dropdown>
+      <span class="log-ctx__sep" />
+      <button type="button" class="log-ctx__btn" :disabled="busy" title="进入多选模式（从此消息开始）" aria-label="多选" @click="emit('multi')">
+        <n-icon :component="ListCheck" size="16" />
+      </button>
     </template>
 
     <template v-else-if="messages.length > 1">
@@ -144,6 +151,9 @@ const onMore = (key: string) => {
         @click="emit('exclude')"
       >
         <n-icon :component="Ban" size="16" /><span>从本 LOG 排除</span>
+      </button>
+      <button type="button" class="log-ctx__btn has-text" :disabled="busy" title="进入多选模式，使用批量移动、重定位与删除" @click="emit('multi')">
+        <n-icon :component="ListCheck" size="16" /><span>多选模式</span>
       </button>
     </template>
 
