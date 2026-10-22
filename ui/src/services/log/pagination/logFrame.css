@@ -203,7 +203,13 @@ html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
   .log-canvas-dark .log-page { box-shadow: none; }
   #log-root, .log-design #log-root { padding: 0; zoom: 1 !important; }
   .log-pages { display: block; gap: 0; }
-  .log-page { box-shadow: none; break-after: page; content-visibility: visible !important; }
+  .log-page {
+    box-shadow: none;
+    break-after: page;
+    content-visibility: visible !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
   .log-message-actions, .log-drop-indicator, .log-image-control { display: none !important; }
   .log-design .log-node.log-selected, .log-design .log-node:hover { box-shadow: none; background: none; }
   .log-design.log-relocating .log-node.log-relocate-source { opacity: 1; }
