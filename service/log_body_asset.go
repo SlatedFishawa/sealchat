@@ -244,7 +244,7 @@ func GetLogBodyAsset(ctx context.Context, projectID, sectionID, messageID, key, 
 		return nil, logBodyAssetNotFound()
 	}
 	var m model.MessageModel
-	if len(key) != 32 || logSourceQuery(p, s, userID).Where("id = ? AND is_revoked = ?", messageID, false).Take(&m).Error != nil {
+	if len(key) != 32 || logSourceQuery(p, s, userID).Where("id = ?", messageID).Take(&m).Error != nil {
 		return nil, logBodyAssetNotFound()
 	}
 	// Rebuild the same archival projection used by the design window so images
