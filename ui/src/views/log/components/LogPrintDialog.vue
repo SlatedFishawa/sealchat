@@ -53,6 +53,7 @@ const printCustom = () => {
     :show="show"
     preset="card"
     title="分段打印 / 导出 PDF"
+    class="log-print-modal"
     style="width: min(560px, 94vw)"
     :closable="!busy"
     :mask-closable="!busy"
@@ -80,31 +81,59 @@ const printCustom = () => {
 
     <div class="log-print__section">
       <div class="log-print__label">自定义页码</div>
-      <n-space align="center" size="small">
+      <div class="log-print__range">
         <n-input-number v-model:value="fromPage" :min="1" :max="pageCount" :precision="0" :disabled="busy" />
-        <span>至</span>
+        <span class="log-print__range-separator">至</span>
         <n-input-number v-model:value="toPage" :min="1" :max="pageCount" :precision="0" :disabled="busy" />
         <n-button type="primary" :loading="busy" :disabled="busy || !customValid" @click="printCustom">打印所选页</n-button>
-      </n-space>
+      </div>
     </div>
 
     <n-alert v-if="errorText" type="error" :show-icon="false" class="log-print__error">{{ errorText }}</n-alert>
 
     <template #footer>
-      <n-space justify="space-between" align="center">
-        <n-text depth="3">如必须得到单个 PDF，仍可一次打印全部页面，但超长 LOG 可能明显变慢。</n-text>
-        <n-space size="small">
+      <div class="log-print__footer">
+        <n-text depth="3" class="log-print__footer-hint">如必须得到单个 PDF，仍可一次打印全部页面，但超长 LOG 可能明显变慢。</n-text>
+        <n-space size="small" class="log-print__footer-actions">
           <n-button :disabled="busy" @click="close">关闭</n-button>
           <n-button :loading="busy" :disabled="busy" @click="emit('print')">仍打印全部</n-button>
         </n-space>
-      </n-space>
+      </div>
     </template>
   </n-modal>
 </template>
 
 <style scoped>
+/* 公开阅读页固定使用浅色阅读界面；Modal Teleport 到 body 后会命中全局夜间弹窗 CSS，
+ * 因此仅在本弹窗根节点重置语义色变量，避免影响其他弹窗或用户主题。 */
+:global(body .n-card.log-print-modal) {
+  --sc-bg-elevated: #ffffff;
+  --sc-text-primary: #0f172a;
+  --sc-text-secondary: #475569;
+  --sc-border-strong: rgba(15, 23, 42, 0.12);
+  --sc-border-mute: rgba(15, 23, 42, 0.06);
+}
+
 .log-print__hint { margin-bottom: 18px; line-height: 1.65; }
 .log-print__section + .log-print__section { margin-top: 18px; }
 .log-print__label { margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+.log-print__range {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) auto minmax(110px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.log-print__range :deep(.n-input-number) { width: 100%; }
+.log-print__range-separator { color: #475569; text-align: center; }
 .log-print__error { margin-top: 18px; }
+.log-print__footer { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
+.log-print__footer-hint { min-width: 0; line-height: 1.55; }
+.log-print__footer-actions { flex: none; }
+
+@media (max-width: 560px) {
+  .log-print__range { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+  .log-print__range > :last-child { grid-column: 1 / -1; width: 100%; }
+  .log-print__footer { align-items: stretch; flex-direction: column; }
+  .log-print__footer-actions { align-self: flex-end; }
+}
 </style>
