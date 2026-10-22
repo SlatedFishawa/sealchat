@@ -15,14 +15,16 @@ import {
   searchPublicLog,
 } from '@/services/log/logApi';
 import { buildFrameDocument, publicDocumentStyle, publicNodeToRender, type RenderNode, type TocEntry } from '@/services/log/logRenderer';
-import type { FrameDocument, FrameEvent, FrameLayoutResult } from '@/services/log/pagination/logFrameHost';
+import type { FrameDocument, FrameEvent, FrameLayoutResult, FramePrintRange } from '@/services/log/pagination/logFrameHost';
 import type { LogPublicDocument, LogPublicNode, LogPublicSearchHit } from '@/types/log';
 import { useLogAssets } from './composables/useLogAssets';
 import LogPreviewFrame from './components/LogPreviewFrame.vue';
+import LogPrintDialog from './components/LogPrintDialog.vue';
 import type { GlobalThemeOverrides } from 'naive-ui';
 
 const PAGE = 100;
 const AUTO_CAP = 1000;
+const LONG_PRINT_PAGES = 80;
 
 const route = useRoute();
 const router = useRouter();
@@ -281,7 +283,34 @@ const copyPosition = async () => {
 };
 const copied = ref(false);
 
-const print = () => previewRef.value?.print();
+const printShow = ref(false);
+const printBusy = ref(false);
+const printError = ref('');
+const printPageCount = computed(() => layout.value?.pageCount || 0);
+
+const runPrint = async (range?: FramePrintRange) => {
+  if (printBusy.value || !previewRef.value) return;
+  printBusy.value = true;
+  printError.value = '';
+  try {
+    await previewRef.value.print(range);
+  } catch (error) {
+    printError.value = error instanceof Error ? error.message : String(error);
+    printShow.value = true;
+  } finally {
+    printBusy.value = false;
+  }
+};
+
+const print = () => {
+  if (!complete.value || mode.value !== 'paged' || !printPageCount.value) return;
+  if (printPageCount.value > LONG_PRINT_PAGES) {
+    printError.value = '';
+    printShow.value = true;
+    return;
+  }
+  void runPrint();
+};
 
 // 阅读页的外框固定为浅色纸张风格；控件主题不跟随访客的夜间配色，否则在浅色外框上不可见。
 const readerThemeOverrides: GlobalThemeOverrides = {
@@ -317,7 +346,7 @@ onBeforeUnmount(() => {
             <n-radio-button value="paged">纸张</n-radio-button>
           </n-radio-group>
           <n-button size="small" @click="copyPosition">{{ copied ? '已复制' : '复制当前位置' }}</n-button>
-          <n-button size="small" :disabled="!complete || mode !== 'paged'" :title="complete ? (mode === 'paged' ? '' : '切换到纸张模式后打印') : '本章尚未完整加载，不能打印'" @click="print">打印本章</n-button>
+          <n-button size="small" :loading="printBusy" :disabled="printBusy || !complete || mode !== 'paged'" :title="complete ? (mode === 'paged' ? '' : '切换到纸张模式后打印') : '本章尚未完整加载，不能打印'" @click="print">打印本章</n-button>
         </header>
         <div v-if="hits.length || searchError || searching" class="log-public__hits" role="region" aria-label="搜索结果">
           <n-alert v-if="searchError" type="error" :show-icon="false">{{ searchError }}</n-alert>
@@ -349,6 +378,13 @@ onBeforeUnmount(() => {
           <n-button v-else-if="nextCursor && !loadingItems" size="tiny" @click="loadItems(true)">加载更多</n-button>
           <span v-if="mode === 'paged' && layout">{{ complete ? `共 ${layout.pageCount} 页` : '页数待完整加载后确定' }}</span>
         </footer>
+        <LogPrintDialog
+          v-model:show="printShow"
+          :page-count="printPageCount"
+          :busy="printBusy"
+          :error-text="printError"
+          @print="runPrint"
+        />
       </template>
       <div v-else class="log-public__state">
         <n-spin v-if="state === 'loading'" size="large" />

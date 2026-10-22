@@ -12,13 +12,14 @@
   var port = null;
   var revision = 0;
   var assetUrls = new Map();
-  var current = { doc: null, design: false, canResizeImages: false, mode: 'paged', spread: false, selection: new Set(), zoom: 1 };
+  var current = { doc: null, design: false, canResizeImages: false, mode: 'paged', spread: false, selection: new Set(), relocation: null, zoom: 1 };
   var root = document.getElementById('log-root');
   var pkgStyle = document.getElementById('log-package');
   var pageStyle = document.getElementById('log-page-rule');
   var scrollTimer = 0;
   var drag = null;
   var imageResize = null;
+  var printBusy = false;
 
   function post(msg) { if (port) port.postMessage(msg); }
 
@@ -37,10 +38,11 @@
       case 'assets': receiveAssets(msg.items || []); break;
       case 'render': render(msg).catch(function (err) { post({ type: 'error', revision: msg.revision, message: String(err && err.message || err) }); }); break;
       case 'select': current.selection = new Set(msg.ids || []); applySelection(); break;
+      case 'relocate': current.relocation = msg.state || null; applyRelocation(); break;
       case 'scrollTo': scrollToNode(msg.nodeId, msg.flash !== false); break;
       case 'zoom': endImageResize(false); current.zoom = clampZoom(msg.zoom); root.style.zoom = String(current.zoom); break;
-      case 'canvas': setCanvas(msg.color, msg.dark); break;
-      case 'print': window.print(); break;
+      case 'canvas': setCanvas(msg.color, msg.dark, msg.accent); break;
+      case 'print': printDocument(msg); break;
       case 'dispose': dispose(); break;
       default: break;
     }
@@ -50,11 +52,55 @@
 
   // 工作区底色跟随外层主题；只接受十六进制或 rgb()/rgba() 颜色，其余输入恢复默认。
   var CANVAS_COLOR = /^(#[0-9a-f]{3,8}|rgba?\([0-9.,\s%]+\))$/i;
-  function setCanvas(color, dark) {
+  function setCanvas(color, dark, accent) {
     var html = document.documentElement;
     if (typeof color === 'string' && CANVAS_COLOR.test(color.trim())) html.style.setProperty('--log-workspace-bg', color.trim());
     else html.style.removeProperty('--log-workspace-bg');
     html.classList.toggle('log-canvas-dark', dark === true);
+    if (typeof accent === 'string' && CANVAS_COLOR.test(accent.trim())) html.style.setProperty('--log-selection', accent.trim());
+    else html.style.removeProperty('--log-selection');
+  }
+
+  async function printDocument(msg) {
+    var requestId = Number(msg.requestId) || 0;
+    if (printBusy) {
+      post({ type: 'printError', requestId: requestId, message: '已有打印任务正在进行' });
+      return;
+    }
+    var host = root.querySelector('.log-pages');
+    var pages = host ? Array.prototype.filter.call(host.children, function (el) { return el.classList && el.classList.contains('log-page'); }) : [];
+    if (current.mode !== 'paged' || !host || !pages.length) {
+      post({ type: 'printError', requestId: requestId, message: '请先完成纸张模式排版' });
+      return;
+    }
+    var total = pages.length;
+    var fromPage = msg.fromPage == null ? 1 : Math.floor(Number(msg.fromPage));
+    var toPage = msg.toPage == null ? total : Math.floor(Number(msg.toPage));
+    if (!Number.isFinite(fromPage) || !Number.isFinite(toPage) || fromPage < 1 || toPage < fromPage || toPage > total) {
+      post({ type: 'printError', requestId: requestId, message: '打印页码范围无效' });
+      return;
+    }
+    var limited = fromPage !== 1 || toPage !== total;
+    var scrollX = window.scrollX;
+    var scrollY = window.scrollY;
+    printBusy = true;
+    document.body.classList.add('log-printing');
+    try {
+      // 分段打印时直接把范围外页面从渲染树临时摘下，避免浏览器为 100+ 页建立完整打印布局树。
+      // 节点本身仍由 pages 引用持有，打印结束后原样恢复，不重新分页、不复制图片内存。
+      if (limited) host.replaceChildren.apply(host, pages.slice(fromPage - 1, toPage));
+      await nextFrame();
+      await nextFrame();
+      window.print();
+      post({ type: 'printDone', requestId: requestId });
+    } catch (err) {
+      post({ type: 'printError', requestId: requestId, message: String(err && err.message || err) });
+    } finally {
+      if (limited) host.replaceChildren.apply(host, pages);
+      document.body.classList.remove('log-printing');
+      window.scrollTo(scrollX, scrollY);
+      printBusy = false;
+    }
   }
 
   function receiveAssets(items) {
@@ -520,6 +566,7 @@
     current.mode = msg.mode === 'flow' ? 'flow' : 'paged';
     current.spread = !!msg.spread;
     current.selection = new Set(msg.selection || []);
+    current.relocation = msg.relocation || null;
     var doc = msg.doc;
     applyRoot(doc);
     var host = document.createElement('div');
@@ -558,6 +605,7 @@
       root.style.zoom = String(current.zoom);
       requestAnimationFrame(function () { host.classList.add('log-laid-out'); });
       applySelection();
+      applyRelocation();
       restoreAnchor(anchor);
       post({
         type: 'layout', revision: rev, pageCount: host.querySelectorAll('.log-page').length,
@@ -581,6 +629,19 @@
       var list = root.querySelectorAll('[data-log-node="' + cssEscape(id) + '"]');
       for (var j = 0; j < list.length; j++) list[j].classList.add('log-selected');
     });
+  }
+
+  function applyRelocation() {
+    var active = current.design && !!current.relocation;
+    document.body.classList.toggle('log-relocating', active);
+    var sources = new Set(active ? current.relocation.sourceMessageIds : []);
+    var nodes = root.querySelectorAll('.log-node');
+    for (var i = 0; i < nodes.length; i++) {
+      var message = nodes[i].getAttribute('data-log-kind') === 'message';
+      var source = message && sources.has(nodes[i].getAttribute('data-log-node'));
+      nodes[i].classList.toggle('log-relocate-source', source);
+      nodes[i].classList.toggle('log-relocate-target', active && message && !source);
+    }
   }
 
   function cssEscape(v) { return window.CSS && CSS.escape ? CSS.escape(v) : String(v).replace(/[^a-zA-Z0-9_-]/g, ''); }
@@ -634,6 +695,12 @@
 
   root.addEventListener('click', function (e) {
     if (!current.design) return;
+    if (current.relocation) {
+      e.preventDefault();
+      var picked = e.target.closest ? e.target.closest('.log-node[data-log-kind="message"]') : null;
+      if (picked) post({ type: 'select', nodeId: picked.getAttribute('data-log-node'), kind: 'message' });
+      return;
+    }
     var imageAction = e.target.closest ? e.target.closest('[data-log-image-action]') : null;
     if (imageAction) {
       e.preventDefault();
@@ -659,7 +726,7 @@
   });
 
   root.addEventListener('dblclick', function (e) {
-    if (!current.design) return;
+    if (!current.design || current.relocation) return;
     if (e.target.closest && e.target.closest('[data-log-image-action]')) return;
     var node = e.target.closest ? e.target.closest('[data-log-node]') : null;
     if (node) post({ type: 'open', nodeId: node.getAttribute('data-log-node'), kind: node.getAttribute('data-log-kind') });
@@ -688,7 +755,7 @@
 
   root.addEventListener('pointerdown', function (e) {
     var control = e.target.closest ? e.target.closest('[data-log-image-action]') : null;
-    if (!control || !current.design || !current.canResizeImages) return;
+    if (!control || !current.design || !current.canResizeImages || current.relocation) return;
     e.stopImmediatePropagation();
     if (control.getAttribute('data-log-image-action') !== 'resize') return;
     if (e.button !== 0 || imageResize || drag) return;
@@ -746,7 +813,7 @@
 
   root.addEventListener('pointerdown', function (e) {
     var handle = e.target.closest ? e.target.closest('.log-handle') : null;
-    if (!handle || handle.disabled || !current.design) return;
+    if (!handle || handle.disabled || !current.design || current.relocation) return;
     var node = handle.closest('[data-log-node]');
     if (!node) return;
     e.preventDefault();

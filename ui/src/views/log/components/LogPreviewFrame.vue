@@ -7,6 +7,8 @@ import {
   type FrameDocument,
   type FrameEvent,
   type FrameLayoutResult,
+  type FramePrintRange,
+  type FrameRelocation,
 } from '@/services/log/pagination/logFrameHost';
 import type { PreparedLogFrame } from '../composables/useLogAssets';
 
@@ -19,16 +21,18 @@ const props = withDefaults(defineProps<{
   design?: boolean;
   canResizeImages?: boolean;
   selection?: string[];
+  relocation?: FrameRelocation | null;
   zoom?: number;
   title?: string;
   /** 工作区底色（纸张之外）；不传时使用 iframe 默认底色。 */
-  canvas?: { color: string; dark: boolean } | null;
+  canvas?: { color: string; dark: boolean; accent?: string } | null;
 }>(), {
   mode: 'paged',
   spread: false,
   design: false,
   canResizeImages: false,
   selection: () => [],
+  relocation: null,
   zoom: 1,
   title: 'LOG 预览',
   canvas: null,
@@ -81,6 +85,7 @@ const run = async () => {
       design: props.design,
       canResizeImages: props.canResizeImages,
       selection: props.selection.slice(),
+      relocation: props.design ? props.relocation : null,
       anchor: lastAnchor,
     }, rev);
     if (!result || rev !== revision) return;
@@ -101,7 +106,7 @@ onMounted(() => {
   engine.value = new LogFrameEngine(iframeRef.value, onEvent);
   void engine.value.ready.then(() => {
     engine.value?.zoom(props.zoom);
-    if (props.canvas) engine.value?.canvas(props.canvas.color, props.canvas.dark);
+    if (props.canvas) engine.value?.canvas(props.canvas.color, props.canvas.dark, props.canvas.accent);
     void run();
   });
 });
@@ -110,8 +115,9 @@ watch(() => [props.doc, props.mode, props.spread, props.design, props.canResizeI
   void run();
 });
 watch(() => props.selection, (ids) => engine.value?.select(ids.slice()), { deep: false });
+watch(() => props.relocation, (state) => engine.value?.relocate(props.design ? state : null));
 watch(() => props.zoom, (z) => engine.value?.zoom(z));
-watch(() => props.canvas, (c) => engine.value?.canvas(c?.color ?? null, c?.dark ?? false));
+watch(() => props.canvas, (c) => engine.value?.canvas(c?.color ?? null, c?.dark ?? false, c?.accent));
 
 onBeforeUnmount(() => {
   revision += 1;
@@ -121,7 +127,7 @@ onBeforeUnmount(() => {
 
 defineExpose({
   scrollTo: (nodeId: string, flash = true) => engine.value?.scrollTo(nodeId, flash),
-  print: () => engine.value?.print(),
+  print: (range?: FramePrintRange) => engine.value?.print(range),
   rerun: () => run(),
 });
 </script>

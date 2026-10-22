@@ -54,6 +54,8 @@ export type FrameEvent =
   | { type: 'scrollMiss'; nodeId: string };
 
 export interface FrameAsset { token: string; data: ArrayBuffer | null; mime: string }
+export interface FrameRelocation { sourceMessageIds: string[] }
+export interface FramePrintRange { fromPage: number; toPage: number }
 
 export interface LayoutRequest {
   doc: FrameDocument;
@@ -62,6 +64,7 @@ export interface LayoutRequest {
   design: boolean;
   canResizeImages: boolean;
   selection: string[];
+  relocation?: FrameRelocation | null;
   anchor?: FrameAnchor | null;
 }
 
@@ -107,6 +110,8 @@ export class LogFrameEngine {
   private readyPromise: Promise<void>;
   private resolveReady: (() => void) | null = null;
   private pending = new Map<number, { resolve: (r: FrameLayoutResult) => void; reject: (e: Error) => void; started: number }>();
+  private pendingPrint = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
+  private printSeq = 0;
   private deliveredAssets = new Set<string>();
   private disposed = false;
   private readonly onLoad = () => this.handshake();
@@ -148,6 +153,20 @@ export class LogFrameEngine {
         if (!entry) return;
         this.pending.delete(msg.revision);
         entry.reject(new Error(String(msg.message || '排版失败')));
+        break;
+      }
+      case 'printDone': {
+        const entry = this.pendingPrint.get(Number(msg.requestId));
+        if (!entry) return;
+        this.pendingPrint.delete(Number(msg.requestId));
+        entry.resolve();
+        break;
+      }
+      case 'printError': {
+        const entry = this.pendingPrint.get(Number(msg.requestId));
+        if (!entry) return;
+        this.pendingPrint.delete(Number(msg.requestId));
+        entry.reject(new Error(String(msg.message || '打印准备失败')));
         break;
       }
       case 'select':
@@ -205,6 +224,10 @@ export class LogFrameEngine {
     this.channel?.port1.postMessage({ type: 'select', ids });
   }
 
+  relocate(state: FrameRelocation | null) {
+    this.channel?.port1.postMessage({ type: 'relocate', state });
+  }
+
   scrollTo(nodeId: string, flash = true) {
     this.channel?.port1.postMessage({ type: 'scrollTo', nodeId, flash });
   }
@@ -214,12 +237,24 @@ export class LogFrameEngine {
   }
 
   /** 设置工作区（纸张之外）的底色；color 为 null 时恢复默认。 */
-  canvas(color: string | null, dark = false) {
-    this.channel?.port1.postMessage({ type: 'canvas', color, dark });
+  canvas(color: string | null, dark = false, accent?: string) {
+    this.channel?.port1.postMessage({ type: 'canvas', color, dark, accent });
   }
 
-  print() {
-    this.channel?.port1.postMessage({ type: 'print' });
+  async print(range?: FramePrintRange) {
+    await this.readyPromise;
+    if (this.disposed || !this.channel) throw new Error('打印预览不可用');
+    const requestId = ++this.printSeq;
+    const result = new Promise<void>((resolve, reject) => {
+      this.pendingPrint.set(requestId, { resolve, reject });
+    });
+    this.channel.port1.postMessage({
+      type: 'print',
+      requestId,
+      fromPage: range?.fromPage,
+      toPage: range?.toPage,
+    });
+    return result;
   }
 
   dispose() {
@@ -235,6 +270,8 @@ export class LogFrameEngine {
     this.channel = null;
     for (const entry of this.pending.values()) entry.resolve(null as unknown as FrameLayoutResult);
     this.pending.clear();
+    for (const entry of this.pendingPrint.values()) entry.reject(new Error('打印已取消'));
+    this.pendingPrint.clear();
     this.deliveredAssets.clear();
   }
 }
