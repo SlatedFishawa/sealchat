@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -215,16 +216,25 @@ func logReadBodyAsset(ctx context.Context, a *model.AttachmentModel) (*LogBodyAs
 	if err != nil || len(b) == 0 || len(b) > 20<<20 {
 		return nil, logBodyAssetNotFound()
 	}
-	mimeType := strings.ToLower(strings.TrimSpace(strings.SplitN(a.MimeType, ";", 2)[0]))
-	if mimeType == "image/jpg" {
-		mimeType = "image/jpeg"
-	}
-	switch mimeType {
-	case "image/png", "image/jpeg", "image/webp", "image/gif", "image/avif":
-		return &LogBodyAssetBytes{Data: b, MIME: mimeType}, nil
-	default:
+	mimeType := logBodyImageMIME(a.MimeType, b)
+	if mimeType == "" {
 		return nil, logBodyAssetNotFound()
 	}
+	return &LogBodyAssetBytes{Data: b, MIME: mimeType}, nil
+}
+
+func logBodyImageMIME(stored string, data []byte) string {
+	for _, value := range []string{stored, http.DetectContentType(data)} {
+		mimeType := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+		if mimeType == "image/jpg" {
+			mimeType = "image/jpeg"
+		}
+		switch mimeType {
+		case "image/png", "image/jpeg", "image/webp", "image/gif", "image/avif":
+			return mimeType
+		}
+	}
+	return ""
 }
 
 func logBodyAssetNotFound() error { return logError("NOT_FOUND", "正文资源不可用") }

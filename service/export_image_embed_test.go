@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -9,6 +10,19 @@ import (
 
 	"sealchat/utils"
 )
+
+func TestLogBodyImageMIMEFallsBackToBytes(t *testing.T) {
+	png := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0}, 504)...)
+	if got := logBodyImageMIME("", png); got != "image/png" {
+		t.Fatalf("expected legacy image bytes to recover png mime, got %q", got)
+	}
+	if got := logBodyImageMIME("application/octet-stream", png); got != "image/png" {
+		t.Fatalf("expected generic stored mime to fall back to bytes, got %q", got)
+	}
+	if got := logBodyImageMIME("text/html", []byte("<html></html>")); got != "" {
+		t.Fatalf("expected non-image content to remain rejected, got %q", got)
+	}
+}
 
 func TestInlinePayloadEmbedsContentHTMLImagesAsDataURL(t *testing.T) {
 	initTestDB(t)
