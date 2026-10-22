@@ -60,8 +60,10 @@ const printCustom = () => {
     :close-on-esc="!busy"
     @update:show="(value: boolean) => value ? undefined : close()"
   >
-    <n-alert type="info" :show-icon="false" class="log-print__hint">
-      当前章节共 {{ pageCount }} 页。长文档建议每次打印不超过 {{ CHUNK_PAGES }} 页；分段时只让所选页面进入浏览器打印树，可明显降低卡顿和内存峰值。系统打印窗口中选择“另存为 PDF”即可生成文件。
+    <n-alert type="warning" class="log-print__hint">
+      <strong>请使用浏览器内置“另存为 PDF”</strong>
+      <div class="log-print__hint-detail">如需保留 PDF 文本搜索与复制能力，请不要选择 Microsoft Print to PDF、Adobe PDF 等系统 PDF 打印机。</div>
+      <div class="log-print__hint-detail">当前章节共 {{ pageCount }} 页。长文档建议每次打印不超过 {{ CHUNK_PAGES }} 页；分段时只让所选页面进入浏览器打印树，可明显降低卡顿和内存峰值。</div>
     </n-alert>
 
     <div class="log-print__section">
@@ -115,6 +117,8 @@ const printCustom = () => {
 }
 
 .log-print__hint { margin-bottom: 18px; line-height: 1.65; }
+.log-print__hint strong { display: block; margin-bottom: 2px; font-size: 14px; }
+.log-print__hint-detail + .log-print__hint-detail { margin-top: 6px; }
 .log-print__section + .log-print__section { margin-top: 18px; }
 .log-print__label { margin-bottom: 8px; font-size: 13px; font-weight: 600; }
 .log-print__range {

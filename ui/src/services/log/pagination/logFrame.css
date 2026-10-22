@@ -210,6 +210,10 @@ html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+  .log-page, .log-body {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+  }
   .log-message-actions, .log-drop-indicator, .log-image-control { display: none !important; }
   .log-design .log-node.log-selected, .log-design .log-node:hover { box-shadow: none; background: none; }
   .log-design.log-relocating .log-node.log-relocate-source { opacity: 1; }
