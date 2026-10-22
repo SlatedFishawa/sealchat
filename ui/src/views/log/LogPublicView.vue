@@ -2,7 +2,7 @@
 // 匿名展示页：只调用 /public/log 接口（无凭据客户端），不加载编辑器、聊天连接或管理 DTO。
 // privacyVersion 或 releaseId 变化、链接失效时清空旧内容重新加载，不继续展示被下架的缓存。
 // 阅读单位是视觉章节：章节模式发布版按章节读取（可跨多个来源片段），旧发布版每个 section 即一章。
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   describeLogError,
@@ -158,6 +158,39 @@ const loadItems = async (more = false) => {
   }
 };
 
+const loadAllItemsForPrint = async () => {
+  const s = slug.value;
+  const sec = unitId.value;
+  if (!sec || !doc.value) throw new Error('当前章节不可用');
+  const gen = generation;
+  const ctrl = new AbortController();
+  controller = ctrl;
+  loadingItems.value = true;
+  let cursor = partial.value ? null : nextCursor.value;
+  let acc = partial.value ? [] : items.value.slice();
+  try {
+    while (cursor || !acc.length) {
+      const r = await fetchUnitItems(s, sec, cursor, ctrl.signal);
+      if (gen !== generation) throw new Error('打印准备已取消');
+      if (!checkVersion(r.releaseId, r.privacyVersion)) throw new Error('LOG 已更新，请稍后重试');
+      acc = acc.concat(r.items);
+      cursor = r.nextCursor || null;
+      if (!cursor) break;
+    }
+    items.value = acc;
+    nextCursor.value = null;
+    partial.value = false;
+    itemsError.value = '';
+  } catch (error) {
+    if (gen !== generation || ctrl.signal.aborted) throw new Error('打印准备已取消');
+    const message = describeLogError(error, '加载完整章节失败');
+    itemsError.value = message;
+    throw new Error(message);
+  } finally {
+    if (gen === generation) loadingItems.value = false;
+  }
+};
+
 const pendingScroll = ref<string | null>(null);
 const locateNode = async (sec: string, nodeId: string) => {
   if (sec !== unitId.value) unitId.value = sec;
@@ -225,12 +258,33 @@ watch([items, doc, sectionTitle], () => {
 const previewRef = ref<InstanceType<typeof LogPreviewFrame> | null>(null);
 const layout = shallowRef<FrameLayoutResult | null>(null);
 const currentNode = ref<string | null>(null);
+let printLayoutResolve: ((result: FrameLayoutResult) => void) | null = null;
+let printLayoutReject: ((error: Error) => void) | null = null;
+const waitForPrintLayout = () => new Promise<FrameLayoutResult>((resolve, reject) => {
+  printLayoutResolve = resolve;
+  printLayoutReject = reject;
+});
+const clearPrintLayoutWaiter = () => {
+  printLayoutResolve = null;
+  printLayoutReject = null;
+};
 const onLayout = (r: FrameLayoutResult) => {
   layout.value = r;
+  if (printLayoutResolve) {
+    const resolve = printLayoutResolve;
+    clearPrintLayoutWaiter();
+    resolve(r);
+  }
   if (pendingScroll.value) {
     previewRef.value?.scrollTo(pendingScroll.value, true);
     pendingScroll.value = null;
   }
+};
+const onLayoutError = (message: string) => {
+  if (!printLayoutReject) return;
+  const reject = printLayoutReject;
+  clearPrintLayoutWaiter();
+  reject(new Error(message || '打印排版失败'));
 };
 const onFrameEvent = (e: FrameEvent) => {
   if (e.type === 'anchor' && e.anchor) currentNode.value = e.anchor.nodeId;
@@ -302,14 +356,34 @@ const runPrint = async (range?: FramePrintRange) => {
   }
 };
 
-const print = () => {
-  if (!complete.value || mode.value !== 'paged' || !printPageCount.value) return;
-  if (printPageCount.value > LONG_PRINT_PAGES) {
-    printError.value = '';
+const print = async () => {
+  if (printBusy.value || loadingItems.value || !previewRef.value) return;
+  printBusy.value = true;
+  printError.value = '';
+  try {
+    const needsFullLoad = partial.value || nextCursor.value !== null;
+    const needsPagedLayout = mode.value !== 'paged';
+    let result = layout.value;
+    if (needsFullLoad) await loadAllItemsForPrint();
+    if (needsFullLoad || needsPagedLayout || !result?.pageCount) {
+      const layoutReady = waitForPrintLayout();
+      mode.value = 'paged';
+      await nextTick();
+      result = await layoutReady;
+    }
+    if (!result?.pageCount) throw new Error('当前章节没有可打印页面');
+    if (result.pageCount > LONG_PRINT_PAGES) {
+      printShow.value = true;
+      return;
+    }
+    await previewRef.value.print();
+  } catch (error) {
+    clearPrintLayoutWaiter();
+    printError.value = error instanceof Error ? error.message : String(error);
     printShow.value = true;
-    return;
+  } finally {
+    printBusy.value = false;
   }
-  void runPrint();
 };
 
 // 阅读页的外框固定为浅色纸张风格；控件主题不跟随访客的夜间配色，否则在浅色外框上不可见。
@@ -346,7 +420,7 @@ onBeforeUnmount(() => {
             <n-radio-button value="paged">纸张</n-radio-button>
           </n-radio-group>
           <n-button size="small" @click="copyPosition">{{ copied ? '已复制' : '复制当前位置' }}</n-button>
-          <n-button size="small" :loading="printBusy" :disabled="printBusy || !complete || mode !== 'paged'" :title="complete ? (mode === 'paged' ? '' : '切换到纸张模式后打印') : '本章尚未完整加载，不能打印'" @click="print">打印本章</n-button>
+          <n-button size="small" :loading="printBusy" :disabled="printBusy || loadingItems" :title="loadingItems ? '本章仍在加载' : (!complete || mode !== 'paged' ? '打印时会自动完整加载本章并切换到纸张模式' : '')" @click="print">打印本章</n-button>
         </header>
         <div v-if="hits.length || searchError || searching" class="log-public__hits" role="region" aria-label="搜索结果">
           <n-alert v-if="searchError" type="error" :show-icon="false">{{ searchError }}</n-alert>
@@ -368,6 +442,7 @@ onBeforeUnmount(() => {
             :design="false"
             :title="doc.title"
             @layout="onLayout"
+            @layout-error="onLayoutError"
             @frame-event="onFrameEvent"
           />
         </main>
