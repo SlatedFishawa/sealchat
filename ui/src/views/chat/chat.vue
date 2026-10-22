@@ -309,6 +309,7 @@ const dice3dProfile = ref<Dice3DMemberProfile | null>(null);
 const characterCardStore = useCharacterCardStore();
 const characterSheetStore = useCharacterSheetStore();
 const channelCharacterSnapshotStore = useChannelCharacterSnapshotStore();
+const speechStore = useSpeechStore();
 iFormStore.bootstrap();
 const router = useRouter();
 const route = useRoute();
@@ -5175,6 +5176,7 @@ const importIdentityMigrationSnapshot = async (
     emptyNameCount,
     mappingChanged,
     duplicateTargetNames,
+    identityIdMap,
   };
 };
 
@@ -5301,6 +5303,29 @@ const handleIdentitySync = async (mode: 'overwrite' | 'append') => {
       mode,
       targetUserId: currentIdentityTargetUserId.value,
     });
+    let ttsSyncedCount = 0;
+    let ttsFailedCount = 0;
+    for (const item of snapshot.payload.items || []) {
+      const targetIdentityId = result.identityIdMap.get(item.sourceId);
+      if (!targetIdentityId) continue;
+      try {
+        const sourceRole = await speechAPI.role(item.sourceId);
+        if (sourceRole.revision <= 0) continue;
+        const targetRole = await speechAPI.role(targetIdentityId);
+        await speechAPI.saveRole(targetIdentityId, {
+          ...sourceRole,
+          identityId: targetIdentityId,
+          revision: targetRole.revision,
+        });
+        ttsSyncedCount += 1;
+      } catch (error) {
+        ttsFailedCount += 1;
+        console.warn('同步角色音色失败', error);
+      }
+    }
+    if (ttsSyncedCount > 0) {
+      speechStore.roleConfigRevision += 1;
+    }
     identitySyncDialogVisible.value = false;
 
     const syncedCount = result.createdCount + result.updatedCount;
@@ -5321,6 +5346,9 @@ const handleIdentitySync = async (mode: 'overwrite' | 'append') => {
     message.success(`${summaryText}${detailNote}${mappingNote}`);
     if (snapshot.missingAssetCount > 0) {
       message.warning(`同步时有 ${snapshot.missingAssetCount} 个缺失素材已跳过`);
+    }
+    if (ttsFailedCount > 0) {
+      message.warning(`有 ${ttsFailedCount} 个角色的音色设置未能同步`);
     }
     if (result.duplicateTargetNames.size > 0) {
       message.warning(`目标频道存在 ${result.duplicateTargetNames.size} 个重名角色，同步时按第一个匹配处理`);
