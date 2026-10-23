@@ -25,6 +25,7 @@ func broadcastShortcutWorldRulesUpdated(worldID string) {
 func BindShortcutRuleRoutes(group fiber.Router) {
 	group.Get("/shortcut-rules", shortcutRuleListHandler)
 	group.Post("/shortcut-rules", shortcutRuleCreateHandler)
+	group.Post("/shortcut-rules/import", shortcutRuleImportHandler)
 	group.Post("/shortcut-rules/reorder", shortcutRuleReorderHandler)
 	group.Patch("/shortcut-rules/:ruleId", shortcutRuleUpdateHandler)
 	group.Delete("/shortcut-rules/:ruleId", shortcutRuleDeleteHandler)
@@ -78,6 +79,22 @@ func shortcutRuleCreateHandler(c *fiber.Ctx) error {
 		broadcastShortcutWorldRulesUpdated(item.WorldID)
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"item": item})
+}
+
+func shortcutRuleImportHandler(c *fiber.Ctx) error {
+	var input service.ShortcutRuleImportInput
+	if err := c.BodyParser(&input); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "请求参数解析失败"})
+	}
+	user := getCurUser(c)
+	result, err := service.ShortcutRuleImport(user.ID, input)
+	if err != nil {
+		return shortcutRuleError(c, err)
+	}
+	if result.ImportedWorld > 0 {
+		broadcastShortcutWorldRulesUpdated(input.WorldID)
+	}
+	return c.JSON(result)
 }
 
 func shortcutRuleUpdateHandler(c *fiber.Ctx) error {

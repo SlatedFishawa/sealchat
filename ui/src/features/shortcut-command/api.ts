@@ -2,8 +2,10 @@ import { api } from '@/stores/_config'
 import type {
   ShortcutRule,
   ShortcutRuleConfig,
+  ShortcutRuleImportResult,
   ShortcutRuleListResponse,
   ShortcutRuleScope,
+  ShortcutRuleTransferFile,
   ShortcutRuleType,
 } from './types'
 
@@ -76,4 +78,14 @@ export const deleteShortcutRule = async (ruleId: string) => {
 export const reorderShortcutRules = async (scope: ShortcutRuleScope, worldId: string, ids: string[]) => {
   const resp = await api.post('api/v1/shortcut-rules/reorder', { scope, worldId, ids })
   return (resp.data?.items || []).map(normalizeRule) as ShortcutRule[]
+}
+
+export const importShortcutRules = async (worldId: string, payload: ShortcutRuleTransferFile): Promise<ShortcutRuleImportResult> => {
+  const resp = await api.post('api/v1/shortcut-rules/import', { ...payload, worldId })
+  return {
+    importedPersonal: Number(resp.data?.importedPersonal) || 0,
+    importedWorld: Number(resp.data?.importedWorld) || 0,
+    skippedPersonal: Number(resp.data?.skippedPersonal) || 0,
+    skippedWorld: Number(resp.data?.skippedWorld) || 0,
+  }
 }

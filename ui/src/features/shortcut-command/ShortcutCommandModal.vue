@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { NIcon, NInput, NModal, useMessage } from 'naive-ui'
+import { NDropdown, NIcon, NInput, NModal, useDialog, useMessage } from 'naive-ui'
 import {
   Bolt as BoltIcon,
   Check as DoneIcon,
+  FileImport as TransferIcon,
   Pencil as MaintainIcon,
   Refresh as RefreshIcon,
   Search as SearchIcon,
@@ -18,6 +19,7 @@ import {
   createShortcutRule,
   deleteShortcutRule,
   describeShortcutApiError,
+  importShortcutRules,
   reorderShortcutRules,
   updateShortcutRule,
 } from './api'
@@ -30,6 +32,7 @@ import {
   getShortcutRuleSnapshot,
 } from './ruleCache'
 import { mergeReorderedSubset } from './ruleMatching'
+import { buildShortcutRuleTransferFile, parseShortcutRuleTransferFile } from './transfer'
 import type { QuickSuggestSource, ShortcutRule, ShortcutRuleDraft, ShortcutRuleScope, ShortcutRuleType } from './types'
 
 type ShortcutTab = 'dice' | 'buttons' | 'suggest'
@@ -48,6 +51,8 @@ const emit = defineEmits<{
 
 const chat = useChatStore()
 const message = useMessage()
+const dialog = useDialog()
+const importInputRef = ref<HTMLInputElement | null>(null)
 
 const TAB_TYPES: Record<ShortcutTab, ShortcutRuleType[]> = {
   dice: ['send_alias', 'replace'],
@@ -107,6 +112,69 @@ const close = () => emit('update:show', false)
 const toggleMaintaining = () => {
   maintaining.value = !maintaining.value
   if (!maintaining.value) editor.open = false
+}
+
+const transferOptions = [
+  { label: '导出快捷命令', key: 'export' },
+  { label: '导入快捷命令', key: 'import' },
+]
+
+const exportRules = () => {
+  const payload = buildShortcutRuleTransferFile(snapshot.value.personal, snapshot.value.world)
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `sealchat-shortcut-rules-${worldName.value || 'export'}.json`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+const handleTransferSelect = (key: string | number) => {
+  if (key === 'export') {
+    exportRules()
+    return
+  }
+  importInputRef.value?.click()
+}
+
+const handleImportFile = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  try {
+    const payload = parseShortcutRuleTransferFile(await file.text())
+    if (payload.world.length > 0 && !hasWorld.value) {
+      message.error('导入文件包含世界规则，请先进入目标世界')
+      return
+    }
+    if (payload.world.length > 0 && !canManageWorld.value) {
+      message.error('当前身份不能维护该世界的快捷命令')
+      return
+    }
+    dialog.warning({
+      title: '导入快捷命令',
+      content: `将导入个人规则 ${payload.personal.length} 条、世界规则 ${payload.world.length} 条。重复规则会自动跳过。`,
+      positiveText: '导入',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        try {
+          const result = await importShortcutRules(worldId.value, payload)
+          await ensureShortcutRules(worldId.value, { force: true })
+          const imported = result.importedPersonal + result.importedWorld
+          const skipped = result.skippedPersonal + result.skippedWorld
+          message.success(`已导入 ${imported} 条${skipped ? `，跳过 ${skipped} 条重复规则` : ''}`)
+        } catch (error) {
+          message.error(`导入失败：${describeShortcutApiError(error)}`)
+        }
+      },
+    })
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '读取快捷命令文件失败')
+  }
 }
 
 const tabRules = (rules: ShortcutRule[], tab: ShortcutTab) => rules.filter((rule) => TAB_TYPES[tab].includes(rule.type))
@@ -263,6 +331,12 @@ const panelListeners = {
           </div>
         </div>
         <div class="sc-shortcut__header-actions">
+          <NDropdown trigger="click" :options="transferOptions" @select="handleTransferSelect">
+            <button type="button" class="sc-icon-btn sc-icon-btn--lg" aria-label="导入或导出快捷命令" title="导入/导出快捷命令">
+              <NIcon :component="TransferIcon" size="17" />
+            </button>
+          </NDropdown>
+          <input ref="importInputRef" class="sc-shortcut__file-input" type="file" accept=".json,application/json" @change="handleImportFile">
           <button
             type="button"
             class="sc-btn sc-shortcut__mode-toggle"
@@ -505,6 +579,10 @@ const panelListeners = {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+}
+
+.sc-shortcut__file-input {
+  display: none;
 }
 
 .sc-shortcut__banner {

@@ -64,6 +64,36 @@ type ShortcutRuleReorderInput struct {
 	IDs     []string `json:"ids"`
 }
 
+const (
+	ShortcutRuleTransferType    = "sealchat-shortcut-rules"
+	ShortcutRuleTransferVersion = 1
+)
+
+// ShortcutRulePortableInput 是导入/导出文件中的可移植规则，不包含归属和审计字段。
+type ShortcutRulePortableInput struct {
+	Type    string         `json:"type"`
+	Trigger string         `json:"trigger"`
+	Command string         `json:"command"`
+	Config  map[string]any `json:"config"`
+	Enabled *bool          `json:"enabled"`
+}
+
+// ShortcutRuleImportInput 将 personal 规则导入当前用户，将 world 规则导入指定世界。
+type ShortcutRuleImportInput struct {
+	Version  int                         `json:"version"`
+	Type     string                      `json:"type"`
+	WorldID  string                      `json:"worldId"`
+	Personal []ShortcutRulePortableInput `json:"personal"`
+	World    []ShortcutRulePortableInput `json:"world"`
+}
+
+type ShortcutRuleImportResult struct {
+	ImportedPersonal int `json:"importedPersonal"`
+	ImportedWorld    int `json:"importedWorld"`
+	SkippedPersonal  int `json:"skippedPersonal"`
+	SkippedWorld     int `json:"skippedWorld"`
+}
+
 // ShortcutRuleView 是对外返回的规则形状，附带最后维护者的展示名。
 type ShortcutRuleView struct {
 	*model.ShortcutRuleModel
@@ -546,6 +576,88 @@ func ShortcutRuleCreate(actorID string, input ShortcutRuleInput) (*ShortcutRuleV
 		return nil, err
 	}
 	return buildShortcutRuleViews(db, []*model.ShortcutRuleModel{created})[0], nil
+}
+
+func importShortcutRulesIntoBucket(tx *gorm.DB, actorID string, bucket shortcutRuleBucket, inputs []ShortcutRulePortableInput) (imported, skipped int, err error) {
+	for _, input := range inputs {
+		ruleType, err := normalizeShortcutRuleType(input.Type)
+		if err != nil {
+			return imported, skipped, err
+		}
+		trigger, err := normalizeShortcutRuleTrigger(input.Trigger)
+		if err != nil {
+			return imported, skipped, err
+		}
+		command, err := normalizeShortcutRuleCommand(ruleType, input.Command)
+		if err != nil {
+			return imported, skipped, err
+		}
+		config, err := normalizeShortcutRuleConfig(ruleType, input.Config)
+		if err != nil {
+			return imported, skipped, err
+		}
+		if err := ensureShortcutRuleTriggerAvailable(tx, bucket, ruleType, trigger, ""); err != nil {
+			if errors.Is(err, ErrShortcutRuleConflict) {
+				skipped++
+				continue
+			}
+			return imported, skipped, err
+		}
+		sortOrder, err := nextShortcutRuleSortOrder(tx, bucket)
+		if err != nil {
+			return imported, skipped, err
+		}
+		enabled := true
+		if input.Enabled != nil {
+			enabled = *input.Enabled
+		}
+		rule := &model.ShortcutRuleModel{
+			Scope: bucket.scope, WorldID: bucket.worldID, OwnerID: bucket.ownerID,
+			Type: ruleType, Trigger: trigger, Command: command, Config: config, Enabled: enabled,
+			SortOrder: sortOrder, CreatedBy: actorID, UpdatedBy: actorID,
+		}
+		if err := tx.Create(rule).Error; err != nil {
+			return imported, skipped, normalizeShortcutRuleWriteError(err)
+		}
+		imported++
+	}
+	return imported, skipped, nil
+}
+
+// ShortcutRuleImport 批量导入规则。重复的同类型触发词跳过，其余任一错误会回滚整批写入。
+func ShortcutRuleImport(actorID string, input ShortcutRuleImportInput) (*ShortcutRuleImportResult, error) {
+	actorID = strings.TrimSpace(actorID)
+	if actorID == "" {
+		return nil, ErrShortcutRuleDenied
+	}
+	if input.Version != ShortcutRuleTransferVersion || strings.TrimSpace(input.Type) != ShortcutRuleTransferType {
+		return nil, fmt.Errorf("%w: 不支持的快捷命令导入文件", ErrShortcutRuleInvalid)
+	}
+	if len(input.Personal) > ShortcutRuleBucketMaxCount || len(input.World) > ShortcutRuleBucketMaxCount {
+		return nil, fmt.Errorf("%w: 单个作用域最多导入 %d 条规则", ErrShortcutRuleInvalid, ShortcutRuleBucketMaxCount)
+	}
+	result := &ShortcutRuleImportResult{}
+	err := model.GetDB().Transaction(func(tx *gorm.DB) error {
+		personalBucket := shortcutRuleBucket{scope: model.ShortcutRuleScopePersonal, ownerID: actorID}
+		var err error
+		result.ImportedPersonal, result.SkippedPersonal, err = importShortcutRulesIntoBucket(tx, actorID, personalBucket, input.Personal)
+		if err != nil {
+			return err
+		}
+		if len(input.World) == 0 {
+			return nil
+		}
+		worldBucket, err := resolveShortcutRuleBucket(tx, actorID, model.ShortcutRuleScopeWorld, input.WorldID)
+		if err != nil {
+			return err
+		}
+		result.ImportedWorld, result.SkippedWorld, err = importShortcutRulesIntoBucket(tx, actorID, worldBucket, input.World)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // ShortcutRuleUpdate 部分更新规则；可同时移动到另一作用域（需要源和目标的维护权限）。

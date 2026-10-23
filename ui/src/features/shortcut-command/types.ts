@@ -50,6 +50,28 @@ export interface ShortcutRuleDraft {
   config: ShortcutRuleConfig
 }
 
+export interface ShortcutRulePortable {
+  type: ShortcutRuleType
+  trigger: string
+  command: string
+  config: ShortcutRuleConfig
+  enabled: boolean
+}
+
+export interface ShortcutRuleTransferFile {
+  version: 1
+  type: 'sealchat-shortcut-rules'
+  personal: ShortcutRulePortable[]
+  world: ShortcutRulePortable[]
+}
+
+export interface ShortcutRuleImportResult {
+  importedPersonal: number
+  importedWorld: number
+  skippedPersonal: number
+  skippedWorld: number
+}
+
 export const SHORTCUT_RULE_TYPE_LABELS: Record<ShortcutRuleType, string> = {
   send_alias: '发送映射',
   replace: '命令替换',
