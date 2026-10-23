@@ -434,7 +434,7 @@ const startDrag = (e: PointerEvent) => {
 const onDrag = (e: PointerEvent) => {
   if (!isDragging.value) return;
   if (dragPointerId.value !== e.pointerId) return;
-  if (e.buttons === 0) {
+  if (e.pointerType === 'mouse' && e.buttons === 0) {
     stopDrag(e);
     return;
   }
@@ -505,7 +505,7 @@ const startResize = (e: PointerEvent) => {
 const onResize = (e: PointerEvent) => {
   if (!isResizing.value) return;
   if (resizePointerId.value !== e.pointerId) return;
-  if (e.buttons === 0) {
+  if (e.pointerType === 'mouse' && e.buttons === 0) {
     stopResize(e);
     return;
   }

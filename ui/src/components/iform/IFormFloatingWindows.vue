@@ -324,7 +324,7 @@ useEventListener(window, 'pointermove', (event: PointerEvent) => {
     if (event.pointerId !== badgeGesture.value.gesture.pointerId) {
       return;
     }
-    if (event.buttons === 0) {
+    if (event.pointerType === 'mouse' && event.buttons === 0) {
       resetPointerStateFor(badgeGesture.value.windowId);
       return;
     }
@@ -344,7 +344,7 @@ useEventListener(window, 'pointermove', (event: PointerEvent) => {
     if (event.pointerId !== dragging.value.pointerId) {
       return;
     }
-    if (event.buttons === 0) {
+    if (event.pointerType === 'mouse' && event.buttons === 0) {
       resetPointerStateFor(dragging.value.windowId);
       return;
     }
@@ -356,7 +356,7 @@ useEventListener(window, 'pointermove', (event: PointerEvent) => {
     if (event.pointerId !== resizing.value.pointerId) {
       return;
     }
-    if (event.buttons === 0) {
+    if (event.pointerType === 'mouse' && event.buttons === 0) {
       resetPointerStateFor(resizing.value.windowId);
       return;
     }
@@ -721,6 +721,7 @@ const dockToPanel = async (windowId: string, formId: string) => {
   justify-content: center;
   text-align: center;
   cursor: pointer;
+  touch-action: none;
   box-shadow: none;
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
