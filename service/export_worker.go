@@ -2,6 +2,7 @@ package service
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,11 +26,13 @@ type MessageExportWorkerConfig struct {
 
 var (
 	exportWorkerOnce sync.Once
+	exportWorkerDone = make(chan struct{})
 	filenameSafeRe   = regexp.MustCompile(`[^0-9A-Za-z一-龥_-]+`)
 )
 
 // StartMessageExportWorker 启动后台导出任务处理协程。
-func StartMessageExportWorker(cfg MessageExportWorkerConfig) {
+// 返回通道在 worker 及其 PDF 任务完成清理后关闭，供 shutdown 等待。
+func StartMessageExportWorker(ctx context.Context, cfg MessageExportWorkerConfig) <-chan struct{} {
 	if cfg.StorageDir == "" {
 		cfg.StorageDir = "./data/exports"
 	}
@@ -49,24 +52,65 @@ func StartMessageExportWorker(cfg MessageExportWorkerConfig) {
 		if err := os.MkdirAll(cfg.StorageDir, 0755); err != nil {
 			log.Printf("export: 创建导出目录失败: %v", err)
 		}
-		go runMessageExportWorker(cfg)
+		recoverInterruptedExportJobs(cfg.StorageDir, time.Now())
+		go func() {
+			defer close(exportWorkerDone)
+			runMessageExportWorker(ctx, cfg)
+		}()
 	})
+	return exportWorkerDone
 }
 
-func runMessageExportWorker(cfg MessageExportWorkerConfig) {
+func runMessageExportWorker(ctx context.Context, cfg MessageExportWorkerConfig) {
+	var pdfJobs sync.WaitGroup
+	defer pdfJobs.Wait()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
-		job, err := acquireNextExportJob()
+		if ctx.Err() != nil {
+			return
+		}
+		// PDF jobs run beside the queue under their own Chromium slot limit; when all
+		// slots are busy they are skipped so other formats keep flowing.
+		release, pdfSlot := acquireLogPDFSlot()
+		job, err := acquireNextExportJob(!pdfSlot)
 		if err != nil {
+			if pdfSlot {
+				release()
+			}
 			log.Printf("export: 获取任务失败: %v", err)
-			<-ticker.C
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			continue
 		}
 		if job == nil {
-			<-ticker.C
+			if pdfSlot {
+				release()
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			continue
+		}
+		if isLogPDFExportJob(job) {
+			pdfJobs.Add(1)
+			go func(job *model.MessageExportJobModel) {
+				defer pdfJobs.Done()
+				defer release()
+				if err := processExportJobContext(ctx, job, cfg); err != nil {
+					log.Printf("export: 执行任务 %s 失败: %v", job.ID, err)
+				}
+			}(job)
+			continue
+		}
+		if pdfSlot {
+			release()
 		}
 		if err := processExportJob(job, cfg); err != nil {
 			log.Printf("export: 执行任务 %s 失败: %v", job.ID, err)
@@ -74,11 +118,18 @@ func runMessageExportWorker(cfg MessageExportWorkerConfig) {
 	}
 }
 
-func acquireNextExportJob() (*model.MessageExportJobModel, error) {
+func isLogPDFExportJob(job *model.MessageExportJobModel) bool {
+	return job != nil && strings.EqualFold(job.Format, exportFormatPDF)
+}
+
+func acquireNextExportJob(skipPDF bool) (*model.MessageExportJobModel, error) {
 	db := model.GetDB()
 	var job model.MessageExportJobModel
-	if err := db.Where("status = ?", model.MessageExportStatusPending).
-		Order("created_at asc").
+	q := db.Where("status = ?", model.MessageExportStatusPending)
+	if skipPDF {
+		q = q.Where("format <> ?", exportFormatPDF)
+	}
+	if err := q.Order("created_at asc").
 		Limit(1).
 		Find(&job).Error; err != nil {
 		return nil, err
@@ -103,6 +154,10 @@ func acquireNextExportJob() (*model.MessageExportJobModel, error) {
 }
 
 func processExportJob(job *model.MessageExportJobModel, cfg MessageExportWorkerConfig) error {
+	return processExportJobContext(context.Background(), job, cfg)
+}
+
+func processExportJobContext(parent context.Context, job *model.MessageExportJobModel, cfg MessageExportWorkerConfig) error {
 	extraOptions := parseExportExtraOptions(job.ExtraOptions)
 	if len(extraOptions.BatchChannelIDs) > 0 {
 		if err := processBatchExportJob(job, cfg, extraOptions); err != nil {
@@ -110,6 +165,14 @@ func processExportJob(job *model.MessageExportJobModel, cfg MessageExportWorkerC
 			return err
 		}
 		return nil
+	}
+	if isLogPDFExportJob(job) {
+		if extraOptions.SourceKind != "log" {
+			err := fmt.Errorf("PDF 导出仅支持 LOG")
+			_ = markJobFailed(job, err)
+			return err
+		}
+		return processLogPDFExportJob(parent, job, cfg, extraOptions)
 	}
 	var messages []*model.MessageModel
 	var err error

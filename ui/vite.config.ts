@@ -17,6 +17,13 @@ export default defineConfig(({ mode }) => {
     base: './',
     build: {
       assetsInlineLimit: 0,
+      rollupOptions: {
+        input: {
+          main: fileURLToPath(new URL('./index.html', import.meta.url)),
+          // 后台 PDF Render Surface：服务端在回环 Render Session 中提供，不经过 SPA。
+          'log-pdf-render': fileURLToPath(new URL('./log-pdf-render.html', import.meta.url)),
+        },
+      },
     },
     worker: {
       format: 'es',

@@ -6570,11 +6570,11 @@ export const useChatStore = defineStore({
       return resp.data as ExportTaskListResponse;
     },
 
-    async downloadExportResult(taskId: string, fileNameHint?: string) {
+    async downloadExportResult(taskId: string, fileNameHint?: string, options?: { timeout?: number }) {
       const resp = await api.get<Blob>(`api/v1/chat/export/${taskId}`, {
         params: { download: 1 },
         responseType: 'blob',
-        timeout: 60000,
+        timeout: options?.timeout ?? 60000,
       });
       const headers = resp.headers ?? {};
       const disposition = (headers['content-disposition'] || headers['Content-Disposition']) as string | undefined;

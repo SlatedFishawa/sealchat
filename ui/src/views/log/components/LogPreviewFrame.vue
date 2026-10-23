@@ -14,6 +14,7 @@ import type { PreparedLogFrame } from '../composables/useLogAssets';
 
 const props = withDefaults(defineProps<{
   doc: FrameDocument | null;
+  frameRevision?: number;
   assetTokens: string[];
   prepareAssets: (doc: FrameDocument, tokens: string[], hasAsset: (token: string) => boolean) => Promise<PreparedLogFrame>;
   mode?: 'paged' | 'flow';
@@ -30,6 +31,7 @@ const props = withDefaults(defineProps<{
   canvas?: { color: string; dark: boolean; accent?: string } | null;
 }>(), {
   mode: 'paged',
+  frameRevision: 0,
   spread: false,
   design: false,
   canResizeImages: false,
@@ -43,8 +45,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'frame-event', event: FrameEvent): void;
-  (e: 'layout', result: FrameLayoutResult): void;
-  (e: 'layout-error', message: string): void;
+  (e: 'layout', result: FrameLayoutResult, frameRevision: number): void;
+  (e: 'layout-error', message: string, frameRevision: number): void;
   (e: 'busy', busy: boolean): void;
   (e: 'near-end'): void;
 }>();
@@ -80,6 +82,7 @@ const onEvent = (event: FrameEvent) => {
 const run = async () => {
   const e = engine.value;
   const doc = props.doc;
+  const frameRevision = props.frameRevision;
   if (!e || !doc) return;
   const rev = ++revision;
   busy.value = true;
@@ -102,9 +105,9 @@ const run = async () => {
       anchor: lastAnchor,
     }, rev);
     if (!result || rev !== revision) return;
-    emit('layout', result);
+    emit('layout', result, frameRevision);
   } catch (err) {
-    if (rev === revision) emit('layout-error', err instanceof Error ? err.message : String(err));
+    if (rev === revision) emit('layout-error', err instanceof Error ? err.message : String(err), frameRevision);
   } finally {
     if (rev === revision) {
       busy.value = false;
@@ -124,7 +127,7 @@ onMounted(() => {
   });
 });
 
-watch(() => [props.doc, props.mode, props.spread, props.design, props.canResizeImages] as const, () => {
+watch(() => [props.doc, props.frameRevision, props.mode, props.spread, props.design, props.canResizeImages] as const, () => {
   void run();
 });
 watch(() => props.selection, (ids) => engine.value?.select(ids.slice()), { deep: false });

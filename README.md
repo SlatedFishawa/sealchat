@@ -103,7 +103,7 @@ docker compose up -d
 | 我想…… | 文档 |
 | --- | --- |
 | 部署或升级 SealChat | [部署指南](doc/deployment.md) |
-| 修改配置、存储、SMTP 或 S3 | [配置指南](doc/configuration.md) |
+| 修改配置、存储、SMTP 、PDF或 S3 | [配置指南](doc/configuration.md) |
 | 备份、恢复或执行管理员操作 | [运维指南](doc/administration.md) |
 | 从源码构建或参与开发 | [开发指南](doc/development.md) |
 | 开发频道嵌入应用 | [Channel Embed API](doc/channel-embed-api-developer-guide.md) |

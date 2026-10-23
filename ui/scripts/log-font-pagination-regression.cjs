@@ -129,19 +129,27 @@ test('字体等待期间新修订覆盖旧修订；flow 与 paged 共用等待�
 });
 
 test('真实 LogFrameEngine 对已投递字体只补充新 chunk，不重复传输字节', async () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/services/log/pagination/logFrameHost.ts'), 'utf8');
   const messages = [];
-  const module = { exports: {} };
-  vm.runInNewContext(ts.transpileModule(source, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true },
-  }).outputText, {
-    module, exports: module.exports, require: name => {
-      assert.ok(name.endsWith('?raw'));
-      return '';
-    }, crypto, performance,
+  const globals = {
+    crypto, performance,
     MessageChannel: class { constructor() {
       this.port1 = { postMessage: message => messages.push(message), close() {} }; this.port2 = {};
     } },
+  };
+  // LogFrameEngine 复用 logFrameChannel 的通道实现；两者都按真实源码转译加载。
+  const load = (file, requireImpl) => {
+    const source = fs.readFileSync(path.join(__dirname, '../src/services/log/pagination', file), 'utf8');
+    const loaded = { exports: {} };
+    vm.runInNewContext(ts.transpileModule(source, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true },
+    }).outputText, { module: loaded, exports: loaded.exports, require: requireImpl, ...globals });
+    return loaded;
+  };
+  const channel = load('logFrameChannel.ts', name => assert.fail(`unexpected import ${name}`));
+  const module = load('logFrameHost.ts', name => {
+    if (name === './logFrameChannel') return channel.exports;
+    assert.ok(name.endsWith('?raw'));
+    return '';
   });
   const iframe = { setAttribute() {}, addEventListener() {}, removeEventListener() {}, contentWindow: { postMessage() {} } };
   const events = [];

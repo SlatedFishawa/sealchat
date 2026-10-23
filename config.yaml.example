@@ -129,6 +129,14 @@
     htmlPageSizeMax: 500
     htmlMaxConcurrency: 2
     diceCommandPrefixes: [".", "。"]  # 导出“移除掷骰指令”时识别的命令前缀，可按需改为 ["/"] 等
+    pdf:                # LOG 后台 PDF 导出；SealChat 不内置浏览器，需自行安装 chrome-headless-shell
+      enabled: true
+      renderer: chromium-cli
+      browserPath: ""   # 留空自动发现：程序目录 tools/chrome-headless-shell/ → PATH → 系统 Chromium/Chrome/Edge
+      mergerPath: ""    # pdfunite（poppler-utils）或 qpdf；缺失时超长 LOG 输出分段 PDF 压缩包
+      workerConcurrency: 1  # 同时运行的 PDF 任务数（1-4）
+      timeoutSeconds: 120   # 单个分段的渲染超时（15-1800 秒）
+      noSandbox: false      # 仅在容器等无法启用沙箱的环境中开启
 
   storage:
     mode: local        # local / s3 / auto，默认本地

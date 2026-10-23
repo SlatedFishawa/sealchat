@@ -83,6 +83,11 @@ type exportExtraOptions struct {
 	BatchFormat               string            `json:"batch_format,omitempty"`
 }
 
+// exportFormatPDF is only valid for LOG sources (background Chromium render);
+// it is intentionally absent from supportedExportFormats so channel and batch
+// exports cannot request it.
+const exportFormatPDF = "pdf"
+
 func normalizeExportFormat(format string) (string, bool) {
 	f := strings.ToLower(strings.TrimSpace(format))
 	_, ok := supportedExportFormats[f]
@@ -95,6 +100,12 @@ func CreateMessageExportJob(opts *ExportJobOptions) (*model.MessageExportJobMode
 		return nil, fmt.Errorf("导出参数不能为空")
 	}
 	format, ok := normalizeExportFormat(opts.Format)
+	if !ok && opts.SourceKind == "log" && strings.EqualFold(strings.TrimSpace(opts.Format), exportFormatPDF) {
+		if c := GetLogPDFCapability(); !c.Available {
+			return nil, logError("PDF_UNAVAILABLE", firstNonEmpty(c.Reason, "服务器未检测到 PDF 渲染器")+"，请改用浏览器打印")
+		}
+		format, ok = exportFormatPDF, true
+	}
 	if !ok {
 		return nil, fmt.Errorf("不支持的导出格式: %s", opts.Format)
 	}

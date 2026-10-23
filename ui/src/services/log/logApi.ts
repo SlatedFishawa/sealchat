@@ -21,7 +21,8 @@ export type LogErrorCode =
   | 'INVALID_INPUT' | 'UNAUTHENTICATED' | 'PERMISSION_DENIED' | 'NOT_FOUND'
   | 'VERSION_CONFLICT' | 'SOURCE_CHANGED' | 'SLUG_TAKEN' | 'TOO_LARGE'
   | 'INVALID_TEMPLATE' | 'RATE_LIMITED' | 'INTERNAL_ERROR' | 'PREVIEW_EXPIRED'
-  | 'INVALID_PATCH' | 'INVALID_IDENTITY' | 'NETWORK_ERROR' | 'COMMAND_FAILED';
+  | 'INVALID_PATCH' | 'INVALID_IDENTITY' | 'NETWORK_ERROR' | 'COMMAND_FAILED'
+  | 'PDF_UNAVAILABLE' | 'PDF_EXPORT_FAILED';
 
 /** 前端统一的 LOG 领域错误；REST 与 WS 命令错误都转换成它。 */
 export class LogDomainError extends Error {
@@ -123,6 +124,31 @@ export const createLogStandardExport = (projectId: string, input: LogStandardExp
   unwrap<{ task_id: string; status: string; message: string; requested_at: number }>(
     api.post(`api/v1/log/projects/${seg(projectId)}/export`, input),
   );
+
+/** 后台 PDF 只需要版本与文件名；排版、样式与分页全部来自已保存草稿。 */
+export interface LogPdfExportInput {
+  expectedDraftVersion: number;
+  format: 'pdf';
+  displayName: string;
+}
+
+export const createLogPdfExport = (projectId: string, input: LogPdfExportInput) =>
+  unwrap<{ task_id: string; status: string; message: string; requested_at: number }>(
+    api.post(`api/v1/log/projects/${seg(projectId)}/export`, input),
+  );
+
+/** 服务器后台 PDF 能力；不包含任何外部工具路径。 */
+export interface LogPdfCapability {
+  enabled: boolean;
+  available: boolean;
+  probing: boolean;
+  runtimeKind?: string;
+  mergerAvailable: boolean;
+  reason?: string;
+}
+
+export const fetchLogPdfCapability = () =>
+  unwrap<LogPdfCapability>(api.get('api/v1/log/pdf-capability'));
 
 export const fetchLogSectionMessages = (projectId: string, sectionId: string, cursor: string | null, limit = 100, signal?: AbortSignal) =>
   unwrap<LogMessageWindow>(api.get(`api/v1/log/projects/${seg(projectId)}/sections/${seg(sectionId)}/messages`, {

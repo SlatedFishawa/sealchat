@@ -47,8 +47,8 @@ func IsLogMessageExportJob(job *model.MessageExportJobModel) bool {
 // CreateLogMessageExportJob reuses the traditional export queue without assigning a channel.
 func CreateLogMessageExportJob(projectID, userID string, input LogExportInput) (*model.MessageExportJobModel, error) {
 	format := strings.ToLower(strings.TrimSpace(input.Format))
-	if format != "txt" && format != "docx" && format != "html" && format != "json" {
-		return nil, logError("INVALID_INPUT", "传统格式仅支持 txt / docx / html / json")
+	if format != "txt" && format != "docx" && format != "html" && format != "json" && format != exportFormatPDF {
+		return nil, logError("INVALID_INPUT", "导出格式仅支持 txt / docx / html / json / pdf")
 	}
 	extra := &exportExtraOptions{SourceKind: "log", LogProjectID: projectID, LogDraftVersion: input.ExpectedDraftVersion}
 	p, err := loadLogProjectForExport(userID, extra)

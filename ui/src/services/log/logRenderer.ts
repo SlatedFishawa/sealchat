@@ -611,14 +611,17 @@ export interface DesignNodeCacheEntry {
   node: RenderMessageNode;
 }
 
-export const composeDesignSection = (
+/**
+ * 设计态章节的规范顺序：sectionStart → (before, 消息, after)* → sectionEnd。
+ * composeDesignSection 与 designSectionToc 共用这一遍历，保证分片后的目录与整章预览一致。
+ */
+const walkDesignSection = (
   sectionId: string,
-  sectionTitle: string,
-  messages: LogDesignMessage[],
+  messageIds: string[],
   elements: LogElement[],
   complete: boolean,
-  nodeCache: Map<string, DesignNodeCacheEntry>,
-): SectionComposition => {
+  visit: { element: (e: LogElement) => void; message: (index: number) => void; started: () => void },
+) => {
   const own = elements.filter((e) => e.anchor.sectionId === sectionId).slice().sort((a, b) => a.order - b.order);
   const byAnchor = new Map<string, LogElement[]>();
   for (const e of own) {
@@ -627,38 +630,90 @@ export const composeDesignSection = (
     list.push(e);
     byAnchor.set(key, list);
   }
+  const pushElements = (key: string) => {
+    for (const e of byAnchor.get(key) || []) visit.element(e);
+  };
+  pushElements('sectionStart');
+  visit.started();
+  messageIds.forEach((id, index) => {
+    pushElements(`${id}:before`);
+    visit.message(index);
+    pushElements(`${id}:after`);
+  });
+  if (complete) pushElements('sectionEnd');
+  return own;
+};
+
+const headingTocEntry = (e: LogElement, n: RenderElementNode): TocEntry | null =>
+  e.type === 'heading' ? { targetId: n.id, text: n.fields.text || '', level: n.level || 1 } : null;
+
+export const composeDesignSection = (
+  sectionId: string,
+  sectionTitle: string,
+  messages: LogDesignMessage[],
+  elements: LogElement[],
+  complete: boolean,
+  nodeCache: Map<string, DesignNodeCacheEntry>,
+): SectionComposition => {
   const nodes: RenderNode[] = [];
   const anchorStates = new Map<string, AnchorState>();
   const toc: TocEntry[] = [];
-  const pushElements = (key: string) => {
-    for (const e of byAnchor.get(key) || []) {
+  let sectionMarker = 0;
+  const own = walkDesignSection(sectionId, messages.map((m) => m.message.id), elements, complete, {
+    element: (e) => {
       const n = designElementToNode(e);
       nodes.push(n);
       anchorStates.set(e.id, 'attached');
-      if (e.type === 'heading') toc.push({ targetId: n.id, text: n.fields.text || '', level: n.level || 1 });
-    }
-  };
-  pushElements('sectionStart');
-  const sectionMarker = nodes.length;
-  for (const item of messages) {
-    pushElements(`${item.message.id}:before`);
-    const cacheKey = `${item.version}:${item.capabilities.reorder ? 1 : 0}`;
-    let cached = nodeCache.get(item.message.id);
-    // 展示投影（便签/线索内容、引用）可在原消息版本不变时变化；重载后按对象身份失效。
-    if (!cached || cached.key !== cacheKey || cached.presentation !== item.presentation) {
-      cached = { key: cacheKey, presentation: item.presentation, node: designMessageToNode(item) };
-      nodeCache.set(item.message.id, cached);
-    }
-    nodes.push(cached.node);
-    pushElements(`${item.message.id}:after`);
-  }
-  if (complete) pushElements('sectionEnd');
+      const entry = headingTocEntry(e, n);
+      if (entry) toc.push(entry);
+    },
+    started: () => { sectionMarker = nodes.length; },
+    message: (index) => {
+      const item = messages[index];
+      const cacheKey = `${item.version}:${item.capabilities.reorder ? 1 : 0}`;
+      let cached = nodeCache.get(item.message.id);
+      // 展示投影（便签/线索内容、引用）可在原消息版本不变时变化；重载后按对象身份失效。
+      if (!cached || cached.key !== cacheKey || cached.presentation !== item.presentation) {
+        cached = { key: cacheKey, presentation: item.presentation, node: designMessageToNode(item) };
+        nodeCache.set(item.message.id, cached);
+      }
+      nodes.push(cached.node);
+    },
+  });
   for (const e of own) {
     if (!anchorStates.has(e.id)) anchorStates.set(e.id, complete ? 'orphaned' : 'unloaded');
   }
   const firstId = nodes[sectionMarker]?.id || nodes[0]?.id;
   if (firstId) toc.unshift({ targetId: firstId, text: sectionTitle, level: 1 });
   return { nodes, anchorStates, toc };
+};
+
+/**
+ * 只计算整章目录而不渲染消息：后台 PDF 把超长章节切成多段时，每段都需要整章目录，
+ * 但只持有本段消息。messageIds 为整章的消息顺序。
+ */
+export const designSectionToc = (
+  sectionId: string,
+  sectionTitle: string,
+  messageIds: string[],
+  elements: LogElement[],
+): TocEntry[] => {
+  const toc: TocEntry[] = [];
+  const ids: string[] = [];
+  let sectionMarker = 0;
+  walkDesignSection(sectionId, messageIds, elements, true, {
+    element: (e) => {
+      const n = designElementToNode(e);
+      ids.push(n.id);
+      const entry = headingTocEntry(e, n);
+      if (entry) toc.push(entry);
+    },
+    started: () => { sectionMarker = ids.length; },
+    message: (index) => { ids.push(messageIds[index]); },
+  });
+  const firstId = ids[sectionMarker] || ids[0];
+  if (firstId) toc.unshift({ targetId: firstId, text: sectionTitle, level: 1 });
+  return toc;
 };
 
 export const LOG_ELEMENT_LABELS: Record<LogElementType, string> = {

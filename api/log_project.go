@@ -9,7 +9,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"sealchat/pm"
-	"sealchat/protocol"
 	"sealchat/service"
 )
 
@@ -23,6 +22,7 @@ func bindLogProjectRoutes(auth fiber.Router) {
 	auth.Get("/log/layout/:slug", logAuthentication, logLayoutGet)
 	auth.Put("/log/projects/:id/draft", logAuthentication, logDraftPut)
 	auth.Post("/log/projects/:id/export", logAuthentication, logExportCreate)
+	auth.Get("/log/pdf-capability", logAuthentication, logPDFCapabilityGet)
 	auth.Get("/log/projects/:id/sections/:sectionId/messages", logAuthentication, logMessagesGet)
 	auth.Get("/log/projects/:id/sections/:sectionId/messages/:messageId/assets/:assetKey", logAuthentication, logBodyAssetGet)
 	auth.Get("/log/projects/:id/assets/:assetId", logAuthentication, logProjectAssetGet)
@@ -80,7 +80,7 @@ func logResponse(c *fiber.Ctx, data any, err error) error {
 	if !errors.As(err, &domain) {
 		domain = &service.LogError{Code: "INTERNAL_ERROR", Message: "LOG 操作失败"}
 	}
-	status := map[string]int{"INVALID_INPUT": 400, "INVALID_PATCH": 400, "INVALID_IDENTITY": 400, "PREVIEW_EXPIRED": 409, "UNAUTHENTICATED": 401, "PERMISSION_DENIED": 403, "NOT_FOUND": 404, "VERSION_CONFLICT": 409, "SOURCE_CHANGED": 409, "SLUG_TAKEN": 409, "TOO_LARGE": 413, "INVALID_TEMPLATE": 422, "RATE_LIMITED": 429}[domain.Code]
+	status := map[string]int{"INVALID_INPUT": 400, "INVALID_PATCH": 400, "INVALID_IDENTITY": 400, "PREVIEW_EXPIRED": 409, "UNAUTHENTICATED": 401, "PERMISSION_DENIED": 403, "NOT_FOUND": 404, "VERSION_CONFLICT": 409, "SOURCE_CHANGED": 409, "SLUG_TAKEN": 409, "TOO_LARGE": 413, "INVALID_TEMPLATE": 422, "RATE_LIMITED": 429, "PDF_UNAVAILABLE": 503}[domain.Code]
 	if status == 0 {
 		status = 500
 	}
@@ -192,18 +192,7 @@ func logMessagesGet(c *fiber.Ctx) error {
 		targetRank := targetRanks[m.UserID]
 		moderate := rank >= channelMemberRoleRankAdmin && rank > targetRank
 		edit := !m.IsRevoked && !m.IsDeleted && (own || (window.World.AllowAdminEditMessages && moderate))
-		messageData := m.ToProtocolType2(channelData)
-		if m.User != nil {
-			messageData.User = m.User.ToProtocolType()
-		} else if m.UserID != "" {
-			messageData.User = &protocol.User{ID: m.UserID}
-		}
-		if m.Member != nil {
-			messageData.Member = m.Member.ToProtocolType()
-			if messageData.User != nil {
-				messageData.Member.User = messageData.User
-			}
-		}
+		messageData := service.LogDesignMessageData(m, channelData)
 		item := fiber.Map{"message": messageData, "version": m.Version, "capabilities": fiber.Map{
 			"edit": edit, "changeIdentity": edit, "reorder": !m.IsDeleted && (own || reorderAll), "revoke": !m.IsDeleted && !m.IsRevoked && own, "remove": !m.IsDeleted && (own || systemAdmin || moderate), "editAppearance": edit,
 		}}

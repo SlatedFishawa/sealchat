@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"sealchat/model"
+	"sealchat/protocol"
 )
 
 type LogMessageWindow struct {
@@ -100,6 +101,25 @@ func logVerifyWindow(p *model.LogProjectModel, channelID string, version int64) 
 		return logError("SOURCE_CHANGED", "来源或排版范围已变化，请重新加载")
 	}
 	return nil
+}
+
+// LogDesignMessageData shapes one window message the way design reads expose it:
+// the protocol message plus its author user and member. The design API and the
+// background PDF render payload share it so both feed the renderer the same data.
+func LogDesignMessageData(m *model.MessageModel, channelData *protocol.Channel) *protocol.Message {
+	messageData := m.ToProtocolType2(channelData)
+	if m.User != nil {
+		messageData.User = m.User.ToProtocolType()
+	} else if m.UserID != "" {
+		messageData.User = &protocol.User{ID: m.UserID}
+	}
+	if m.Member != nil {
+		messageData.Member = m.Member.ToProtocolType()
+		if messageData.User != nil {
+			messageData.Member.User = messageData.User
+		}
+	}
+	return messageData
 }
 
 func QueryLogMessages(projectID, sectionID, userID, cursor, targetID string, limit int) (*LogMessageWindow, error) {

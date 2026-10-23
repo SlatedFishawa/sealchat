@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 设计工作台：页面级编排。草稿控制器、章节消息窗口、样式包、预览与选择在此组合；
 // 具体面板各自负责一块交互。认证与写入只发生在外层，iframe 只接收安全渲染模型。
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, toRaw, watch, type Component } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, toRaw, watch, type Component } from 'vue';
 import { useDialog, useMessage, type DropdownOption } from 'naive-ui';
 import { useMediaQuery } from '@vueuse/core';
 import { useRouter } from 'vue-router';
@@ -20,6 +20,7 @@ import {
   Pencil,
   Photo,
   Plus,
+  Printer,
   Rocket,
   Search,
   Stack2,
@@ -46,7 +47,7 @@ import {
   designStyleFromPackage,
   type DesignNodeCacheEntry,
 } from '@/services/log/logRenderer';
-import type { FrameDocument, FrameEvent, FrameLayoutResult } from '@/services/log/pagination/logFrameHost';
+import type { FrameDocument, FrameEvent, FrameLayoutResult, FramePrintRange } from '@/services/log/pagination/logFrameHost';
 import { updateDraftImageWidth } from '@/services/log/logImageLayout';
 import type { LogAnchor, LogDesignMessage, LogElementType, LogProjectContext, LogProtocolMessage, LogSection, LogStylePackage } from '@/types/log';
 import { LOG_ELEMENT_TYPES } from '@/types/log';
@@ -72,6 +73,8 @@ import LogPublishPanel from './LogPublishPanel.vue';
 import LogAssetsPanel from './LogAssetsPanel.vue';
 import LogInsertElementDialog from './LogInsertElementDialog.vue';
 import LogStandardExportDialog from './LogStandardExportDialog.vue';
+import LogPdfExportDialog from './LogPdfExportDialog.vue';
+import LogPrintDialog from './LogPrintDialog.vue';
 
 const props = defineProps<{ context: LogProjectContext; slug: string }>();
 const emit = defineEmits<{ (e: 'reload'): void }>();
@@ -200,11 +203,12 @@ const viewModes = [
   { value: 'flow', label: '流式' },
 ] as const;
 const zoom = ref(1);
-const frame = shallowRef<{ doc: FrameDocument; assetTokens: string[]; issues: string[] } | null>(null);
+const frame = shallowRef<{ doc: FrameDocument; assetTokens: string[]; issues: string[]; revision: number } | null>(null);
+let frameRevision = 0;
 let lastDocJson = '';
 let buildTimer: ReturnType<typeof setTimeout> | null = null;
 
-const rebuild = () => {
+const rebuild = (force = false) => {
   const comp = composition.value;
   if (!comp) {
     frame.value = null;
@@ -224,9 +228,9 @@ const rebuild = () => {
     imageWidths: d.imageWidths,
   });
   const json = JSON.stringify(result.doc);
-  if (json === lastDocJson && frame.value) return;
+  if (!force && json === lastDocJson && frame.value) return;
   lastDocJson = json;
-  frame.value = { doc: result.doc, assetTokens: result.assetTokens, issues: result.issues };
+  frame.value = { doc: result.doc, assetTokens: result.assetTokens, issues: result.issues, revision: ++frameRevision };
 };
 watch([composition, activePkg, () => draft.value.page, () => draft.value.themeTokens, () => draft.value.title, () => draft.value.imageWidths], () => {
   if (buildTimer) clearTimeout(buildTimer);
@@ -240,9 +244,16 @@ const layoutInfo = shallowRef<FrameLayoutResult | null>(null);
 const layoutError = ref('');
 const layoutBusy = ref(false);
 const previewRef = ref<InstanceType<typeof LogPreviewFrame> | null>(null);
-const onLayout = (r: FrameLayoutResult) => {
+let printLayoutWaiter: { targetRevision: number; resolve: (r: FrameLayoutResult) => void; reject: (e: Error) => void } | null = null;
+const onLayout = (r: FrameLayoutResult, revision: number) => {
+  if (revision < frameRevision) return;
   layoutInfo.value = r;
   layoutError.value = '';
+  if (printLayoutWaiter && revision >= printLayoutWaiter.targetRevision) {
+    const waiter = printLayoutWaiter;
+    printLayoutWaiter = null;
+    waiter.resolve(r);
+  }
   if (relocateScrollId && r.map[relocateScrollId]) {
     previewRef.value?.scrollTo(relocateScrollId, true);
     relocateScrollId = null;
@@ -879,6 +890,87 @@ const sectionOptions = computed(() => chapters.value.map((c, i) => (c.sections.l
     })));
 const sectionsShow = ref(false);
 const exportShow = ref(false);
+const pdfShow = ref(false);
+
+// ---- 浏览器打印（后台 PDF 不可用时的降级路径）：完整加载当前来源片段并切到纸张模式后复用预览打印 ----
+const onLayoutError = (message: string, revision: number) => {
+  if (revision < frameRevision) return;
+  layoutError.value = message;
+  if (!printLayoutWaiter) return;
+  const waiter = printLayoutWaiter;
+  printLayoutWaiter = null;
+  waiter.reject(new Error(message || '打印排版失败'));
+};
+const waitForPrintLayout = (targetRevision: number, timeoutMs = 120000) => new Promise<FrameLayoutResult>((resolve, reject) => {
+  const timer = setTimeout(() => {
+    printLayoutWaiter = null;
+    reject(new Error('等待排版超时，请稍后重试'));
+  }, timeoutMs);
+  printLayoutWaiter = {
+    targetRevision,
+    resolve: (r) => { clearTimeout(timer); resolve(r); },
+    reject: (e) => { clearTimeout(timer); reject(e); },
+  };
+});
+const printShow = ref(false);
+const printBusy = ref(false);
+const printError = ref('');
+const printPageCount = computed(() => layoutInfo.value?.pageCount || 0);
+const loadWholeSectionForPrint = async () => {
+  const sectionAtStart = querySection.value?.id;
+  while (!win.complete.value) {
+    if (querySection.value?.id !== sectionAtStart) throw new Error('打印准备已取消：来源片段已切换');
+    if (win.error.value) throw new Error(win.error.value);
+    if (win.loading.value) {
+      await new Promise<void>((resolve) => {
+        const stopWatch = watch(win.loading, (busy) => {
+          if (busy) return;
+          stopWatch();
+          resolve();
+        });
+      });
+      continue;
+    }
+    if (win.nextCursor.value === null) break;
+    await win.loadMore();
+  }
+  if (win.error.value) throw new Error(win.error.value);
+};
+const startBrowserPrint = async () => {
+  if (printBusy.value || !previewRef.value) return;
+  printBusy.value = true;
+  printError.value = '';
+  try {
+    await loadWholeSectionForPrint();
+    // 先排空 Vue 的数据监听，再同步刷新 debounce 中的文档。旧 Frame 的结果不能完成此 waiter。
+    await nextTick();
+    if (buildTimer) clearTimeout(buildTimer);
+    buildTimer = null;
+    if (viewMode.value === 'flow') viewMode.value = 'single';
+    rebuild(true);
+    if (!frame.value) throw new Error('当前来源片段没有可打印页面');
+    const result = await waitForPrintLayout(frame.value.revision);
+    if (!result?.pageCount) throw new Error('当前来源片段没有可打印页面');
+  } catch (error) {
+    printLayoutWaiter = null;
+    printError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    printBusy.value = false;
+  }
+  printShow.value = true;
+};
+const runPrint = async (range?: FramePrintRange) => {
+  if (printBusy.value || !previewRef.value) return;
+  printBusy.value = true;
+  printError.value = '';
+  try {
+    await previewRef.value.print(range);
+  } catch (error) {
+    printError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    printBusy.value = false;
+  }
+};
 
 const saveStatusText = computed(() => ({
   saved: '已保存',
@@ -1039,6 +1131,15 @@ onBeforeUnmount(() => {
           </template>
           按当前 LOG 编排顺序导出传统格式
         </n-tooltip>
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <n-button size="small" quaternary :circle="narrow" aria-label="导出 PDF" :disabled="!sections.length" @click="pdfShow = true">
+              <template #icon><n-icon :component="Printer" /></template>
+              <span v-if="!narrow">PDF</span>
+            </n-button>
+          </template>
+          后台生成整份 LOG 的 PDF，或使用浏览器打印当前片段
+        </n-tooltip>
         <n-button
           size="small"
           type="primary"
@@ -1110,8 +1211,9 @@ onBeforeUnmount(() => {
           :title="`${draft.title} 排版预览`"
           @frame-event="onFrameEvent"
           @near-end="onNearEnd"
+          :frame-revision="frame?.revision || 0"
           @layout="onLayout"
-          @layout-error="(m: string) => (layoutError = m)"
+          @layout-error="onLayoutError"
           @busy="(b: boolean) => (layoutBusy = b)"
         />
 
@@ -1330,6 +1432,22 @@ onBeforeUnmount(() => {
       v-model:show="exportShow"
       :project-id="projectId"
       :draft-ctl="draftCtl"
+    />
+
+    <LogPdfExportDialog
+      v-if="pdfShow"
+      v-model:show="pdfShow"
+      :project-id="projectId"
+      :draft-ctl="draftCtl"
+      :title="draft.title"
+      @browser-print="startBrowserPrint"
+    />
+    <LogPrintDialog
+      v-model:show="printShow"
+      :page-count="printPageCount"
+      :busy="printBusy"
+      :error-text="printError"
+      @print="runPrint"
     />
 
     <LogSectionsDialog
