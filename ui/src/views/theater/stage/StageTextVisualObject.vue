@@ -4,6 +4,7 @@ import RichTextContent from '@/components/rich-text/RichTextContent.vue'
 import { WORLD_UNIT_PX, type StageEmbedEventPublished, type StageEntrancePlayback, type StageObject } from '../shared/stage-types'
 import { compareStageLayersBottomToTop } from './stage-layer-order'
 import { resolveStageDomVisualTransform, type StageDomVisualTransform } from './stage-dom-visual-preview'
+import type { StageViewportSize } from './stage-coordinate-space'
 import StageIframeVisualObject from './StageIframeVisualObject.vue'
 import type { ChatCharactersSnapshotPayload } from '../bridge/theater-bridge-protocol'
 
@@ -15,6 +16,7 @@ const props = defineProps<{
   entrancePlaybacks: Record<string, StageEntrancePlayback>
   hiddenObjectIds: Set<string>
   visualTransforms?: Readonly<Record<string, StageDomVisualTransform>>
+  viewport: StageViewportSize
   characterSnapshot: ChatCharactersSnapshotPayload
   worldId?: string
   channelId?: string
@@ -46,10 +48,10 @@ const entranceClass = computed(() => {
 
 const style = computed(() => {
   const { width, height } = props.object.transform
-  const transform = resolveStageDomVisualTransform(props.object, props.visualTransforms)
+  const transform = resolveStageDomVisualTransform(props.object, props.objects, props.viewport, props.visualTransforms)
   return {
-    left: `${transform.x * WORLD_UNIT_PX}px`,
-    top: `${transform.y * WORLD_UNIT_PX}px`,
+    left: `${transform.x}px`,
+    top: `${transform.y}px`,
     width: `${Math.max(0.5, width) * WORLD_UNIT_PX}px`,
     height: `${Math.max(0.5, height) * WORLD_UNIT_PX}px`,
     transform: `translate(-50%, -50%) rotate(${transform.rotation}deg) scale(${transform.scaleX}, ${transform.scaleY})`,
@@ -157,6 +159,7 @@ onBeforeUnmount(() => {
       :entrance-playbacks="props.entrancePlaybacks"
       :hidden-object-ids="props.hiddenObjectIds"
       :visual-transforms="props.visualTransforms"
+      :viewport="props.viewport"
       :character-snapshot="props.characterSnapshot"
       @embed-event-published="emit('embedEventPublished', $event)"
     />

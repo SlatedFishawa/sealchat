@@ -130,6 +130,9 @@ type theaterObjectInput struct {
 	ScaleY              *float64        `json:"scaleY,omitempty"`
 	Z                   float64         `json:"z"`
 	OrderKey            string          `json:"orderKey"`
+	CoordinateSpace     string          `json:"coordinateSpace,omitempty"`
+	ViewportX           *float64        `json:"viewportX,omitempty"`
+	ViewportY           *float64        `json:"viewportY,omitempty"`
 	Visible             *bool           `json:"visible"`
 	Locked              bool            `json:"locked"`
 	AspectRatioLocked   *bool           `json:"aspectRatioLocked"`
@@ -888,6 +891,15 @@ func validateObjectInput(object *theaterObjectInput) error {
 	if object.Width < 0 || object.Height < 0 || object.Width > 1000000 || object.Height > 1000000 {
 		return theaterPayloadError("object 尺寸无效")
 	}
+	if err := validateTheaterObjectCoordinateSpace(object.Kind, object.CoordinateSpace, object.CoordinateSpace != ""); err != nil {
+		return err
+	}
+	if object.ViewportX != nil && !validTheaterViewportPosition(*object.ViewportX) {
+		return theaterPayloadError("object viewportX 无效")
+	}
+	if object.ViewportY != nil && !validTheaterViewportPosition(*object.ViewportY) {
+		return theaterPayloadError("object viewportY 无效")
+	}
 	if len([]rune(object.Name)) > 512 || len(object.OrderKey) > 128 {
 		return theaterPayloadError("object 字符串超限")
 	}
@@ -1146,7 +1158,7 @@ func validateObjectFields(fields map[string]any, characterOnly bool) error {
 	if len(fields) == 0 {
 		return theaterPayloadError("fields 不能为空")
 	}
-	allowed := map[string]bool{"sceneId": true, "parentId": true, "name": true, "x": true, "y": true, "width": true, "height": true, "rotation": true, "scale": true, "scaleX": true, "scaleY": true, "z": true, "orderKey": true, "visible": true, "locked": true, "aspectRatioLocked": true, "interactive": true, "editable": true, "content": true, "actions": true, "metadata": true}
+	allowed := map[string]bool{"sceneId": true, "parentId": true, "name": true, "x": true, "y": true, "width": true, "height": true, "rotation": true, "scale": true, "scaleX": true, "scaleY": true, "z": true, "orderKey": true, "coordinateSpace": true, "viewportX": true, "viewportY": true, "visible": true, "locked": true, "aspectRatioLocked": true, "interactive": true, "editable": true, "content": true, "actions": true, "metadata": true}
 	if characterOnly {
 		allowed = map[string]bool{"x": true, "y": true, "width": true, "height": true, "rotation": true, "z": true, "orderKey": true, "visible": true, "locked": true, "content": true, "metadata": true}
 	}
@@ -1174,6 +1186,20 @@ func validateObjectFields(fields map[string]any, characterOnly bool) error {
 			}
 		}
 	}
+	if value, ok := fields["coordinateSpace"]; ok {
+		space, valid := value.(string)
+		if !valid || (space != TheaterObjectCoordinateSpaceWorld && space != TheaterObjectCoordinateSpaceViewport) {
+			return theaterPayloadError("object coordinateSpace 无效")
+		}
+	}
+	for _, name := range []string{"viewportX", "viewportY"} {
+		if value, ok := fields[name]; ok {
+			position, valid := theaterNumericValue(value)
+			if !valid || !validTheaterViewportPosition(position) {
+				return theaterPayloadError("object " + name + " 无效")
+			}
+		}
+	}
 	if actions, ok := fields["actions"]; ok {
 		raw, err := json.Marshal(actions)
 		if err != nil {
@@ -1184,6 +1210,39 @@ func validateObjectFields(fields map[string]any, characterOnly bool) error {
 		}
 	}
 	return rejectUnsafeTheaterJSON(fields)
+}
+
+const (
+	TheaterObjectCoordinateSpaceWorld    = "world"
+	TheaterObjectCoordinateSpaceViewport = "viewport"
+	// Normalized root center over the viewport; a little overflow allows partly off-screen objects.
+	theaterViewportPositionMin = -1.0
+	theaterViewportPositionMax = 2.0
+)
+
+func validTheaterViewportPosition(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= theaterViewportPositionMin && value <= theaterViewportPositionMax
+}
+
+// Effects already render on their own design canvas and cannot become screen-fixed objects.
+func validateTheaterObjectCoordinateSpace(kind, space string, explicit bool) error {
+	if !explicit {
+		return nil
+	}
+	if space != TheaterObjectCoordinateSpaceWorld && space != TheaterObjectCoordinateSpaceViewport {
+		return theaterPayloadError("object coordinateSpace 无效")
+	}
+	if space == TheaterObjectCoordinateSpaceViewport && kind == "effect" {
+		return theaterPayloadError("特效不能设为屏幕固定")
+	}
+	return nil
+}
+
+func normalizedTheaterObjectCoordinateSpace(space string) string {
+	if space == TheaterObjectCoordinateSpaceViewport {
+		return TheaterObjectCoordinateSpaceViewport
+	}
+	return TheaterObjectCoordinateSpaceWorld
 }
 
 func theaterNumericValue(value any) (float64, bool) {

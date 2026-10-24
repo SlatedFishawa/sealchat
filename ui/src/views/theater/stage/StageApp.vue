@@ -86,6 +86,7 @@ import {
   createDefaultStageImageAnnotation,
   normalizeStageImageAnnotation,
   normalizeStageIframeContent,
+  normalizeStageViewportPosition,
   normalizeStageAudioRef,
   normalizeStageMusicSnapshot,
   normalizeStageEntranceConfig,
@@ -116,6 +117,7 @@ import {
   type StageMusicPlaylistMode,
   type StageMusicTrackType,
   type StageObject,
+  type StageObjectCoordinateSpace,
   type StageObjectFit,
   type StagePointerTrace,
   type StagePointerTraceInput,
@@ -131,6 +133,17 @@ import { stageActionSchema, type ChatCharactersSnapshotPayload, type ChatClueAcc
 import { syncStageObjectHierarchy } from './stage-layering'
 import { compareStageLayersBottomToTop, compareStageLayersTopToBottom, planStageObjectRenderBands, stageObjectHasDomVisualDescendant } from './stage-layer-order'
 import { createStageDomVisualPreview } from './stage-dom-visual-preview'
+import {
+  commitStageNodePosition,
+  convertStageRootCoordinateSpace,
+  stageObjectEffectiveCoordinateSpace,
+  stageObjectNodeRenderTransform,
+  stageObjectTreeRoot,
+  stageScreenPoseToRootPose,
+  stageViewportBandCamera,
+  type StageRootPose,
+  type StageWorldCameraTransform,
+} from './stage-coordinate-space'
 import { buildStageLayerRows, stageLayerSelectionExpansionIds } from './stage-layer-tree'
 import { stageSelectionRootIds } from './stage-selection'
 import { stageSceneTransitionKeyframes, stageSceneTransitionOptions, stageSurfaceTransitionFrame } from './stage-scene-transition'
@@ -191,7 +204,7 @@ import StageImageAnnotationEditor from './StageImageAnnotationEditor.vue'
 import TheaterActionSequenceEditor from './TheaterActionSequenceEditor.vue'
 import TheaterRandomTableEditor from './TheaterRandomTableEditor.vue'
 import TheaterClueActionEditor from './TheaterClueActionEditor.vue'
-import type { TheaterStageStore } from './StageStore'
+import type { StageObjectReparentTransform, TheaterStageStore } from './StageStore'
 import { createStageSequenceAction, isStageSequenceAction } from '../shared/stage-actions'
 import { resolveTheaterReducedMotion } from '../shared/theater-reduced-motion'
 import {
@@ -2902,7 +2915,7 @@ let gridTopCameraGroup: Konva.Group | null = null
 let gridGroup: Konva.Group | null = null
 let objectRoot: Konva.Group | null = null
 // Band 0 belongs to worldLayer/worldCameraGroup/objectRoot and is never destroyed here.
-const extraObjectRenderBands: Array<{ layer: Konva.Layer; camera: Konva.Group; root: Konva.Group }> = []
+const extraObjectRenderBands: Array<{ layer: Konva.Layer; camera: Konva.Group; root: Konva.Group; space: StageObjectCoordinateSpace }> = []
 const rootStackingOrder = ref<Record<string, number>>({})
 const TOP_VISUAL_LAYER_Z = 9990
 let sceneMorphStage: Konva.Stage | null = null
@@ -2985,6 +2998,38 @@ const snapDrawingPoint = (tool: StageDrawingTool, position: { x: number, y: numb
   tool === 'pen' || tool === 'highlighter' ? position : snapStagePosition(position)
 )
 
+// World camera as Konva reports it; conversions between stage px and world px go through this.
+const worldCameraTransform = (): StageWorldCameraTransform | null => {
+  if (!worldCameraGroup) return null
+  const transform = worldCameraGroup.getAbsoluteTransform().copy()
+  const inverse = transform.copy().invert()
+  return {
+    worldToScreen: point => transform.point(point),
+    screenToWorld: point => inverse.point(point),
+    scale: Math.max(0.000001, worldCameraGroup.getAbsoluteScale().x),
+  }
+}
+
+const objectCoordinateSpace = (object: StageObject) => stageObjectEffectiveCoordinateSpace(object, stageObjects.value)
+
+const objectNodeRenderTransform = (object: StageObject) => (
+  stageObjectNodeRenderTransform(object, stageObjects.value, viewportSize.value)
+)
+
+// Commits a dragged/transformed node position to transform.x/y or, for screen-fixed roots, viewportX/Y.
+const commitObjectNodePosition = (object: StageObject, node: Konva.Node) => commitStageNodePosition(
+  object,
+  props.store.activeObjects.value,
+  node.position(),
+  viewportSize.value,
+)
+
+// Screen-fixed objects do not take part in world map grid snapping (first version).
+const nodeUsesWorldGrid = (node: Konva.Node) => {
+  const object = getObject(String(node.getAttr('stageObjectId') || ''))
+  return !object || objectCoordinateSpace(object) === 'world'
+}
+
 const cameraForNode = (node: Konva.Node) => {
   let ancestor = node.getParent()
   while (ancestor && ancestor.getParent() && !(ancestor.getParent() instanceof Konva.Layer)) {
@@ -2995,7 +3040,7 @@ const cameraForNode = (node: Konva.Node) => {
 
 const beginNodeGridSnap = (node: Konva.Node) => {
   const cameraGroup = cameraForNode(node)
-  if (!gridSnapEnabled.value || !cameraGroup) {
+  if (!gridSnapEnabled.value || !cameraGroup || !nodeUsesWorldGrid(node)) {
     gridNodeSnapSession = null
     return
   }
@@ -3027,7 +3072,7 @@ const snapStageCoordinateWithHysteresis = (
   : snapStageCoordinate(value, axis)
 
 const snapNodeToGrid = (node: Konva.Node) => {
-  if (!gridSnapEnabled.value) return { x: 0, y: 0 }
+  if (!gridSnapEnabled.value || !nodeUsesWorldGrid(node)) return { x: 0, y: 0 }
   if (gridNodeSnapSession?.node !== node) beginNodeGridSnap(node)
   const session = gridNodeSnapSession
   if (!session) return { x: 0, y: 0 }
@@ -3063,6 +3108,7 @@ const beginGridResize = () => {
     !object
     || object.type === 'group'
     || object.type === 'effect'
+    || objectCoordinateSpace(object) === 'viewport'
     || object.aspectRatioLocked
     || !anchor
     || anchor === 'rotater'
@@ -3855,11 +3901,7 @@ const finishObjectTransition = (object: StageObject, node: Konva.Group) => {
   objectEntranceTweens.get(object.id)?.destroy()
   objectEntranceTweens.delete(object.id)
   node.setAttrs({
-    x: object.transform.x * WORLD_UNIT_PX,
-    y: object.transform.y * WORLD_UNIT_PX,
-    rotation: object.transform.rotation,
-    scaleX: object.transform.scaleX,
-    scaleY: object.transform.scaleY,
+    ...objectNodeRenderTransform(object),
     opacity: 1,
   })
   node.setAttr('clipX', undefined)
@@ -3886,11 +3928,7 @@ const playObjectTransition = (object: StageObject, node: Konva.Group, direction:
     return
   }
   const target = {
-    x: object.transform.x * WORLD_UNIT_PX,
-    y: object.transform.y * WORLD_UNIT_PX,
-    rotation: object.transform.rotation,
-    scaleX: object.transform.scaleX,
-    scaleY: object.transform.scaleY,
+    ...objectNodeRenderTransform(object),
     opacity: 1,
   }
   const duration = config.durationMs / 1_000
@@ -4196,7 +4234,11 @@ const stageObjects = computed<Record<string, StageObject>>(() => ({
 const selectedObjects = props.store.selectedObjects
 const selectedIdSet = computed(() => new Set(props.store.selection.selectedIds))
 const isBatchSelection = computed(() => props.store.selection.bulkMode && selectedObjects.value.length > 1)
-const batchMoveBlocked = computed(() => isBatchSelection.value && props.store.selectionGroup.value.lockedIds.length > 0)
+// World and screen-fixed roots have no shared coordinate delta: batch geometry stays disabled, while
+// non-geometric batch operations (delete, copy, visibility, locks) keep working.
+const batchMixedCoordinateSpaces = computed(() => isBatchSelection.value && props.store.selectionGroup.value.mixedCoordinateSpaces)
+const batchHasLockedObjects = computed(() => isBatchSelection.value && props.store.selectionGroup.value.lockedIds.length > 0)
+const batchMoveBlocked = computed(() => batchHasLockedObjects.value || batchMixedCoordinateSpaces.value)
 
 const toggleSelectedDrawingFill = (checked: boolean) => {
   const drawing = selectedObject.value?.drawing
@@ -4260,6 +4302,64 @@ const updateSelectedAspectRatioLocked = (checked: boolean) => {
     syncObjects()
     updateTransformer()
   })
+}
+
+// Screen-fixed state belongs to the top-level root, so a child or group edits its whole tree.
+const selectedCoordinateRoot = computed(() => selectedObject.value
+  ? stageObjectTreeRoot(selectedObject.value, props.store.activeObjects.value)
+  : null)
+const selectedScreenFixed = computed(() => selectedCoordinateRoot.value?.coordinateSpace === 'viewport')
+const selectedScreenFixedAppliesToTree = computed(() => Boolean(selectedObject.value && selectedCoordinateRoot.value) && (
+  selectedCoordinateRoot.value!.id !== selectedObject.value!.id || selectedObject.value!.type === 'group'
+))
+const selectedUsesViewportPosition = computed(() => selectedScreenFixed.value
+  && selectedCoordinateRoot.value?.id === selectedObject.value?.id)
+const batchCoordinateRoots = computed(() => [...new Map(selectedObjects.value.map((object) => {
+  const root = stageObjectTreeRoot(object, props.store.activeObjects.value)
+  return [root.id, root] as const
+})).values()].filter((root) => root.type !== 'effect'))
+const batchScreenFixedChecked = computed(() => batchCoordinateRoots.value.length > 0
+  && batchCoordinateRoots.value.every((root) => root.coordinateSpace === 'viewport'))
+
+// Each root converts with the live world camera and viewport, so the switch is visually still.
+const setRootsScreenFixed = (roots: StageObject[], screenFixed: boolean) => {
+  const camera = worldCameraTransform()
+  if (!camera || !canEditAllObjects.value) return
+  const poses: Record<string, StageRootPose> = {}
+  for (const root of roots) {
+    const pose = convertStageRootCoordinateSpace(root, screenFixed ? 'viewport' : 'world', camera, viewportSize.value)
+    if (pose && 'error' in pose) {
+      stageMessage.warning(pose.error === 'scale-out-of-range'
+        ? '无法保持当前视觉大小：目标坐标空间的缩放超出 0.01～100，未切换屏幕固定'
+        : '无法保持当前位置：目标视口位置超出 -100%～200%，未切换屏幕固定')
+      return
+    }
+    if (pose) poses[root.id] = pose
+  }
+  if (!Object.keys(poses).length) return
+  props.store.beginObjectEdit(screenFixed ? '设为屏幕固定' : '取消屏幕固定')
+  props.store.setRootCoordinateSpaces(poses)
+  props.store.commitObjectEdit()
+  nextTick(() => {
+    syncObjects()
+    updateTransformer()
+  })
+}
+
+const updateSelectedScreenFixed = (checked: boolean) => {
+  const root = selectedCoordinateRoot.value
+  if (root && root.type !== 'effect') setRootsScreenFixed([root], checked)
+}
+
+const updateBatchScreenFixed = (checked: boolean) => {
+  if (batchMixedCoordinateSpaces.value) return
+  setRootsScreenFixed(batchCoordinateRoots.value, checked)
+}
+
+const updateSelectedViewportPosition = (key: 'viewportX' | 'viewportY', percent: number | null) => {
+  const object = selectedObject.value
+  if (!object || !selectedUsesViewportPosition.value || percent === null || !Number.isFinite(percent)) return
+  object[key] = normalizeStageViewportPosition(Number((percent / 100).toFixed(6)))
 }
 
 const updateSelectedDimension = (dimension: 'width' | 'height', value: number | null) => {
@@ -4854,7 +4954,9 @@ const applyCamera = () => {
   sceneMorphTextCameras.forEach((camera) => {
     camera.style.transform = `translate(${position.x}px, ${position.y}px) scale(${scale.x})`
   })
-  extraObjectRenderBands.forEach(({ camera }) => {
+  // Viewport bands keep the viewport frame; only world bands follow the scene camera.
+  extraObjectRenderBands.forEach(({ camera, space }) => {
+    if (space !== 'world') return
     camera.position(position)
     camera.scale(scale)
   })
@@ -4908,8 +5010,7 @@ const syncSelectionGroupHitArea = (nodes: Konva.Group[]) => {
 
 const applyObjectNodeTransform = (node: Konva.Group, object: StageObject) => {
   if (object.type === 'group') {
-    object.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-    object.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+    commitObjectNodePosition(object, node)
     object.transform.rotation = Number(node.rotation().toFixed(6))
     object.transform.scaleX = Number(Math.min(100, Math.max(0.01, node.scaleX())).toFixed(6))
     object.transform.scaleY = Number(Math.min(100, Math.max(0.01, node.scaleY())).toFixed(6))
@@ -4918,8 +5019,7 @@ const applyObjectNodeTransform = (node: Konva.Group, object: StageObject) => {
   object.transform.width = Number((Math.max(12, object.transform.width * WORLD_UNIT_PX * node.scaleX()) / WORLD_UNIT_PX).toFixed(6))
   object.transform.height = Number((Math.max(12, object.transform.height * WORLD_UNIT_PX * node.scaleY()) / WORLD_UNIT_PX).toFixed(6))
   object.transform.rotation = Number(node.rotation().toFixed(6))
-  object.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-  object.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+  commitObjectNodePosition(object, node)
   object.transform.scaleX = 1
   object.transform.scaleY = 1
   node.scale({ x: 1, y: 1 })
@@ -5762,6 +5862,9 @@ const prepareSceneMorph = (captureCurrent: boolean, sceneId: string, previousSce
       if (!node) return
       const root = !object.parentId || !previousSceneObjects[object.parentId]
       if (!root) return
+      // Screen-fixed roots are excluded from shared-element morph (first version): morph ghosts
+      // live in world-camera layers. Scene transitions and entrances still apply to them.
+      if (object.coordinateSpace === 'viewport') return
       const ghost = root ? node.clone({ listening: false }) as Konva.Group : null
       const textElement = root ? stageTextVisualElement(object.id) : null
       const textGhost = textElement ? textElement.cloneNode(true) as HTMLElement : null
@@ -5808,6 +5911,7 @@ const primeSceneMorphTargets = () => {
   const sceneObjects = Object.values(props.store.state.liveState.sceneObjects)
     .filter((object) => !isTheaterEffectObject(object))
     .filter((object) => !object.parentId || !props.store.state.liveState.sceneObjects[object.parentId])
+    .filter((object) => object.coordinateSpace !== 'viewport')
   snapshot.matches = matchSceneMorphObjects(snapshot.previous, sceneObjects)
   snapshot.targetAttrs.clear()
   snapshot.targetGhosts.forEach((ghost) => ghost.destroy())
@@ -6228,9 +6332,14 @@ const applyRendererView = async (command: TheaterRendererCommand) => {
     camera.x = camera.y = 0
     camera.zoom = Math.max(0.01, Math.min(100, viewportSize.value.width / (props.store.state.liveState.fieldWidth * WORLD_UNIT_PX), viewportSize.value.height / (props.store.state.liveState.fieldHeight * WORLD_UNIT_PX)) * 0.9)
   } else if (command.operation === 'focus_object') {
-    const bounds = rendererObjectBounds(payload.objectIds?.[0] || '')
-    camera.x += viewportSize.value.width / 2 - bounds.x - bounds.width / 2
-    camera.y += viewportSize.value.height / 2 - bounds.y - bounds.height / 2
+    const objectId = payload.objectIds?.[0] || ''
+    const bounds = rendererObjectBounds(objectId)
+    const object = getObject(objectId)
+    // A screen-fixed object keeps its viewport placement; panning the world camera would not move it.
+    if (!object || objectCoordinateSpace(object) === 'world') {
+      camera.x += viewportSize.value.width / 2 - bounds.x - bounds.width / 2
+      camera.y += viewportSize.value.height / 2 - bounds.y - bounds.height / 2
+    }
   } else if (command.operation === 'select_objects') {
     props.store.setSelectedObjectIds(payload.objectIds || [])
   } else if (command.operation === 'clear_selection') props.store.clearSelection()
@@ -7704,9 +7813,7 @@ const createObjectNode = (object: StageObject) => {
       multiDrag = null
       currentDrag.nodes.forEach(({ node }, id) => {
         const current = getObject(id)
-        if (!current) return
-        current.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-        current.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+        if (current) commitObjectNodePosition(current, node)
       })
       props.store.commitObjectEdit()
       domVisualPreview.clear()
@@ -7724,8 +7831,7 @@ const createObjectNode = (object: StageObject) => {
     if (gridSnapEnabled.value) {
       snapNodeToGrid(wrapper)
     }
-    current.transform.x = Number((wrapper.x() / WORLD_UNIT_PX).toFixed(6))
-    current.transform.y = Number((wrapper.y() / WORLD_UNIT_PX).toFixed(6))
+    commitObjectNodePosition(current, wrapper)
     props.store.commitObjectEdit()
     domVisualPreview.clear()
     setGridSnapPreview(false)
@@ -7983,13 +8089,9 @@ const updateObjectNode = (wrapper: Konva.Group, object: StageObject) => {
     || props.store.state.selectedObjectId === object.id
     || multiSelected
   wrapper.setAttrs({
-    x: object.transform.x * WORLD_UNIT_PX,
-    y: object.transform.y * WORLD_UNIT_PX,
+    ...objectNodeRenderTransform(object),
     offsetX: width / 2,
     offsetY: height / 2,
-    rotation: object.transform.rotation,
-    scaleX: object.transform.scaleX,
-    scaleY: object.transform.scaleY,
     visible: props.syncReady
       && !hasPendingSceneEntrance(object.id)
       && (object.visible || objectEntranceTweens.has(object.id)),
@@ -8049,12 +8151,15 @@ const syncObjectRenderBands = (objects: Record<string, StageObject>) => {
     camera.add(root)
     layer.add(camera)
     stage.add(layer)
-    extraObjectRenderBands.push({ layer, camera, root })
+    extraObjectRenderBands.push({ layer, camera, root, space: 'world' })
   }
+  const viewportCamera = stageViewportBandCamera(viewportSize.value)
   plan.bands.forEach((band, index) => {
     const entry = index === 0 ? firstBand : extraObjectRenderBands[index - 1]
-    entry.camera.position(firstBand.camera.position())
-    entry.camera.scale(firstBand.camera.scale())
+    if (index > 0) extraObjectRenderBands[index - 1].space = band.space
+    // World bands share the scene camera; viewport bands use the viewport frame (no pan/zoom).
+    entry.camera.position(band.space === 'viewport' ? viewportCamera.position : firstBand.camera.position())
+    entry.camera.scale(band.space === 'viewport' ? viewportCamera.scale : firstBand.camera.scale())
     entry.layer.getNativeCanvasElement().style.zIndex = String(band.canvasZIndex)
     band.roots.forEach((object) => {
       const node = objectNodes.get(object.id)
@@ -8185,7 +8290,25 @@ const resizeStage = () => {
   sceneMorphStage?.size(viewportSize.value)
   syncField()
   clampOpenPanels()
+  syncViewportObjectNodes()
   applyCamera()
+}
+
+// Screen-fixed roots re-anchor to the resized viewport (normalized center, uniform design scale);
+// descendants follow through their root node. World objects are untouched.
+const syncViewportObjectNodes = () => {
+  const viewportCamera = stageViewportBandCamera(viewportSize.value)
+  extraObjectRenderBands.forEach(({ camera, space }) => {
+    if (space !== 'viewport') return
+    camera.position(viewportCamera.position)
+    camera.scale(viewportCamera.scale)
+  })
+  Object.values(canvasStageObjects()).forEach((object) => {
+    if (object.coordinateSpace !== 'viewport' || (object.parentId && stageObjects.value[object.parentId])) return
+    const node = objectNodes.get(object.id)
+    if (node && !objectEntranceTweens.has(object.id)) node.setAttrs(objectNodeRenderTransform(object))
+  })
+  if (transformer?.nodes().length) transformer.forceUpdate()
 }
 
 const handleWheel = (event: Konva.KonvaEventObject<WheelEvent>) => {
@@ -8894,22 +9017,34 @@ const handleCanvasDrop = async (event: DragEvent) => {
   }
 }
 
-const reparentObjectPreservingTransform = (objectId: string, parentId: string | null) => {
-  const object = getObject(objectId)
-  const node = objectNodes.get(objectId)
-  const parentNode = parentId ? objectNodes.get(parentId) : objectRoot
-  if (!object || !node || !parentNode || object.parentId === parentId) return false
-  if (parentId) {
-    let parent: StageObject | undefined = getObject(parentId)
-    if (!parent || parent.type !== 'group') return false
-    while (parent) {
-      if (parent.id === objectId) return false
-      parent = parent.parentId ? getObject(parent.parentId) : undefined
-    }
-  }
+// Pose that keeps a reparented node visually still. A child reads its parent-local attrs after
+// moveTo(parentNode); a new top-level root converts its absolute stage pose into the tree's space
+// (world camera inverse or viewport frame), so leaving a group never changes the coordinate space.
+const reparentTransformForNode = (
+  object: StageObject,
+  node: Konva.Group,
+  parentId: string | null,
+): StageObjectReparentTransform | null => {
   const absolutePosition = node.absolutePosition()
   const absoluteRotation = node.getAbsoluteRotation()
   const absoluteScale = node.getAbsoluteScale()
+  if (!parentId) {
+    const camera = worldCameraTransform()
+    if (!camera) return null
+    const pose = stageScreenPoseToRootPose({
+      ...absolutePosition,
+      rotation: absoluteRotation,
+      scaleX: absoluteScale.x,
+      scaleY: absoluteScale.y,
+    }, objectCoordinateSpace(object), camera, viewportSize.value)
+    if ('error' in pose) {
+      stageMessage.warning('无法在允许的坐标或缩放范围内保持外观，未移出分组')
+      return null
+    }
+    return { ...pose.transform, coordinateSpace: pose.coordinateSpace, viewportX: pose.viewportX, viewportY: pose.viewportY }
+  }
+  const parentNode = objectNodes.get(parentId)
+  if (!parentNode) return null
   node.moveTo(parentNode)
   const parentScale = parentNode.getAbsoluteScale()
   node.rotation(absoluteRotation - parentNode.getAbsoluteRotation())
@@ -8918,13 +9053,21 @@ const reparentObjectPreservingTransform = (objectId: string, parentId: string | 
     y: absoluteScale.y / Math.max(0.000001, parentScale.y),
   })
   node.absolutePosition(absolutePosition)
-  const changed = props.store.reparentObject(objectId, parentId, {
+  return {
     x: Number((node.x() / WORLD_UNIT_PX).toFixed(6)),
     y: Number((node.y() / WORLD_UNIT_PX).toFixed(6)),
     rotation: Number(node.rotation().toFixed(6)),
     scaleX: Number(node.scaleX().toFixed(6)),
     scaleY: Number(node.scaleY().toFixed(6)),
-  })
+  }
+}
+
+const reparentObjectPreservingTransform = (objectId: string, parentId: string | null) => {
+  const object = getObject(objectId)
+  const node = objectNodes.get(objectId)
+  if (!object || !node || object.parentId === parentId || !props.store.canSetParent(objectId, parentId)) return false
+  const transform = reparentTransformForNode(object, node, parentId)
+  const changed = Boolean(transform) && props.store.reparentObject(objectId, parentId, transform!)
   if (!changed) syncObjects()
   return changed
 }
@@ -8937,30 +9080,15 @@ const moveLayerObjectPreservingTransform = (
 ) => {
   const object = getObject(objectId)
   const node = objectNodes.get(objectId)
-  const parentNode = parentId ? objectNodes.get(parentId) : objectRoot
-  if (!object || !node || !parentNode || !props.store.canSetParent(objectId, parentId)) return false
-  if (object.parentId !== parentId) {
-    const absolutePosition = node.absolutePosition()
-    const absoluteRotation = node.getAbsoluteRotation()
-    const absoluteScale = node.getAbsoluteScale()
-    node.moveTo(parentNode)
-    const parentScale = parentNode.getAbsoluteScale()
-    node.rotation(absoluteRotation - parentNode.getAbsoluteRotation())
-    node.scale({
-      x: absoluteScale.x / Math.max(0.000001, parentScale.x),
-      y: absoluteScale.y / Math.max(0.000001, parentScale.y),
-    })
-    node.absolutePosition(absolutePosition)
-  }
+  if (!object || !node || !props.store.canSetParent(objectId, parentId)) return false
+  // Same parent: only the layer rank changes and the stored transform stays as is.
+  const transform = object.parentId === parentId
+    ? { rotation: object.transform.rotation, scaleX: object.transform.scaleX, scaleY: object.transform.scaleY }
+    : reparentTransformForNode(object, node, parentId)
+  if (!transform) return false
   layerHierarchyMovePending = true
   layerHierarchyUpdatedObjectIds = new Set([...props.store.selection.selectedIds, objectId])
-  const changed = props.store.moveObject(objectId, parentId, {
-    x: Number((node.x() / WORLD_UNIT_PX).toFixed(6)),
-    y: Number((node.y() / WORLD_UNIT_PX).toFixed(6)),
-    rotation: Number(node.rotation().toFixed(6)),
-    scaleX: Number(node.scaleX().toFixed(6)),
-    scaleY: Number(node.scaleY().toFixed(6)),
-  }, targetId, placement)
+  const changed = props.store.moveObject(objectId, parentId, transform, targetId, placement)
   void nextTick(() => {
     layerHierarchyMovePending = false
     layerHierarchyUpdatedObjectIds.clear()
@@ -9325,9 +9453,7 @@ onMounted(() => {
     selectionGroupDrag = null
     currentDrag.nodes.forEach(({ node }, id) => {
       const object = getObject(id)
-      if (!object) return
-      object.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-      object.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+      if (object) commitObjectNodePosition(object, node)
     })
     props.store.commitObjectEdit()
     domVisualPreview.clear()
@@ -10646,8 +10772,11 @@ onBeforeUnmount(() => {
               <span>{{ selectedObjects.length }} 个组件</span>
               <n-button text size="tiny" @click="store.clearSelection">清除选择</n-button>
             </div>
-            <div v-if="batchMoveBlocked" class="theater-batch-warning">
+            <div v-if="batchHasLockedObjects" class="theater-batch-warning">
               选中组件包含锁定位置项
+            </div>
+            <div v-if="batchMixedCoordinateSpaces" class="theater-batch-warning">
+              选中组件同时包含屏幕固定与世界坐标对象，批量移动、变换和屏幕固定切换已禁用
             </div>
             <div class="theater-object-editor__checks theater-batch-checks">
               <n-checkbox
@@ -10677,6 +10806,12 @@ onBeforeUnmount(() => {
                 :indeterminate="batchBooleanIndeterminate('aspectRatioLocked')"
                 @update:checked="updateBatchBoolean('aspectRatioLocked', $event)"
               >锁定比例</n-checkbox>
+              <n-checkbox
+                :checked="batchScreenFixedChecked"
+                :indeterminate="batchMixedCoordinateSpaces"
+                :disabled="batchMixedCoordinateSpaces || !batchCoordinateRoots.length"
+                @update:checked="updateBatchScreenFixed"
+              >屏幕固定</n-checkbox>
             </div>
             <n-button secondary type="error" @click="removeSelectedObjectsWithConfirm">
               <template #icon><n-icon><Trash /></n-icon></template>
@@ -10883,8 +11018,14 @@ onBeforeUnmount(() => {
               <n-input v-model:value="selectedObject.fill" />
             </template>
             <div class="theater-object-editor__transform">
-              <label>X</label><n-input-number v-model:value="selectedObject.transform.x" :precision="2" :disabled="!canEditSelectedTransform" />
-              <label>Y</label><n-input-number v-model:value="selectedObject.transform.y" :precision="2" :disabled="!canEditSelectedTransform" />
+              <template v-if="selectedUsesViewportPosition">
+                <label>屏幕 X%</label><n-input-number :value="Number((selectedObject.viewportX * 100).toFixed(2))" :min="-100" :max="200" :precision="2" :disabled="!canEditSelectedTransform" @update:value="updateSelectedViewportPosition('viewportX', $event)" />
+                <label>屏幕 Y%</label><n-input-number :value="Number((selectedObject.viewportY * 100).toFixed(2))" :min="-100" :max="200" :precision="2" :disabled="!canEditSelectedTransform" @update:value="updateSelectedViewportPosition('viewportY', $event)" />
+              </template>
+              <template v-else>
+                <label>X</label><n-input-number v-model:value="selectedObject.transform.x" :precision="2" :disabled="!canEditSelectedTransform" />
+                <label>Y</label><n-input-number v-model:value="selectedObject.transform.y" :precision="2" :disabled="!canEditSelectedTransform" />
+              </template>
               <template v-if="selectedObject.type === 'group'">
                 <label>旋转</label><n-input-number v-model:value="selectedObject.transform.rotation" :precision="2" />
                 <label>缩放 X</label><n-input-number :value="selectedObject.transform.scaleX" :min="0.01" :max="100" :step="0.1" :precision="2" @update:value="updateSelectedScale('scaleX', $event)" />
@@ -10912,6 +11053,12 @@ onBeforeUnmount(() => {
                 :checked="selectedObject.aspectRatioLocked"
                 @update:checked="updateSelectedAspectRatioLocked"
               >锁定比例</n-checkbox>
+              <n-checkbox
+                v-if="canEditAllObjects && selectedObject.type !== 'effect'"
+                :checked="selectedScreenFixed"
+                @update:checked="updateSelectedScreenFixed"
+              >屏幕固定</n-checkbox>
+              <small v-if="canEditAllObjects && selectedObject.type !== 'effect' && selectedScreenFixedAppliesToTree" class="theater-embed-event-hint">屏幕固定对所在整个组生效：固定在视口位置，不随场景镜头移动和缩放</small>
             </div>
             <template v-if="canEditAllObjects && isStageActionOwner(selectedObject.type)">
               <label>{{ selectedObject.type === 'iframe' ? '嵌入事件动作' : '点击动作' }}</label>

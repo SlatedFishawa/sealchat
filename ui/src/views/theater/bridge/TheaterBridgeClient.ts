@@ -1,11 +1,13 @@
 import {
   createTheaterBridgeMessage,
   parseTheaterBridgeMessage,
+  projectTheaterBridgeMessage,
   type BridgeEndpoint,
   type BridgeErrorResult,
   type BridgeKind,
   type TheaterBridgeContext,
   type TheaterBridgeMessage,
+  type TheaterBridgeVersion,
 } from './theater-bridge-protocol'
 import type { BridgeTransport } from './theater-bridge-transport'
 
@@ -59,6 +61,7 @@ export class TheaterBridgeClient {
   private systemHandlers = new Map<string, MessageHandler>()
   private eventHandlers = new Map<string, Set<MessageHandler>>()
   private remoteCapabilities = new Map<BridgeEndpoint, Set<string>>()
+  private remoteVersions = new Map<BridgeEndpoint, TheaterBridgeVersion>()
   private debugEntries: BridgeDebugEntry[] = []
   private readonly requestTimeoutMs: number
   private readonly maxDebugEntries: number
@@ -100,6 +103,10 @@ export class TheaterBridgeClient {
 
   setRemoteCapabilities(endpoint: BridgeEndpoint, capabilities: readonly string[]) {
     this.remoteCapabilities.set(endpoint, new Set(capabilities))
+  }
+
+  setRemoteVersion(endpoint: BridgeEndpoint, version: TheaterBridgeVersion) {
+    this.remoteVersions.set(endpoint, version)
   }
 
   supports(endpoint: BridgeEndpoint, capability: string) {
@@ -211,7 +218,8 @@ export class TheaterBridgeClient {
 
   private sendMessage(message: TheaterBridgeMessage) {
     if (!this.connected) throw new Error('TheaterBridgeClient is not connected')
-    const parsed = parseTheaterBridgeMessage(message)
+    // Bootstrap in 1.0 so an old strict envelope parser can read system.ready.
+    const parsed = projectTheaterBridgeMessage(message, this.remoteVersions.get(message.target) ?? '1.0')
     this.options.transport.send(parsed)
     this.log('send', parsed.name, parsed)
   }

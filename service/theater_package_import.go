@@ -99,6 +99,9 @@ func importTheaterPackage(ctx context.Context, job *model.TheaterPackageJobModel
 	if err := decodeStrictJSONFile(theaterPackageAbsolutePath(extractDir, manifest.Document.Path), &snapshot); err != nil {
 		return summary, newTheaterError(TheaterErrorSchemaUnsupported, "舞台文档无效", 409, nil)
 	}
+	if err := validateTheaterPackageDocumentVersion(manifest.PackageVersion, snapshot); err != nil {
+		return summary, err
+	}
 	if err := validateTheaterSharedSnapshot(snapshot); err != nil {
 		return summary, err
 	}
@@ -1172,6 +1175,11 @@ func remapTheaterPackageString(value string, remap theaterPackageRemap) string {
 }
 
 func createTheaterPackageObjects(tx *gorm.DB, room *model.TheaterRoomModel, actorID string, sceneID *string, objects map[string]TheaterObjectSnapshot) error {
+	return createTheaterSnapshotObjects(tx, room, actorID, sceneID, objects, false)
+}
+
+// Restore retains ownership; package import deliberately does not trust foreign user identities.
+func createTheaterSnapshotObjects(tx *gorm.DB, room *model.TheaterRoomModel, actorID string, sceneID *string, objects map[string]TheaterObjectSnapshot, preserveOwnership bool) error {
 	pending := make(map[string]TheaterObjectSnapshot, len(objects))
 	for id, object := range objects {
 		pending[id] = object
@@ -1205,9 +1213,13 @@ func createTheaterPackageObjects(tx *gorm.DB, room *model.TheaterRoomModel, acto
 				ID: item.ID, ParentID: item.ParentID, Kind: item.Kind, Name: item.Name,
 				X: item.X, Y: item.Y, Width: item.Width, Height: item.Height, Rotation: item.Rotation,
 				Scale: &scale, ScaleX: &scaleX, ScaleY: &scaleY, Z: item.Z, OrderKey: item.OrderKey,
+				CoordinateSpace: item.CoordinateSpace, ViewportX: item.ViewportX, ViewportY: item.ViewportY,
 				Visible: &item.Visible, Locked: item.Locked, AspectRatioLocked: item.AspectRatioLocked,
 				Interactive: item.Interactive, Editable: item.Editable, Content: item.Content,
 				Actions: item.Actions, Metadata: item.Metadata,
+			}
+			if preserveOwnership {
+				input.OwnerUserID, input.CharacterIdentityID = item.OwnerUserID, item.CharacterIdentityID
 			}
 			if err := validateObjectInput(&input); err != nil {
 				return err

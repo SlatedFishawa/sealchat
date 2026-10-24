@@ -34,6 +34,7 @@ const {
   createStageDomVisualPreview,
   resolveStageDomVisualTransform,
 } = require('../src/views/theater/stage/stage-dom-visual-preview.ts')
+const { commitStageNodePosition } = require('../src/views/theater/stage/stage-coordinate-space.ts')
 const { theaterSyncTesting: sync } = require('../src/views/theater/sync/TheaterSyncClient.ts')
 
 const readSfc = name => parse(fs.readFileSync(path.join(stageDir, name), 'utf8')).descriptor
@@ -93,11 +94,17 @@ async function run() {
     return pending.length
   }
 
-  // Real applyObjectNodeTransform from StageApp; updateObjectNode only re-syncs the node.
-  const applyObjectNodeTransform = new Function('WORLD_UNIT_PX', 'updateObjectNode', transpile(`
+  // DOM previews are node render transforms (parent-frame px); resolve against the store objects.
+  const viewport = { width: 1280, height: 720 }
+  const resolveVisual = (store, id, preview) => resolveStageDomVisualTransform(
+    store.activeObjects.value[id], store.activeObjects.value, viewport, preview.transforms,
+  )
+  // Real applyObjectNodeTransform/commitObjectNodePosition from StageApp; updateObjectNode only re-syncs the node.
+  const makeApplyObjectNodeTransform = store => new Function('WORLD_UNIT_PX', 'updateObjectNode', 'commitStageNodePosition', 'props', 'viewportSize', transpile(`
+    ${declaration('commitObjectNodePosition')}
     ${declaration('applyObjectNodeTransform')}
     return applyObjectNodeTransform
-  `))(WORLD_UNIT_PX, () => {})
+  `))(WORLD_UNIT_PX, () => {}, commitStageNodePosition, { store }, { value: viewport })
 
   // 1. Webpage drag: DOM visual follows each frame, the store is written once at dragend.
   {
@@ -117,25 +124,24 @@ async function run() {
       node.y(node.y() - 10)
       preview.schedule([page.id])
       assert.equal(runFrame(), 1, 'multiple dragmove events in one frame coalesce into one sync')
-      const visual = resolveStageDomVisualTransform(store.activeObjects.value[page.id], preview.transforms)
-      close(visual.x, start.x + (step * 25) / WORLD_UNIT_PX, 'DOM visual x follows node in real time')
-      close(visual.y, start.y - (step * 10) / WORLD_UNIT_PX, 'DOM visual y follows node in real time')
+      const visual = resolveVisual(store, page.id, preview)
+      close(visual.x, start.x * WORLD_UNIT_PX + step * 25, 'DOM visual x follows node in real time')
+      close(visual.y, start.y * WORLD_UNIT_PX - step * 10, 'DOM visual y follows node in real time')
       assert.deepEqual({ ...store.activeObjects.value[page.id].transform }, start, 'store transform untouched mid-gesture')
     }
     assert.equal(storeWrites, 0, 'no store writes during dragmove')
     assert.equal(sync.diffDocuments(documentBefore, sync.documentFromWorkspace(store.getSnapshot())).length, 0, 'nothing to sync mid-gesture')
 
     const lastPreview = { ...preview.transforms[page.id] }
-    // Same steps as the wrapper dragend handler.
+    // Same steps as the wrapper dragend handler (commitObjectNodePosition).
     const current = store.activeObjects.value[page.id]
-    current.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-    current.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+    commitStageNodePosition(current, store.activeObjects.value, node.position(), viewport)
     store.commitObjectEdit()
     preview.clear()
     stopWatch()
     assert.equal(Object.keys(preview.transforms).length, 0, 'temporary state cleared after commit')
-    const formal = resolveStageDomVisualTransform(store.activeObjects.value[page.id], preview.transforms)
-    assert.ok(Math.abs(formal.x - lastPreview.x) < 1e-6 && Math.abs(formal.y - lastPreview.y) < 1e-6, 'formal transform takes over at the previewed spot (no jump back)')
+    const formal = resolveVisual(store, page.id, preview)
+    assert.ok(Math.abs(formal.x - lastPreview.x) < 1e-4 && Math.abs(formal.y - lastPreview.y) < 1e-4, 'formal transform takes over at the previewed spot (no jump back)')
     assert.equal(storeWrites, 2, 'only the final x/y commit writes the store')
     const mutations = sync.diffDocuments(documentBefore, sync.documentFromWorkspace(store.getSnapshot()))
     assert.equal(mutations.length, 1, 'one sync mutation for the whole gesture')
@@ -160,15 +166,16 @@ async function run() {
     const textNode = nodeFor(text)
     const preview = makePreview(store)
     const before = { ...page.transform }
+    const applyObjectNodeTransform = makeApplyObjectNodeTransform(store)
     store.beginObjectEdit('批量变换对象')
     pageNode.setAttrs({ scaleX: 1.5, scaleY: 0.5, rotation: 30, x: pageNode.x() + 40 })
     textNode.setAttrs({ rotation: -15 })
     // transformer.on('transform') schedules every attached node.
     preview.schedule([pageNode, textNode].map(node => String(node.getAttr('stageObjectId') || '')))
     assert.equal(runFrame(), 1)
-    const visual = resolveStageDomVisualTransform(store.activeObjects.value[page.id], preview.transforms)
-    close(visual.x, before.x + 40 / WORLD_UNIT_PX, 'DOM visual x follows transform')
-    close(visual.y, before.y, 'DOM visual y follows transform')
+    const visual = resolveVisual(store, page.id, preview)
+    close(visual.x, before.x * WORLD_UNIT_PX + 40, 'DOM visual x follows transform')
+    close(visual.y, before.y * WORLD_UNIT_PX, 'DOM visual y follows transform')
     assert.deepEqual([visual.rotation, visual.scaleX, visual.scaleY], [30, 1.5, 0.5], 'DOM visual rotation/scale follow transformer')
     assert.equal(preview.transforms[text.id].rotation, -15, 'DOM text follows rotation')
     assert.equal(store.activeObjects.value[page.id].transform.width, before.width, 'no width write (no iframe reflow) mid-gesture')
@@ -179,14 +186,17 @@ async function run() {
     applyObjectNodeTransform(textNode, store.activeObjects.value[text.id])
     store.commitObjectEdit()
     preview.clear()
-    const formal = resolveStageDomVisualTransform(store.activeObjects.value[page.id], preview.transforms)
+    const formal = resolveVisual(store, page.id, preview)
     const committed = store.activeObjects.value[page.id].transform
-    assert.equal(formal, committed, 'store transform takes over after clear')
+    assert.deepEqual(formal, {
+      x: committed.x * WORLD_UNIT_PX, y: committed.y * WORLD_UNIT_PX,
+      rotation: committed.rotation, scaleX: committed.scaleX, scaleY: committed.scaleY,
+    }, 'store transform takes over after clear')
     assert.equal(committed.scaleX, 1)
     assert.equal(committed.rotation, 30)
     assert.ok(Math.abs(committed.width - previewBox.width) < 1e-6 && Math.abs(committed.height - previewBox.height) < 1e-6,
       'previewed visual box equals the committed box')
-    assert.ok(Math.abs(committed.x - visual.x) < 1e-6)
+    assert.ok(Math.abs(committed.x * WORLD_UNIT_PX - visual.x) < 1e-4)
     assert.equal(countUndoSteps(store), 3, 'one history entry for the transform (plus two adds)')
   }
 
@@ -213,7 +223,7 @@ async function run() {
     assert.equal(runFrame(), 1)
     assert.deepEqual(Object.keys(preview.transforms), [group.id])
     assert.equal(preview.transforms[group.id].scaleX, 2)
-    close(preview.transforms[group.id].x, 120 / WORLD_UNIT_PX, 'group x')
+    close(preview.transforms[group.id].x, 120, 'group x (node render px)')
     preview.clear()
   }
 
@@ -246,7 +256,8 @@ async function run() {
     const overlay = readSfc('StageTextOverlay.vue')
     assert.match(overlay.template.content, /<StageTextVisualObject[\s\S]*?:visual-transforms="props\.visualTransforms"/)
     const visualObject = readSfc('StageTextVisualObject.vue')
-    assert.match(visualObject.scriptSetup.content, /resolveStageDomVisualTransform\(props\.object, props\.visualTransforms\)/)
+    assert.match(visualObject.scriptSetup.content, /resolveStageDomVisualTransform\(props\.object, props\.objects, props\.viewport, props\.visualTransforms\)/)
+    assert.match(visualObject.template.content, /<StageTextVisualObject[\s\S]*?:viewport="props\.viewport"/, 'nested DOM descendants share the viewport frame')
     assert.match(visualObject.template.content, /<StageTextVisualObject[\s\S]*?:visual-transforms="props\.visualTransforms"/, 'nested DOM descendants receive the preview map')
   }
 

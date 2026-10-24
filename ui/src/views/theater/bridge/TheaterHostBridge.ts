@@ -5,7 +5,7 @@ import { runStageActionSequence, STAGE_ACTION_CANCELLED } from '../stage/theater
 import { theaterSequencesFromServerState } from '../sequences/theater-sequence-types'
 import { TheaterBridgeClient, TheaterBridgeRequestError } from './TheaterBridgeClient'
 import {
-  THEATER_BRIDGE_VERSION,
+  negotiateTheaterBridgeVersion,
   THEATER_CHAT_MESSAGE_EVENT_NAMES,
   THEATER_STAGE_CAPABILITIES,
   createTheaterBridgeMessage,
@@ -39,6 +39,7 @@ import {
   type TheaterDialogueMessagePayload,
   type TheaterDialogueMessageRemovedPayload,
   type TheaterBridgeMessage,
+  type TheaterBridgeVersion,
 } from './theater-bridge-protocol'
 import { MemoryTransport, PostMessageTransport } from './theater-bridge-transport'
 
@@ -168,6 +169,7 @@ export class TheaterHostBridge {
   private readonly parallelActionExecutions = new Map<string, StageActionTriggeredPayload[]>()
   private readonly actionScheduleTimers = new Map<number, () => void>()
   private sequenceGeneration = 0
+  private chatVersion: TheaterBridgeVersion = '1.0'
   private characterSnapshot: ChatCharactersSnapshotPayload = {
     revision: 0,
     updatedAt: 0,
@@ -386,10 +388,15 @@ export class TheaterHostBridge {
   private registerHandlers() {
     this.hostClient.onSystem<ReadyPayload>('system.ready', (payload, message) => {
       if (message.source !== 'chat' || payload.endpoint !== 'chat') return
-      if (!payload.supportedVersions.includes(THEATER_BRIDGE_VERSION)) {
+      const version = negotiateTheaterBridgeVersion(payload.supportedVersions)
+      if (!version) {
         this.debug('chat version rejected', payload.supportedVersions)
         return
       }
+      this.chatVersion = version
+      this.chatTransport.setVersion(version)
+      this.hostClient.setRemoteVersion('chat', version)
+      this.stageClient.setRemoteVersion('chat', version)
       if (this.chatBridgeManuallyDisconnected) {
         this.setChatOnline(false)
         this.setChatBridgeStatus('manual-disconnected')
@@ -413,7 +420,7 @@ export class TheaterHostBridge {
       if (
         message.source !== 'chat'
         || payload.endpoint !== 'chat'
-        || payload.selectedVersion !== THEATER_BRIDGE_VERSION
+        || payload.selectedVersion !== this.chatVersion
       ) return
       if (this.chatBridgeManuallyDisconnected) {
         this.setChatOnline(false)
@@ -945,7 +952,7 @@ export class TheaterHostBridge {
 
   private buildInitializePayload(): InitializePayload {
     return {
-      selectedVersion: THEATER_BRIDGE_VERSION,
+      selectedVersion: this.chatVersion,
       worldId: this.options.context.worldId,
       channelId: this.options.context.channelId,
       userId: this.options.userId,

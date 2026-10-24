@@ -18,6 +18,9 @@ import {
   normalizeStageSceneTransition,
   normalizeStageActionSchedule,
   normalizeStageSurfaceStyle,
+  normalizeStageObjectCoordinateSpace,
+  normalizeStageViewportPosition,
+  STAGE_VIEWPORT_POSITION_DEFAULT,
   type StageAction,
   type StageActionSchedule,
   type StageAudioRef,
@@ -65,6 +68,13 @@ import {
   type StageLayerRank,
 } from './stage-layer-order'
 import { createDefaultTheaterEffectConfig, normalizeTheaterEffectConfig } from '../effects/theater-effect-types'
+import {
+  applyStageRootPose,
+  stageObjectEffectiveCoordinateSpace,
+  stageObjectIsRoot,
+  stageObjectTreeRoot,
+  type StageRootPose,
+} from './stage-coordinate-space'
 
 const palette = ['#60a5fa', '#a78bfa', '#f472b6', '#34d399', '#fbbf24', '#fb7185']
 const newObjectOffsets = [
@@ -152,6 +162,8 @@ const snapObjectToGrid = (
 ) => {
   // Effects use an independent 1920x1080 design canvas, not world coordinates.
   if (!liveState.alignWithGrid || object.type === 'effect') return
+  // Screen-fixed trees are not placed on the world map grid (first version: no viewport snapping).
+  if (stageObjectEffectiveCoordinateSpace(object, objects) === 'viewport') return
   const world = objectWorldPosition(object, objects)
   if (anchor === 'bounds' && object.type !== 'group') {
     const angle = object.transform.rotation * Math.PI / 180
@@ -232,6 +244,9 @@ const makeObject = (
     z: 0,
     order,
   },
+  coordinateSpace: 'world',
+  viewportX: STAGE_VIEWPORT_POSITION_DEFAULT,
+  viewportY: STAGE_VIEWPORT_POSITION_DEFAULT,
   visible: true,
   locked: false,
   aspectRatioLocked: type === 'text' || type === 'iframe' ? false : type !== 'effect',
@@ -435,6 +450,10 @@ const normalizeObject = (input: StageObject): StageObject | null => {
     },
     type: input.type,
     parentId: typeof input.parentId === 'string' ? input.parentId : null,
+    // Objects saved before screen-fixed support have no coordinate fields and stay in world space.
+    coordinateSpace: normalizeStageObjectCoordinateSpace(input.coordinateSpace, input.type),
+    viewportX: normalizeStageViewportPosition(input.viewportX),
+    viewportY: normalizeStageViewportPosition(input.viewportY),
     visible: input.visible !== false,
     locked: input.locked === true,
     aspectRatioLocked: input.type === 'iframe' ? input.aspectRatioLocked === true : input.aspectRatioLocked !== false,
@@ -576,15 +595,16 @@ export interface TheaterStageStore {
   reparentObject: (
     objectId: string,
     parentId: string | null,
-    transform: Pick<StageObjectTransform, 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>,
+    transform: StageObjectReparentTransform,
   ) => boolean
   moveObject: (
     objectId: string,
     parentId: string | null,
-    transform: Pick<StageObjectTransform, 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>,
+    transform: StageObjectReparentTransform,
     targetId?: string | null,
     placement?: 'before' | 'after',
   ) => boolean
+  setRootCoordinateSpaces: (poses: Record<string, StageRootPose>) => number
   moveOrder: (objectId: string, direction: -1 | 1) => void
   reorderObject: (objectId: string, targetId: string, placement: 'before' | 'after') => void
   setSceneImage: (target: 'background' | 'foreground', url: string, resourceId?: string, mimeType?: string, animated?: boolean, loopCount?: number) => boolean
@@ -630,6 +650,12 @@ export type StageObjectBatchPatch = Partial<Pick<StageObject,
 >>
 
 export type StageObjectQuickFlag = 'visible' | 'editable' | 'locked'
+
+// Pose that keeps a reparented object visually still. A child needs parent-local x/y; a new top-level
+// root carries its coordinate space and, when screen-fixed, viewportX/Y instead of world x/y.
+export type StageObjectReparentTransform = Pick<StageObjectTransform, 'rotation' | 'scaleX' | 'scaleY'>
+  & Partial<Pick<StageObjectTransform, 'x' | 'y'>>
+  & Partial<Pick<StageObject, 'coordinateSpace' | 'viewportX' | 'viewportY'>>
 
 export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore => {
   const state = reactive<StageWorkspaceState>(createInitialTheaterStageState())
@@ -1105,8 +1131,13 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
   ) => {
     const reference = referenceId ? activeObjects.value[referenceId] : undefined
     if (reference && collection[reference.id]) {
-      object.parentId = reference.parentId
-      reorderObject(object.id, reference.id, 'before')
+      // A tree has one coordinate space: a reference inside a tree of another space only decides
+      // the z-order, and the object is placed above that tree's root instead of joining it.
+      const anchor = stageObjectEffectiveCoordinateSpace(reference, activeObjects.value) === object.coordinateSpace
+        ? reference
+        : stageObjectTreeRoot(reference, activeObjects.value)
+      object.parentId = anchor.parentId
+      reorderObject(object.id, anchor.id, 'before')
       return
     }
 
@@ -1416,6 +1447,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
         snapObjectToGrid(object, state.liveState, activeObjects.value)
       })
       reconcileGroupScopes()
+      reconcileCoordinateSpaces()
       const pastedRootIds = pasted.roots.map((root) => root.id)
       const primaryId = pastedRootIds[pastedRootIds.length - 1] || null
       setSelectedObjectIds(pastedRootIds, primaryId)
@@ -1446,6 +1478,28 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     return false
   }
 
+  // Descendants mirror their root's coordinate space so a detached child keeps the tree's space.
+  const reconcileCoordinateSpaces = () => {
+    const objects = activeObjects.value
+    Object.values(objects).forEach((object) => {
+      const space = stageObjectEffectiveCoordinateSpace(object, objects)
+      if (object.coordinateSpace !== space) object.coordinateSpace = space
+    })
+  }
+
+  const applyReparentTransform = (object: StageObject, transform: StageObjectReparentTransform) => {
+    if (transform.x !== undefined) object.transform.x = transform.x
+    if (transform.y !== undefined) object.transform.y = transform.y
+    object.transform.rotation = transform.rotation
+    object.transform.scaleX = Math.min(100, Math.max(0.01, transform.scaleX))
+    object.transform.scaleY = Math.min(100, Math.max(0.01, transform.scaleY))
+    if (transform.coordinateSpace !== undefined) {
+      object.coordinateSpace = normalizeStageObjectCoordinateSpace(transform.coordinateSpace, object.type)
+    }
+    if (transform.viewportX !== undefined) object.viewportX = normalizeStageViewportPosition(transform.viewportX)
+    if (transform.viewportY !== undefined) object.viewportY = normalizeStageViewportPosition(transform.viewportY)
+  }
+
   const canSetParent = (objectId: string, parentId: string | null) => {
     const object = getObject(objectId)
     if (!object || objectId === parentId) return false
@@ -1453,6 +1507,11 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     const parent = getObject(parentId)
     if (!parent || parent.type !== 'group') return false
     if (collectDescendants(objectId).includes(parentId)) return false
+    // World and screen-fixed trees never mix: toggle the object or the group first.
+    if (
+      stageObjectEffectiveCoordinateSpace(object, activeObjects.value)
+      !== stageObjectEffectiveCoordinateSpace(parent, activeObjects.value)
+    ) return false
     const objectScope = componentScopeInSubtree(objectId)
     const parentScope = componentScopeInSubtree(rootGroupId(parentId))
     if (objectScope === 'mixed' || parentScope === 'mixed') return false
@@ -1465,30 +1524,28 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     const object = getObject(objectId)!
     object.parentId = parentId
     reconcileGroupScopes()
+    reconcileCoordinateSpaces()
     return true
   })
 
   const reparentObject = (
     objectId: string,
     parentId: string | null,
-    transform: Pick<StageObjectTransform, 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>,
+    transform: StageObjectReparentTransform,
   ) => runObjectEdit('调整对象分组', () => {
     if (!canSetParent(objectId, parentId)) return false
     const object = getObject(objectId)!
     object.parentId = parentId
-    object.transform.x = transform.x
-    object.transform.y = transform.y
-    object.transform.rotation = transform.rotation
-    object.transform.scaleX = Math.min(100, Math.max(0.01, transform.scaleX))
-    object.transform.scaleY = Math.min(100, Math.max(0.01, transform.scaleY))
+    applyReparentTransform(object, transform)
     reconcileGroupScopes()
+    reconcileCoordinateSpaces()
     return true
   })
 
   const moveObject = (
     objectId: string,
     parentId: string | null,
-    transform: Pick<StageObjectTransform, 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>,
+    transform: StageObjectReparentTransform,
     targetId: string | null = null,
     placement: 'before' | 'after' = 'after',
   ) => {
@@ -1514,7 +1571,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
       normalizeRanks = rank === null
     }
 
-    const affectedIds = new Set<string>([objectId])
+    const affectedIds = new Set<string>([objectId, ...collectDescendants(objectId)])
     Object.values(activeObjects.value).forEach((item) => {
       if (item.type === 'group') affectedIds.add(item.id)
     })
@@ -1523,13 +1580,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     const selectionBefore = snapshotSelection()
 
     object.parentId = parentId
-    Object.assign(object.transform, {
-      x: transform.x,
-      y: transform.y,
-      rotation: transform.rotation,
-      scaleX: Math.min(100, Math.max(0.01, transform.scaleX)),
-      scaleY: Math.min(100, Math.max(0.01, transform.scaleY)),
-    })
+    applyReparentTransform(object, transform)
 
     if (target) {
       if (normalizeRanks) {
@@ -1546,10 +1597,24 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     }
 
     reconcileGroupScopes()
+    reconcileCoordinateSpaces()
     setSelectedObjectIds([objectId], objectId)
     commitObjectSubsetEdit('调整对象层级', before, selectionBefore, affectedIds)
     return true
   }
+
+  // Poses come from the view (camera + viewport size) so the switch keeps every root visually still.
+  const setRootCoordinateSpaces = (poses: Record<string, StageRootPose>) => runObjectEdit('切换屏幕固定', () => {
+    let changed = 0
+    Object.entries(poses).forEach(([objectId, pose]) => {
+      const object = getObject(objectId)
+      if (!object || object.type === 'effect' || !stageObjectIsRoot(object, activeObjects.value)) return
+      applyStageRootPose(object, pose)
+      changed += 1
+    })
+    if (changed) reconcileCoordinateSpaces()
+    return changed
+  })
 
   const moveOrder = (objectId: string, direction: -1 | 1) => runObjectEdit('调整对象顺序', () => {
     const object = getObject(objectId)
@@ -1899,6 +1964,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     canSetParent,
     setParent,
     reparentObject,
+    setRootCoordinateSpaces,
     moveObject,
     moveOrder,
     reorderObject,

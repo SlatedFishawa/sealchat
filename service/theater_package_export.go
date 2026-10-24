@@ -49,7 +49,7 @@ func exportTheaterPackage(ctx context.Context, job *model.TheaterPackageJobModel
 	}
 	document.Path = "stage/document.json"
 	manifest := TheaterPackageManifest{
-		PackageVersion:       theaterPackageVersion,
+		PackageVersion:       theaterPackageSnapshotVersion(snapshot),
 		PackageKind:          TheaterPackageKindTheater,
 		SchemaVersion:        model.TheaterSchemaVersion,
 		PackageID:            utils.NewID(),
@@ -248,7 +248,7 @@ func exportTheaterEffectPackage(ctx context.Context, job *model.TheaterPackageJo
 	}
 	documentFile.Path = "effects/document.json"
 	manifest := TheaterPackageManifest{
-		PackageVersion: theaterPackageVersion, PackageKind: TheaterPackageKindEffects,
+		PackageVersion: theaterPackageWorldVersion, PackageKind: TheaterPackageKindEffects,
 		SchemaVersion: model.TheaterSchemaVersion, PackageID: utils.NewID(), CreatedAt: time.Now().UTC(),
 		SourceWorldID: job.SourceWorldID, SourceWorldName: world.Name, SourceRevision: room.Revision,
 		SourceInputChannelID: job.InputChannelID, Document: documentFile,

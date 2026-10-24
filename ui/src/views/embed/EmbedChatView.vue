@@ -17,7 +17,7 @@ import { formatSplitChannelDisplayName, type SplitChannelDisplayLike } from '@/v
 import type { SplitSessionPaneSnapshot } from '@/utils/splitSessionStorage';
 import { TheaterBridgeClient } from '@/views/theater/bridge/TheaterBridgeClient';
 import {
-  THEATER_BRIDGE_VERSION,
+  THEATER_BRIDGE_SUPPORTED_VERSIONS,
   THEATER_CHAT_CAPABILITIES,
   type AudioPlaybackSnapshotApplyPayload,
   type AudioPlaybackSnapshotApplyResult,
@@ -370,15 +370,17 @@ const startTheaterBridge = async () => {
     if (
       message.source !== 'host'
       || message.target !== 'chat'
-      || payload.selectedVersion !== THEATER_BRIDGE_VERSION
       || payload.worldId !== worldId
       || payload.channelId !== channelId
     ) return;
+    transport.setVersion(payload.selectedVersion);
+    client.setRemoteVersion('host', payload.selectedVersion);
+    client.setRemoteVersion('stage', payload.selectedVersion);
     theaterGrantedPermissions = new Set(payload.permissions);
     client.setRemoteCapabilities('stage', payload.capabilities);
     client.sendSystem('host', 'system.initialized', {
       endpoint: 'chat',
-      selectedVersion: THEATER_BRIDGE_VERSION,
+      selectedVersion: payload.selectedVersion,
       capabilities: [...THEATER_CHAT_CAPABILITIES],
     });
     theaterBridgeInitialized = true;
@@ -607,7 +609,7 @@ const startTheaterBridge = async () => {
   theaterBridgeClient = client;
   client.sendSystem('host', 'system.ready', {
     endpoint: 'chat',
-    supportedVersions: [THEATER_BRIDGE_VERSION],
+    supportedVersions: [...THEATER_BRIDGE_SUPPORTED_VERSIONS],
     capabilities: [...THEATER_CHAT_CAPABILITIES],
   });
 };

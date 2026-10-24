@@ -83,6 +83,9 @@ type TheaterObjectModel struct {
 	ScaleY              float64 `json:"scaleY" gorm:"not null;default:1"`
 	Z                   float64 `json:"z" gorm:"not null"`
 	OrderKey            string  `json:"orderKey" gorm:"size:128;not null;index:idx_theater_object_scope_order,priority:3"`
+	CoordinateSpace     string  `json:"coordinateSpace" gorm:"size:16;not null;default:'world'"` // world | viewport (screen-fixed); legacy rows default to world
+	ViewportX           float64 `json:"viewportX" gorm:"not null;default:0.5"`
+	ViewportY           float64 `json:"viewportY" gorm:"not null;default:0.5"`
 	Visible             bool    `json:"visible" gorm:"not null;default:true"`
 	Locked              bool    `json:"locked" gorm:"not null;default:false"`
 	AspectRatioLocked   bool    `json:"aspectRatioLocked" gorm:"not null;default:true"`

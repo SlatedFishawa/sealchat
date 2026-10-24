@@ -3,7 +3,7 @@ import { watch, type WatchStopHandle } from 'vue'
 import { api } from '@/stores/_config'
 import { chatEvent } from '@/stores/chat'
 import type { SceneFolder, StageAction, StageActionTriggeredPayload, StageClueActionEntry, StageDrawing, StageImageRef, StageLiveState, StageObject, StageObjectType, StagePointerTrace, StagePointerTraceInput, StageScene, StageSurfaceFit, StageWorkspaceState } from '../shared/stage-types'
-import { isSafeStageImageUrl, normalizeStageAudioRef, normalizeStageEntranceConfig, normalizeStageImageAnnotation, normalizeStageMusicSnapshot, normalizeStageSceneOverlays, normalizeStageSceneTransition, normalizeStageSurfaceStyle, normalizeStageSurfaceEmbeds } from '../shared/stage-types'
+import { isSafeStageImageUrl, normalizeStageAudioRef, normalizeStageObjectCoordinateSpace, normalizeStageViewportPosition, normalizeStageEntranceConfig, normalizeStageImageAnnotation, normalizeStageMusicSnapshot, normalizeStageSceneOverlays, normalizeStageSceneTransition, normalizeStageSurfaceStyle, normalizeStageSurfaceEmbeds } from '../shared/stage-types'
 import { createInitialTheaterStageState, type TheaterStageStore } from '../stage/StageStore'
 import { normalizeSurfaceVariantState } from '../shared/stage-surface-variants'
 import { STAGE_ACTION_CANCELLED } from '../stage/theater-action-sequence-runtime'
@@ -29,6 +29,11 @@ interface TheaterObjectSnapshot {
   scaleY?: number
   z: number
   orderKey: string
+  // Omitted for world objects (and by servers predating screen-fixed objects); viewportX/Y only
+  // travel with coordinateSpace 'viewport'.
+  coordinateSpace?: 'world' | 'viewport'
+  viewportX?: number
+  viewportY?: number
   visible: boolean
   locked: boolean
   aspectRatioLocked?: boolean
@@ -325,6 +330,9 @@ const objectFromServer = (value: TheaterObjectSnapshot): StageObject | null => {
       z: finite(value.z, 0),
       order: finite(Number.parseFloat(value.orderKey), 0),
     },
+    coordinateSpace: normalizeStageObjectCoordinateSpace(value.coordinateSpace, kind),
+    viewportX: normalizeStageViewportPosition(value.viewportX),
+    viewportY: normalizeStageViewportPosition(value.viewportY),
     visible: value.visible !== false,
     locked: value.locked === true,
     aspectRatioLocked: kind === 'iframe' ? value.aspectRatioLocked === true : value.aspectRatioLocked !== false,
@@ -347,6 +355,13 @@ const objectFromServer = (value: TheaterObjectSnapshot): StageObject | null => {
   }
 }
 
+// World objects keep the pre-screen-fixed wire shape; their stored viewport position is irrelevant.
+const coordinateSpaceForServer = (object: StageObject): Pick<TheaterObjectSnapshot, 'coordinateSpace' | 'viewportX' | 'viewportY'> => (
+  object.coordinateSpace === 'viewport'
+    ? { coordinateSpace: 'viewport', viewportX: object.viewportX, viewportY: object.viewportY }
+    : {}
+)
+
 const objectForServer = (object: StageObject, sceneId: string | null): TheaterObjectSnapshot => {
   const content = { ...asObject(object.content) }
   if (object.type === 'image' && object.annotation) content.annotation = clone(object.annotation)
@@ -366,6 +381,7 @@ const objectForServer = (object: StageObject, sceneId: string | null): TheaterOb
     scaleY: object.transform.scaleY,
     z: object.transform.z,
     orderKey: String(object.transform.order),
+    ...coordinateSpaceForServer(object),
     visible: object.visible,
     locked: object.locked,
     aspectRatioLocked: object.aspectRatioLocked,
@@ -494,6 +510,9 @@ const objectFields = (object: TheaterObjectSnapshot, previous: TheaterObjectSnap
     scaleY: object.scaleY ?? object.scale ?? 1,
     z: object.z,
     orderKey: object.orderKey,
+    coordinateSpace: object.coordinateSpace || 'world',
+    viewportX: object.viewportX,
+    viewportY: object.viewportY,
     visible: object.visible,
     locked: object.locked,
     aspectRatioLocked: object.aspectRatioLocked,
@@ -516,6 +535,9 @@ const objectFields = (object: TheaterObjectSnapshot, previous: TheaterObjectSnap
     scaleY: previous.scaleY ?? previous.scale ?? 1,
     z: previous.z,
     orderKey: previous.orderKey,
+    coordinateSpace: previous.coordinateSpace || 'world',
+    viewportX: previous.viewportX,
+    viewportY: previous.viewportY,
     visible: previous.visible,
     locked: previous.locked,
     aspectRatioLocked: previous.aspectRatioLocked,
@@ -525,7 +547,23 @@ const objectFields = (object: TheaterObjectSnapshot, previous: TheaterObjectSnap
     actions: previous.actions,
     metadata: previous.metadata,
   }
-  return Object.fromEntries(Object.entries(values).filter(([key, value]) => !same(value, previousValues[key])))
+  // Leaving viewport space drops viewportX/Y from the wire shape; that is not a field change.
+  const fields = Object.fromEntries(Object.entries(values).filter(([key, value]) => (
+    value !== undefined && !same(value, previousValues[key])
+  )))
+  // Reparent is a geometry operation, not just a hierarchy pointer change. Force the complete
+  // target-space pose even when one numeric component happens to equal its previous value, so the
+  // server can reject ambiguous parent-only writes without breaking the StageApp diff path.
+  if ((object.parentId || '') !== (previous.parentId || '')) {
+    const required = !object.parentId && object.coordinateSpace === 'viewport'
+      ? ['viewportX', 'viewportY', 'rotation', 'scaleX', 'scaleY']
+      : ['x', 'y', 'rotation', 'scaleX', 'scaleY']
+    required.forEach((key) => {
+      const value = values[key]
+      if (value !== undefined) fields[key] = value
+    })
+  }
+  return fields
 }
 
 const objectInput = (object: TheaterObjectSnapshot): JsonObject => ({
@@ -542,6 +580,9 @@ const objectInput = (object: TheaterObjectSnapshot): JsonObject => ({
   scaleY: object.scaleY ?? object.scale ?? 1,
   z: object.z,
   orderKey: object.orderKey,
+  ...(object.coordinateSpace === 'viewport'
+    ? { coordinateSpace: 'viewport', viewportX: object.viewportX, viewportY: object.viewportY }
+    : {}),
   visible: object.visible,
   locked: object.locked,
   aspectRatioLocked: object.aspectRatioLocked,
@@ -706,8 +747,10 @@ const diffDocuments = (before: TheaterDocument, after: TheaterDocument): Theater
   return mutations
 }
 
+// Members may move a screen-fixed editable object (viewportX/Y, like x/y) but never toggle its
+// coordinateSpace; that stays a full-editor field. Keep in sync with delegatedTheaterObjectFields.
 const delegatedObjectFields = new Set([
-  'name', 'x', 'y', 'width', 'height', 'rotation', 'scaleX', 'scaleY', 'z', 'orderKey', 'content',
+  'name', 'x', 'y', 'viewportX', 'viewportY', 'width', 'height', 'rotation', 'scaleX', 'scaleY', 'z', 'orderKey', 'content',
   'locked', 'aspectRatioLocked', 'metadata',
 ])
 const delegatedLockedObjectFields = new Set(['locked', 'aspectRatioLocked', 'content', 'metadata'])

@@ -1,19 +1,21 @@
 import type Konva from 'konva'
 import { shallowReactive } from 'vue'
 
-import { WORLD_UNIT_PX, type StageObject } from '../shared/stage-types'
+import type { StageObject } from '../shared/stage-types'
+import { stageObjectNodeRenderTransform, type StageNodeRenderTransform, type StageViewportSize } from './stage-coordinate-space'
 
-// Edit-view-only placement of a DOM visual while a Konva drag/transform is in progress.
-// Same fields and units as StageObject.transform; never written to StageStore.
-export type StageDomVisualTransform = Pick<StageObject['transform'], 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>
+// Edit-view-only placement of a DOM visual while a Konva drag/transform is in progress, in node render
+// units (parent-frame px: world, viewport design or parent-local). Never written to StageStore; the
+// coordinate-space module commits the node back to transform.x/y or viewportX/Y.
+export type StageDomVisualTransform = StageNodeRenderTransform
 
-// Konva object nodes carry x/y/rotation/scale exactly as updateObjectNode sets them from
-// object.transform, so reading them back mirrors the DOM style without baking width/height.
-// Keeping width/height untouched during a resize means the iframe/text box is only
-// CSS-scaled per frame and reflows once, when the formal transform is committed.
+// Konva object nodes carry exactly the render transform updateObjectNode sets, so reading them back
+// mirrors the DOM style without baking width/height. Keeping width/height untouched during a resize
+// means the iframe/text box is only CSS-scaled per frame and reflows once, when the formal transform
+// is committed.
 export const stageDomVisualTransformFromNode = (node: Konva.Node): StageDomVisualTransform => ({
-  x: node.x() / WORLD_UNIT_PX,
-  y: node.y() / WORLD_UNIT_PX,
+  x: node.x(),
+  y: node.y(),
   rotation: node.rotation(),
   scaleX: node.scaleX(),
   scaleY: node.scaleY(),
@@ -21,8 +23,10 @@ export const stageDomVisualTransformFromNode = (node: Konva.Node): StageDomVisua
 
 export const resolveStageDomVisualTransform = (
   object: StageObject,
+  objects: Record<string, StageObject>,
+  viewport: StageViewportSize,
   previews: Readonly<Record<string, StageDomVisualTransform>> | undefined,
-): StageDomVisualTransform => previews?.[object.id] || object.transform
+): StageDomVisualTransform => previews?.[object.id] || stageObjectNodeRenderTransform(object, objects, viewport)
 
 export interface StageDomVisualPreviewOptions {
   getNode: (objectId: string) => Konva.Node | undefined
