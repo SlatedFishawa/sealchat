@@ -16,6 +16,7 @@ const displayOrderBaseGap = 1024.0
 
 type MessageModel struct {
 	StringPKBaseModel
+	Version          int64                `json:"version" gorm:"not null;default:1"`
 	Content          string               `json:"content"`
 	TTSIntent        string               `json:"-" gorm:"type:text"`
 	TTSStatus        string               `json:"-" gorm:"size:32;index"`
@@ -61,18 +62,19 @@ type MessageModel struct {
 	IsImported    bool       `json:"isImported" gorm:"default:false;index:idx_msg_imported"`
 	ImportJobID   string     `json:"importJobId" gorm:"size:100;index:idx_msg_import_job_id"`
 
-	SenderMemberName          string                        `json:"sender_member_name"` // 用户在当时的名字
-	SenderIdentityID          string                        `json:"sender_identity_id" gorm:"size:100"`
-	SenderSharedIdentityID    string                        `json:"sender_shared_identity_id,omitempty" gorm:"size:100"`
-	SenderIdentityVariantID   string                        `json:"sender_identity_variant_id" gorm:"size:100"`
-	SenderIdentityName        string                        `json:"sender_identity_name"`
-	SenderIdentityColor       string                        `json:"sender_identity_color"`
-	SenderIdentityAvatarID    string                        `json:"sender_identity_avatar_id"`
-	SenderIdentityDecorations protocol.AvatarDecorationList `json:"sender_identity_decoration,omitempty" gorm:"serializer:json;column:sender_identity_decoration"`
-	SenderTheaterPresentation *protocol.TheaterPresentation `json:"sender_theater_presentation,omitempty" gorm:"serializer:json;column:sender_theater_presentation"`
-	SenderIdentityIsTemporary bool                          `json:"sender_identity_is_temporary" gorm:"default:false"`
-	SenderRoleID              string                        `json:"sender_role_id" gorm:"size:100"`
-	MergedMessages            int                           `json:"-" gorm:"-"`
+	SenderMemberName              string                        `json:"sender_member_name"` // 用户在当时的名字
+	SenderIdentityID              string                        `json:"sender_identity_id" gorm:"size:100"`
+	SenderSharedIdentityID        string                        `json:"sender_shared_identity_id,omitempty" gorm:"size:100"`
+	SenderIdentityVariantID       string                        `json:"sender_identity_variant_id" gorm:"size:100"`
+	SenderIdentityName            string                        `json:"sender_identity_name"`
+	SenderIdentityColor           string                        `json:"sender_identity_color"`
+	SenderIdentityAvatarID        string                        `json:"sender_identity_avatar_id"`
+	SenderIdentityAvatarTextStyle string                        `json:"sender_identity_avatar_text_style" gorm:"size:8;not null;default:''"`
+	SenderIdentityDecorations     protocol.AvatarDecorationList `json:"sender_identity_decoration,omitempty" gorm:"serializer:json;column:sender_identity_decoration"`
+	SenderTheaterPresentation     *protocol.TheaterPresentation `json:"sender_theater_presentation,omitempty" gorm:"serializer:json;column:sender_theater_presentation"`
+	SenderIdentityIsTemporary     bool                          `json:"sender_identity_is_temporary" gorm:"default:false"`
+	SenderRoleID                  string                        `json:"sender_role_id" gorm:"size:100"`
+	MergedMessages                int                           `json:"-" gorm:"-"`
 
 	User   *UserModel    `json:"user"`           // 嵌套 User 结构体
 	Member *MemberModel  `json:"member"`         // 嵌套 Member 结构体
@@ -113,6 +115,15 @@ func (m *MessageModel) AfterCreate(tx *gorm.DB) error {
 }
 
 func MessageUpdate(id string, values map[string]any) error {
+	return db.Transaction(func(tx *gorm.DB) error { return MessageUpdateTx(tx, id, nil, values) })
+}
+
+var ErrMessageVersionConflict = errors.New("VERSION_CONFLICT")
+
+func MessageUpdateTx(tx *gorm.DB, id string, expected *int64, values map[string]any) error {
+	if expected != nil && (*expected < 1 || *expected >= logSafeVersion) {
+		return ErrMessageVersionConflict
+	}
 	if len(values) == 0 {
 		return nil
 	}
@@ -168,17 +179,31 @@ func MessageUpdate(id string, values map[string]any) error {
 			values["sender_theater_presentation"] = string(encoded)
 		}
 	}
-	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&MessageModel{}).Where("id = ?", id).Updates(values).Error; err != nil {
+	q := tx.Model(&MessageModel{}).Where("id = ?", id)
+	if expected != nil {
+		q = q.Where("version = ?", *expected)
+	}
+	r := q.Updates(values)
+	if r.Error != nil {
+		return r.Error
+	}
+	if expected != nil && r.RowsAffected != 1 {
+		// MySQL reports changed rows, so a matching no-op may report zero.
+		// The UPDATE still holds its row lock until this transaction completes.
+		var matching int64
+		if err := tx.Model(&MessageModel{}).Where("id = ? AND version = ?", id, *expected).Count(&matching).Error; err != nil {
 			return err
 		}
-		content, changed := values["content"]
-		if !changed {
-			return nil
+		if matching != 1 {
+			return ErrMessageVersionConflict
 		}
-		contentText, _ := content.(string)
-		return ReplaceMessageImageAttachments(tx, id, contentText)
-	})
+	}
+	content, changed := values["content"]
+	if !changed {
+		return nil
+	}
+	contentText, _ := content.(string)
+	return ReplaceMessageImageAttachments(tx, id, contentText)
 }
 
 func (m *MessageModel) ToProtocolType2(channelData *protocol.Channel) *protocol.Message {
@@ -203,6 +228,7 @@ func (m *MessageModel) ToProtocolType2(channelData *protocol.Channel) *protocol.
 		pinnedAt = m.PinnedAt.UnixMilli()
 	}
 	msg := &protocol.Message{
+		Version:          m.Version,
 		TTS:              m.ValidTTS(),
 		ID:               m.ID,
 		Content:          m.Content,
@@ -257,7 +283,7 @@ func (m *MessageModel) ToProtocolType2(channelData *protocol.Channel) *protocol.
 		first := m.SenderIdentityDecorations[0]
 		legacyDecoration = &first
 	}
-	if m.SenderIdentityID != "" || m.SenderIdentityColor != "" || m.SenderIdentityAvatarID != "" || m.SenderIdentityName != "" || m.SenderIdentityIsTemporary || len(m.SenderIdentityDecorations) > 0 {
+	if m.SenderIdentityID != "" || m.SenderIdentityColor != "" || m.SenderIdentityAvatarID != "" || m.SenderIdentityAvatarTextStyle != "" || m.SenderIdentityName != "" || m.SenderIdentityIsTemporary || len(m.SenderIdentityDecorations) > 0 {
 		msg.Identity = &protocol.MessageIdentity{
 			ID:                  m.SenderIdentityID,
 			SharedIdentityID:    m.SenderSharedIdentityID,
@@ -265,6 +291,7 @@ func (m *MessageModel) ToProtocolType2(channelData *protocol.Channel) *protocol.
 			DisplayName:         m.SenderIdentityName,
 			Color:               m.SenderIdentityColor,
 			AvatarAttachment:    m.SenderIdentityAvatarID,
+			AvatarTextStyle:     m.SenderIdentityAvatarTextStyle,
 			AvatarDecoration:    legacyDecoration,
 			AvatarDecorations:   m.SenderIdentityDecorations,
 			TheaterPresentation: m.SenderTheaterPresentation,
@@ -354,14 +381,16 @@ func (m *MessageModel) buildWhisperMeta() *protocol.WhisperMeta {
 	return meta
 }
 
-func (m *MessageModel) ResolveWhisperTargetDisplayNames() []string {
+// WhisperTargetUserIDs lists the whisper recipients in the order ResolveWhisperTargetDisplayNames names them.
+func (m *MessageModel) WhisperTargetUserIDs() []string {
 	if m == nil || !m.IsWhisper {
 		return nil
 	}
-	if len(m.WhisperTargetDisplayNames) > 0 {
-		return append([]string{}, normalizeWhisperDisplayNames(m.WhisperTargetDisplayNames)...)
-	}
+	ids, _ := m.whisperTargetCandidates()
+	return ids
+}
 
+func (m *MessageModel) whisperTargetCandidates() ([]string, map[string]*UserModel) {
 	userMap := make(map[string]*UserModel, len(m.WhisperTargets)+1)
 	orderedIDs := make([]string, 0, len(m.WhisperTargets)+1)
 	seenIDs := map[string]struct{}{}
@@ -392,7 +421,18 @@ func (m *MessageModel) ResolveWhisperTargetDisplayNames() []string {
 	for _, id := range splitWhisperTargetIDs(m.WhisperTo) {
 		addID(id, nil)
 	}
+	return orderedIDs, userMap
+}
 
+func (m *MessageModel) ResolveWhisperTargetDisplayNames() []string {
+	if m == nil || !m.IsWhisper {
+		return nil
+	}
+	if len(m.WhisperTargetDisplayNames) > 0 {
+		return append([]string{}, normalizeWhisperDisplayNames(m.WhisperTargetDisplayNames)...)
+	}
+
+	orderedIDs, userMap := m.whisperTargetCandidates()
 	displayNames := make([]string, 0, len(orderedIDs))
 	for _, id := range orderedIDs {
 		name := ResolveChannelMappedIdentityDisplayName(m.ChannelID, id, m.ICMode)
@@ -555,43 +595,38 @@ func BackfillMessageDisplayOrder() error {
 }
 
 func RebalanceChannelDisplayOrder(channelID string) error {
-	const batchSize = 500
-	offset := 0
-	for {
-		var msgs []MessageModel
-		err := db.Where("channel_id = ?", channelID).
-			Order("display_order asc").
-			Order("created_at asc").
-			Order("id asc").
-			Limit(batchSize).
-			Offset(offset).
-			Find(&msgs).Error
-		if err != nil {
+	return db.Transaction(func(tx *gorm.DB) error { return RebalanceChannelDisplayOrderTx(tx, channelID) })
+}
+func RebalanceChannelDisplayOrderTx(db *gorm.DB, channelID string) error {
+	// Capture the order before changing keys; OFFSET over a changing order skips rows.
+	var msgs []MessageModel
+	if err := db.Select("id").Where("channel_id = ?", channelID).Order("display_order, created_at, id").Limit(1000001).Find(&msgs).Error; err != nil {
+		return err
+	}
+	if len(msgs) > 1000000 {
+		return errors.New("TOO_LARGE: channel reorder exceeds one million messages")
+	}
+	for i, msg := range msgs {
+		order := float64(i+1) * displayOrderBaseGap
+		if err := db.Model(&MessageModel{}).
+			Where("id = ?", msg.ID).
+			UpdateColumn("display_order", order).Error; err != nil {
 			return err
 		}
-		if len(msgs) == 0 {
-			break
-		}
-		for i, msg := range msgs {
-			order := float64(offset+i+1) * displayOrderBaseGap
-			if err := db.Model(&MessageModel{}).
-				Where("id = ?", msg.ID).
-				UpdateColumn("display_order", order).Error; err != nil {
-				return err
-			}
-		}
-		offset += len(msgs)
 	}
 	return nil
 }
 
 type MessageEditHistoryModel struct {
 	StringPKBaseModel
-	MessageID    string `json:"message_id" gorm:"index"`
-	EditorID     string `json:"editor_id" gorm:"index"`
-	PrevContent  string `json:"prev_content"`
-	ChannelID    string `json:"channel_id" gorm:"index"`
-	EditedUserID string `json:"edited_user_id" gorm:"index"`
+	MessageID      string `json:"message_id" gorm:"index"`
+	EditorID       string `json:"editor_id" gorm:"index"`
+	PrevContent    string `json:"prev_content"`
+	ChannelID      string `json:"channel_id" gorm:"index"`
+	EditedUserID   string `json:"edited_user_id" gorm:"index"`
+	BeforeSnapshot string `json:"before_snapshot,omitempty"`
+	AfterSnapshot  string `json:"after_snapshot,omitempty"`
+	MutationJobID  string `json:"mutation_job_id,omitempty" gorm:"size:100;index"`
 }
 
 func (*MessageEditHistoryModel) TableName() string {

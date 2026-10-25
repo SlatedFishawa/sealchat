@@ -2,9 +2,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { compileScript, parse } from '@vue/compiler-sfc'
-import { createRenderer, h, nextTick, shallowRef, type Component } from 'vue'
+import { createRenderer, h, nextTick, shallowRef, toRaw, type Component } from 'vue'
 import ts from 'typescript'
-import { createDefaultMediaFxSpec } from '../src/features/media-fx/media-fx'
+import { createDefaultMediaFxSpec, mediaFxFilterToCss } from '../src/features/media-fx/media-fx'
+import { vMediaFx } from '../src/features/media-fx/media-fx-dom'
 import { createDefaultTheaterPresentation, normalizeTheaterPresentation, type TheaterMediaRef } from '../src/types/theaterPresentation'
 import { createTheaterPresentationEditorState, createTheaterVisualLayer, dispatchTheaterEditorCommand } from '../src/components/theater-presentation/theaterPresentationEditorState'
 import { createTheaterMediaFxAdvancedController, type TheaterMediaFxRasterJob } from '../src/components/theater-presentation/theaterMediaFxAdvanced'
@@ -25,7 +26,17 @@ export const runAdvancedHostTests = async () => {
     props: Record<string, unknown>
     children: Node[]
     parent?: Node
-    style: { display: string }
+    style: { display: string, filter: string, removeProperty(name: string): void }
+    animations: Array<{ cancelled: boolean, cancel(): void }>
+    animate(): { cancelled: boolean, cancel(): void }
+    currentTime: number
+    playbackRate: number
+    defaultPlaybackRate: number
+    playCalls: number
+    pauseCalls: number
+    sourceWrites: number
+    play(): Promise<void>
+    pause(): void
     width: number
     height: number
     getBoundingClientRect(): { width: number, height: number }
@@ -39,13 +50,26 @@ export const runAdvancedHostTests = async () => {
     fit: 'cover' as 'cover' | null,
     maxTextureSize: 4096 as number | null,
     gpuAvailable: true,
+    canvasFilter: true,
   }
   let notifyGpu: ((available: boolean) => void) | null = null
   const presented: unknown[] = []
-  const node = (tag: string): Node => ({
-    tag, props: {}, children: [], style: { display: '' }, width: 300, height: 150,
+  class ElementStub {}
+  const node = (tag: string): Node => Object.assign(new ElementStub(), {
+    tag, props: {}, children: [],
+    style: { display: '', filter: '', removeProperty(name: string) { if (name === 'filter') this.filter = '' } },
+    animations: [] as Node['animations'],
+    animate(this: Node) {
+      const animation = { cancelled: false, cancel() { this.cancelled = true } }
+      this.animations.push(animation)
+      return animation
+    },
+    currentTime: 0, playbackRate: 1, defaultPlaybackRate: 1, playCalls: 0, pauseCalls: 0, sourceWrites: 0,
+    play(this: Node) { this.playCalls += 1; return Promise.resolve() },
+    pause(this: Node) { this.pauseCalls += 1 },
+    width: 300, height: 150,
     getBoundingClientRect: () => ({ width: 300, height: 150 }),
-    getContext: () => control.failPresent ? null : ({ drawImage: output => { presented.push(output) } }),
+    getContext: () => control.failPresent ? null : ({ drawImage: (output: unknown) => { presented.push(output) } }),
   })
   const renderer = createRenderer<Node, Node>({
     createElement: node,
@@ -53,7 +77,10 @@ export const runAdvancedHostTests = async () => {
     createComment: () => node('#comment'),
     setText: () => undefined,
     setElementText: () => undefined,
-    patchProp: (el, key, _old, value) => { el.props[key] = value },
+    patchProp: (el, key, _old, value) => {
+      el.props[key] = value
+      if (key === 'src') el.sourceWrites += 1
+    },
     insert: (el, parent, anchor) => {
       if (el.parent) el.parent.children = el.parent.children.filter(child => child !== el)
       el.parent = parent
@@ -74,6 +101,13 @@ export const runAdvancedHostTests = async () => {
     disposed: boolean
   }
   const temporalPlayers: TemporalPlayerStub[] = []
+  // Live renderer stub: the real scheduling / GPU session are covered by media-fx-live-regression.
+  type LiveRendererStub = {
+    options: { onLiveChange: (live: boolean) => void }
+    updates: Array<{ video: unknown, sourceKey: string, stageKey: string, advanced: unknown, temporal: unknown, active: boolean }>
+    disposed: boolean
+  }
+  const liveRenderers: LiveRendererStub[] = []
   const hostProps = shallowRef<Record<string, unknown>>({})
   const timers: Array<() => void> = []
   const rasters: TheaterMediaFxRasterJob[] = []
@@ -83,13 +117,29 @@ export const runAdvancedHostTests = async () => {
   const localRequire = (id: string): unknown => {
     if (id === '@/stores/display') return { useDisplayStore: () => ({ settings: { preferStaticAvatarDecoration: false } }) }
     if (id === '@/composables/useAttachmentResolver') return { resolveAttachmentUrl: (id: string) => `https://cdn.test/${id}.png` }
-    if (id === '@/features/media-fx/media-fx-dom') return { vMediaFx: {} }
+    if (id === '@/features/media-fx/media-fx-dom') return { vMediaFx }
     if (id === '@/features/media-fx/media-fx-gpu') return {
       mediaFxGpuSupported: () => control.gpuAvailable,
       mediaFxGpuMaxTextureSize: () => control.maxTextureSize,
       subscribeMediaFxGpuAvailability: (listener: (available: boolean) => void) => {
         notifyGpu = listener
         return () => { notifyGpu = null }
+      },
+    }
+    if (id === '@/features/media-fx/media-fx-canvas') return {
+      ...require('../src/features/media-fx/media-fx-canvas'),
+      canvasFilterSupported: () => control.canvasFilter,
+    }
+    if (id === '@/features/media-fx/media-fx-live') return {
+      ...require('../src/features/media-fx/media-fx-live'),
+      createMediaFxLiveRenderer: (options: LiveRendererStub['options']) => {
+        const live: LiveRendererStub & Record<string, unknown> = {
+          options, updates: [], disposed: false,
+          update(input: LiveRendererStub['updates'][number]) { live.updates.push(input) },
+          dispose() { live.disposed = true },
+        }
+        liveRenderers.push(live)
+        return live
       },
     }
     if (id === '@/features/media-fx/media-fx-temporal') return {
@@ -154,6 +204,8 @@ export const runAdvancedHostTests = async () => {
   let app = createApp()
   const originalDocument = globalThis.document
   const originalWindow = globalThis.window
+  const originalHTMLElement = globalThis.HTMLElement
+  globalThis.HTMLElement = ElementStub as unknown as typeof HTMLElement
   globalThis.document = { createElement: () => ({ canPlayType: () => 'probably', width: 0, height: 0, getContext: () => ({ drawImage: () => undefined }) }) } as unknown as Document
   globalThis.window = { devicePixelRatio: 1 } as unknown as Window & typeof globalThis
   const root = node('root')
@@ -457,7 +509,161 @@ export const runAdvancedHostTests = async () => {
     await nextTick()
     assert.equal(rasters.at(-1)!.attachmentId, 'host-light-current', 'the stale bloom job never commits over the new source')
     assert.equal(canvas().style.display, '')
+
+    // Motion + all seven Basic Filters use the real directive on the original media.
+    // Stored GPU effects on animated media must never hide it or schedule a raster.
+    const dynamicFx = {
+      ...lit({ bloom: 0.6, glow: 0.3 }),
+      motion: { preset: 'breathe' as const, intensity: 0.5, durationMs: 4000, loop: true },
+      filter: { brightness: 0.7, contrast: 1.2, saturation: 0.5, grayscale: 0.2, sepia: 0.3, hueRotate: 45, blurPx: 1.5 },
+    }
+    const css = 'brightness(0.7) contrast(1.2) saturate(0.5) grayscale(0.2) sepia(0.3) hue-rotate(45deg) blur(1.5px)'
+    const host = root.children[0]
+    const dynamicRasterCount = rasters.length
+    const dynamicLoadCount = loads.length
+    const setFx = (mediaFx: unknown) => dispatch({ type: 'set-media-fx', target: { kind: 'dialogue-frame' }, mediaFx })
+    for (const [kind, mimeType] of [
+      ['static_image', 'image/png'], ['static_image', 'image/webp'],
+      ['animated_image', 'image/webp'],
+      ['video', 'video/webm'],
+    ] as const) {
+      const dynamic = kind !== 'static_image'
+      dispatch({ type: 'set-media', target: { kind: 'dialogue-frame' }, media: {
+        ...still, kind, mimeType, resourceAttachmentId: `host-${mimeType}`, fallbackAttachmentId: 'host-dynamic-fallback',
+      } })
+      setFx(dynamic ? dynamicFx : { ...dynamicFx, advanced: night().advanced, temporal: night().temporal })
+      await flush()
+      const element = root.children[0].children.find(child => child.tag === (kind === 'video' ? 'video' : 'img'))!
+      if (kind === 'video') (element.props.onLoadeddata as () => void)()
+      else loadImage()
+      await flush()
+      assert.equal(canvas() !== undefined, kind === 'video', `${mimeType}: only a loaded WebM video gets a (live) output canvas`)
+      assert.notEqual((element.props.style as { visibility?: string })?.visibility, 'hidden')
+      const liveRenderer = liveRenderers.at(-1)!
+      const lastLive = () => liveRenderer.updates.at(-1)!
+      if (kind === 'video') {
+        // Phase 2: the loaded video is the live renderer's input; it stays visible with its
+        // CSS basic filter until the first processed frame is presented.
+        assert.equal(canvas().style.display, 'none', 'live output stays hidden before its first frame')
+        assert.equal(toRaw(lastLive().video), element)
+        assert.equal(lastLive().active, true)
+        assert.ok(lastLive().advanced, 'video gets live advanced')
+        assert.ok(lastLive().stageKey.includes(css), 'Basic is staged before advanced')
+        liveRenderer.options.onLiveChange(true)
+        await flush()
+        assert.equal((element.props.style as { visibility?: string }).visibility, 'hidden', 'live output replaces the video')
+        assert.equal((element.props.style as { filter?: string }).filter, undefined, 'basic is not applied twice while live')
+        assert.equal(canvas().style.display, '')
+        assert.equal(host.animations.at(-1)!.cancelled, false, 'Motion stays on the wrapper around the live output')
+        liveRenderer.options.onLiveChange(false)
+        await flush()
+        assert.notEqual((element.props.style as { visibility?: string })?.visibility, 'hidden', 'a failed live run shows the video again')
+        assert.equal((element.props.style as { filter?: string })?.filter, css, 'fallback keeps the CSS basic filter')
+        control.canvasFilter = false
+        setFx({ ...dynamicFx })
+        await flush()
+        assert.equal(lastLive().video, null, 'Basic that cannot be staged keeps the whole live path off')
+        assert.equal(canvas(), undefined)
+        control.canvasFilter = true
+        setFx(dynamicFx)
+        await flush()
+        assert.equal(toRaw(lastLive().video), element)
+        notifyGpu!(false)
+        await flush()
+        assert.equal(lastLive().video, null, 'losing the GPU falls back to the original video')
+        assert.equal((element.props.style as { filter?: string })?.filter, css)
+        notifyGpu!(true)
+        await flush()
+        assert.equal(toRaw(lastLive().video), element)
+      } else {
+        assert.ok(liveRenderer.updates.every(update => update.video === null), `${mimeType}: no live input`)
+      }
+      if (dynamic) {
+        assert.equal(host.style.filter, '', `${mimeType}: dynamic filters stay off the motion wrapper`)
+        assert.equal((element.props.style as { filter?: string })?.filter, css, `${mimeType}: every Basic Filter reaches the live media element`)
+      } else {
+        assert.equal(host.style.filter, css, `${mimeType}: static Basic Filters keep the wrapper path`)
+      }
+      const animation = host.animations.at(-1)!
+      assert.equal(animation.cancelled, false, `${mimeType}: Motion plays alongside filters`)
+      const animationCount = host.animations.length
+      element.currentTime = 12.5
+      const playback = () => [element.currentTime, element.playCalls, element.pauseCalls, element.playbackRate, element.defaultPlaybackRate, element.sourceWrites]
+      const beforeEdits = playback()
+      const edit = { ...dynamicFx, filter: { ...dynamicFx.filter, brightness: 1.4 }, advanced: dynamic ? dynamicFx.advanced : night().advanced, temporal: dynamic ? dynamicFx.temporal : night().temporal }
+      setFx(edit)
+      await flush()
+      if (dynamic) {
+        assert.equal(host.style.filter, '')
+        assert.equal((element.props.style as { filter?: string })?.filter, mediaFxFilterToCss(edit.filter))
+      } else {
+        assert.equal(host.style.filter, mediaFxFilterToCss(edit.filter))
+      }
+      assert.equal(root.children[0].children.includes(element), true, 'filter edits reuse the media node')
+      assert.deepEqual(playback(), beforeEdits, 'filter edits never reload, seek, play or pause media')
+      setFx({ ...edit, filter: createDefaultMediaFxSpec().filter })
+      await flush()
+      assert.equal(host.style.filter, '', 'clearing only the filter removes stale wrapper CSS')
+      if (dynamic) assert.equal((element.props.style as { filter?: string })?.filter, undefined, 'clearing removes direct media CSS')
+      assert.equal(host.animations.length, animationCount, 'filter changes preserve the Motion clock')
+      assert.equal(animation.cancelled, false)
+      assert.deepEqual(playback(), beforeEdits)
+
+      setFx(edit)
+      hostProps.value = { reducedMotion: true }
+      await flush()
+      assert.equal(animation.cancelled, true, 'reduced motion stops only Motion')
+      if (kind === 'video') assert.equal(lastLive().temporal, null, 'reduced motion stops live temporal')
+      if (dynamic) assert.equal((element.props.style as { filter?: string })?.filter, mediaFxFilterToCss(edit.filter), 'reduced motion keeps direct Basic Filters')
+      else assert.equal(host.style.filter, mediaFxFilterToCss(edit.filter), 'reduced motion keeps Basic Filters')
+      assert.deepEqual(playback(), beforeEdits)
+      hostProps.value = {}
+      await flush()
+
+      if (kind === 'video') {
+        hostProps.value = { active: false, playbackRate: 1.5 }
+        await flush()
+        assert.equal(lastLive().active, false, 'inactive visuals stop live work')
+        assert.equal(element.pauseCalls, beforeEdits[2] + 1, 'existing active control pauses the video')
+        assert.equal(element.playbackRate, 1.5)
+        assert.equal(element.defaultPlaybackRate, 1.5)
+        const paused = playback()
+        setFx({ ...edit, filter: { ...edit.filter, contrast: 0.8 } })
+        await flush()
+        assert.deepEqual(playback(), paused, 'filter edits keep paused video and its rate / time')
+        setFx(edit)
+        hostProps.value = {}
+        await flush()
+        assert.equal(element.playCalls, paused[1] + 1, 'existing active control resumes the video')
+        assert.equal(element.currentTime, paused[0])
+      }
+
+      if (dynamic) {
+        ;(element.props.onError as () => void)()
+        await flush()
+        loadImage()
+        await flush()
+        assert.equal(image().props['data-attachment-id'], 'host-dynamic-fallback')
+        assert.equal((image().props.style as { filter?: string })?.filter, mediaFxFilterToCss(edit.filter), 'fallback retains the current basic look')
+        assert.equal(originalHidden(), false, 'animated fallback never enters Advanced')
+        assert.equal(canvas(), undefined)
+      }
+      for (const empty of [null, createDefaultMediaFxSpec()]) {
+        if (empty === null) changeSource(`host-switched-${mimeType}`)
+        setFx(empty)
+        await flush()
+        assert.equal(host.style.filter, '', 'empty / default FX clears the previous source look')
+        assert.ok(host.animations.every(animation => animation.cancelled), 'empty / default FX has no running Motion')
+        assert.equal(temporalPlayers.at(-1)!.updates.at(-1)!.active, false)
+        assert.equal(timers.length, 0, 'empty / default FX schedules no raster work')
+        assert.equal(canvas(), undefined)
+        assert.equal(lastLive().video, null, 'empty FX / source replacement leaves no live input')
+      }
+    }
+    assert.equal(rasters.length, dynamicRasterCount, 'dynamic / basic-only media never rasterize')
+    assert.equal(loads.length, dynamicLoadCount, 'dynamic media never decode a static GPU source')
     app.unmount()
+    assert.equal(host.style.filter, '', 'unmount clears the directive style')
     assert.equal(player.disposed, true, 'unmount disposes the player')
     app = createApp()
     app.mount(root)
@@ -465,5 +671,6 @@ export const runAdvancedHostTests = async () => {
     app.unmount()
     globalThis.document = originalDocument
     globalThis.window = originalWindow
+    globalThis.HTMLElement = originalHTMLElement
   }
 }

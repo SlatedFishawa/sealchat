@@ -39,14 +39,7 @@ func AttachmentThumb(c *fiber.Ctx) error {
 		})
 	}
 
-	// Parse size parameter (default 150, max 400)
-	size := c.QueryInt("size", 150)
-	if size < 50 {
-		size = 50
-	}
-	if size > 400 {
-		size = 400
-	}
+	size := thumbnailSizeFromQuery(c)
 
 	// Get attachment metadata
 	var att model.AttachmentModel
@@ -96,6 +89,18 @@ func AttachmentThumb(c *fiber.Ctx) error {
 	// Serve the generated thumbnail
 	setThumbCacheHeaders(c)
 	return c.SendFile(thumbPath)
+}
+
+// thumbnailSizeFromQuery parses the size parameter (default 150, clamped to 50..400).
+func thumbnailSizeFromQuery(c *fiber.Ctx) int {
+	size := c.QueryInt("size", 150)
+	if size < 50 {
+		size = 50
+	}
+	if size > 400 {
+		size = 400
+	}
+	return size
 }
 
 // getThumbCachePath returns the cache path for a thumbnail (.webp)

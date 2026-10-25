@@ -2,6 +2,7 @@ import { getFontAssetById, isFontAssetCacheAvailable, saveFontAsset } from '@/se
 import { sanitizeFontFamilyName } from '@/services/font/fontUtils'
 import type { FontAssetRecord } from '@/services/font/types'
 import type { DisplaySettings } from '@/stores/display'
+import { inflateRaw } from '@/services/zip/zipCompression'
 
 const TRANSFER_KIND = 'sealchat-display-settings'
 const TRANSFER_VERSION = 1
@@ -236,14 +237,6 @@ const findEndOfCentralDirectory = (bytes: Uint8Array): number => {
   return -1
 }
 
-const inflateDeflateRaw = async (bytes: Uint8Array): Promise<Uint8Array> => {
-  if (typeof DecompressionStream === 'undefined') {
-    throw new Error('当前浏览器不支持解压缩 ZIP 条目')
-  }
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))
-  return new Uint8Array(await new Response(stream).arrayBuffer())
-}
-
 export const parseZip = async (bytes: Uint8Array): Promise<Map<string, ParsedZipEntry>> => {
   const eocdOffset = findEndOfCentralDirectory(bytes)
   if (eocdOffset < 0) {
@@ -295,7 +288,7 @@ export const parseZip = async (bytes: Uint8Array): Promise<Map<string, ParsedZip
     if (compressionMethod === 0) {
       entryData = compressedData
     } else if (compressionMethod === 8) {
-      entryData = await inflateDeflateRaw(compressedData)
+      entryData = await inflateRaw(compressedData)
     } else {
       throw new Error(`ZIP 条目 ${filename} 使用了不支持的压缩方式`)
     }

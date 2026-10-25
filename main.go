@@ -170,6 +170,8 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	var exportWorkerDone <-chan struct{}
+	var exportWorkerMu sync.Mutex
 
 	model.DBInit(config)
 	if err := model.RunSchemaMigration(model.GetDB(), "theater_state_json_repair_v1", func() error {
@@ -207,6 +209,16 @@ func main() {
 	shutdown := func() {
 		shutdownOnce.Do(func() {
 			cancel()
+			exportWorkerMu.Lock()
+			workerDone := exportWorkerDone
+			exportWorkerMu.Unlock()
+			if workerDone != nil {
+				select {
+				case <-workerDone:
+				case <-time.After(10 * time.Second):
+					log.Print("export: 等待导出 worker 退出超时")
+				}
+			}
 			api.StopRuntimeCertificateManager()
 			cleanUp()
 			releaseStartupLock()
@@ -263,14 +275,23 @@ func main() {
 		BandwidthKBps: config.Export.DownloadBandwidthKBps,
 		BurstKB:       config.Export.DownloadBurstKB,
 	})
-	service.StartMessageExportWorker(service.MessageExportWorkerConfig{
+	// 后台 LOG PDF：外置 Chromium 运行时（推荐 chrome-headless-shell），未安装时安全降级。
+	service.SetLogPDFSurfaceFS(embedDirStatic)
+	service.InitLogPDFRuntime(config.Export.PDF, config.Export.StorageDir)
+	exportWorkerMu.Lock()
+	exportWorkerDone = service.StartMessageExportWorker(ctx, service.MessageExportWorkerConfig{
 		StorageDir:          config.Export.StorageDir,
 		HTMLPageSizeDefault: config.Export.HTMLPageSizeDefault,
 		HTMLPageSizeMax:     config.Export.HTMLPageSizeMax,
 		HTMLMaxConcurrency:  config.Export.HTMLMaxConcurrency,
 	})
+	exportWorkerMu.Unlock()
 	service.StartTheaterPackageWorker(ctx, config.Export.StorageDir)
 	service.StartTTSWorker(ctx)
+	if err := service.RegisterBuiltinLogStyles(); err != nil {
+		log.Fatalf("LOG builtin styles: %v", err)
+	}
+	service.StartLogWorker(ctx, api.BroadcastMessageMutation)
 	go service.TTSPrimeMPSCatalogs()
 
 	// 未读提醒取代旧未读邮件提醒主链路；旧代码保留但不再默认启动。

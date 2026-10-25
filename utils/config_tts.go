@@ -73,6 +73,8 @@ func (p SpeechProviderConfig) SynthesisPriceConfirmed() bool {
 	}
 }
 
+const defaultSpeechSavedVoiceSlots = 8
+
 type SpeechConfig struct {
 	Enabled               bool                   `json:"enabled" yaml:"enabled"`
 	LocalFirstPlayback    bool                   `json:"localFirstPlayback" yaml:"localFirstPlayback"`

@@ -7,6 +7,9 @@ import {
 import {
   STAGE_ACTION_DELAY_STEP_MS,
   STAGE_ACTION_MAX_DELAY_MS,
+  STAGE_VIEWPORT_POSITION_DEFAULT,
+  STAGE_VIEWPORT_POSITION_MAX,
+  STAGE_VIEWPORT_POSITION_MIN,
   isSafeStageImageUrl,
   stageSceneOverlayBlendModes,
   stageSceneOverlayLayers,
@@ -14,7 +17,13 @@ import {
 import { normalizeStageRandomTablePayload } from '../shared/stage-actions'
 
 export const THEATER_BRIDGE_PROTOCOL = 'sealchat.theater' as const
-export const THEATER_BRIDGE_VERSION = '1.0' as const
+export const THEATER_BRIDGE_VERSION = '1.1' as const
+export const THEATER_BRIDGE_SUPPORTED_VERSIONS = ['1.1', '1.0'] as const
+export type TheaterBridgeVersion = typeof THEATER_BRIDGE_SUPPORTED_VERSIONS[number]
+const bridgeVersionSchema = z.enum(THEATER_BRIDGE_SUPPORTED_VERSIONS)
+export const negotiateTheaterBridgeVersion = (versions: readonly string[]) => (
+  THEATER_BRIDGE_SUPPORTED_VERSIONS.find(version => versions.includes(version))
+)
 export const THEATER_BRIDGE_MAX_MESSAGE_BYTES = 256 * 1024
 
 export const THEATER_CHAT_MESSAGE_EVENT_NAMES = [
@@ -63,7 +72,7 @@ const optionalSafeImageUrlSchema = z.string().max(8_192).refine(
 
 export const bridgeMessageEnvelopeSchema = z.strictObject({
   protocol: z.literal(THEATER_BRIDGE_PROTOCOL),
-  version: z.literal(THEATER_BRIDGE_VERSION),
+  version: bridgeVersionSchema,
   id: nonEmptyIdSchema,
   correlationId: nonEmptyIdSchema.optional(),
   kind: bridgeKindSchema,
@@ -124,6 +133,7 @@ const stageImageRefSchema = z.strictObject({
   alt: z.string().max(2_048).optional(),
   mimeType: z.string().trim().min(1).max(256).optional(),
   animated: z.boolean().optional(),
+  loopCount: z.number().int().min(1).max(65_535).optional(),
 })
 
 const stageImageAnnotationSchema = z.strictObject({
@@ -427,6 +437,10 @@ const stageObjectSchema = z.strictObject({
   type: z.enum(['group', 'drawing', 'text', 'image', 'button', 'effect', 'iframe']),
   name: z.string().max(512),
   transform: stageObjectTransformSchema,
+  // Optional on the wire so peers predating screen-fixed objects still parse as world objects.
+  coordinateSpace: z.enum(['world', 'viewport']).default('world'),
+  viewportX: z.number().finite().min(STAGE_VIEWPORT_POSITION_MIN).max(STAGE_VIEWPORT_POSITION_MAX).default(STAGE_VIEWPORT_POSITION_DEFAULT),
+  viewportY: z.number().finite().min(STAGE_VIEWPORT_POSITION_MIN).max(STAGE_VIEWPORT_POSITION_MAX).default(STAGE_VIEWPORT_POSITION_DEFAULT),
   visible: z.boolean(),
   locked: z.boolean(),
   aspectRatioLocked: z.boolean(),
@@ -536,6 +550,11 @@ const stageSceneOverlaySchema = z.strictObject({
 const stageSceneStateSchema = z.strictObject({
   background: stageImageRefSchema.nullable(),
   foreground: stageImageRefSchema.nullable(),
+  surfaceVariants: z.partialRecord(z.enum(['background', 'foreground']), z.strictObject({
+    slots: z.array(z.strictObject({ id: nonEmptyIdSchema, name: z.string().max(128), image: stageImageRefSchema.nullable() })),
+    activeId: nonEmptyIdSchema.nullable(),
+    transition: z.strictObject({ type: z.enum(['none', 'fade', 'slide', 'dissolve', 'zoom', 'blur']), durationMs: z.number().int().min(20).max(5000) }),
+  })).optional(),
   surfaceEmbeds: z.strictObject({
     background: stageSurfaceEmbedSchema.nullable(),
     foreground: stageSurfaceEmbedSchema.nullable(),
@@ -597,7 +616,7 @@ export const readyPayloadSchema = z.strictObject({
 })
 
 export const initializePayloadSchema = z.strictObject({
-  selectedVersion: z.literal(THEATER_BRIDGE_VERSION),
+  selectedVersion: bridgeVersionSchema,
   worldId: nonEmptyIdSchema,
   channelId: nonEmptyIdSchema,
   userId: z.string().max(256),
@@ -615,7 +634,7 @@ export const permissionsUpdatedPayloadSchema = z.strictObject({
 
 export const initializedPayloadSchema = z.strictObject({
   endpoint: z.enum(['stage', 'chat']),
-  selectedVersion: z.literal(THEATER_BRIDGE_VERSION),
+  selectedVersion: bridgeVersionSchema,
   capabilities: z.array(capabilitySchema).max(256),
 })
 
@@ -942,7 +961,7 @@ export const isNewerCharacterSnapshot = (
 
 export interface TheaterBridgeMessage<T = unknown> {
   protocol: typeof THEATER_BRIDGE_PROTOCOL
-  version: typeof THEATER_BRIDGE_VERSION
+  version: TheaterBridgeVersion
   id: string
   correlationId?: string
   kind: BridgeKind
@@ -972,6 +991,28 @@ export const parseTheaterBridgeMessage = (input: unknown): TheaterBridgeMessage 
     ...message,
     payload: payloadSchema.parse(message.payload),
   }
+}
+
+// Validate first, then project only StageObject fields. Never strip similarly named user content.
+// 1.0 has no viewport-placement semantics; projection removes viewport-only fields so legacy strict peers can parse the workspace.
+export const projectTheaterBridgeMessage = (
+  input: TheaterBridgeMessage,
+  version: TheaterBridgeVersion,
+): TheaterBridgeMessage => {
+  const message = parseTheaterBridgeMessage({ ...input, version })
+  if (version !== '1.0' || message.name !== 'stage.scene.read.result') return message
+  const result = stageSceneReadResultSchema.parse(message.payload)
+  if (!result.ok) return message
+  const collections = [result.state.persistentObjects, result.state.liveState.sceneObjects,
+    ...Object.values(result.state.scenes).map(scene => scene.state.sceneObjects)]
+  for (const objects of collections) {
+    for (const object of Object.values(objects)) {
+      Reflect.deleteProperty(object, 'coordinateSpace')
+      Reflect.deleteProperty(object, 'viewportX')
+      Reflect.deleteProperty(object, 'viewportY')
+    }
+  }
+  return { ...message, payload: result }
 }
 
 export const createTheaterBridgeId = (prefix = 'msg') => {

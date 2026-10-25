@@ -30,7 +30,7 @@ const quickProviderDefinitions = [{
   onlinePricingSource: '',
   baseUrlFor: () => '',
 }]
-const config = ref<SpeechConfig>({ enabled: false, localFirstPlayback: true, parallelArchive: false, worldAccessMode: 'all', worldActivationCode: '', providers: [], defaultProvider: '', defaultVoice: '', format: 'wav', quotaDefault: { dailyLimit: 0, monthlyLimit: 0, lifetimeLimit: 0 }, defaultSlots: 0, previewTTLMinutes: 30, previewLimit: 2, requestTimeoutSeconds: 90, maxConcurrent: 2, channelQueueLimit: 8 })
+const config = ref<SpeechConfig>({ enabled: false, localFirstPlayback: true, parallelArchive: false, worldAccessMode: 'all', worldActivationCode: '', providers: [], defaultProvider: '', defaultVoice: '', format: 'wav', quotaDefault: { dailyLimit: 999, monthlyLimit: 999, lifetimeLimit: 999 }, defaultSlots: 8, previewTTLMinutes: 30, previewLimit: 2, requestTimeoutSeconds: 90, maxConcurrent: 2, channelQueueLimit: 8 })
 function normalizePlaybackOptions(value: SpeechConfig): SpeechConfig {
   const localFirstPlayback = value.localFirstPlayback !== false
   return { ...value, localFirstPlayback, parallelArchive: localFirstPlayback && value.parallelArchive === true }

@@ -232,7 +232,7 @@ func EnqueueAppNotificationForMessageWithMeow(messageID, webURL, publicOrigin, f
 		if senderName == "" {
 			senderName = strings.TrimSpace(message.User.Nickname)
 		}
-		if senderAvatar == "" && !message.SenderIdentityIsTemporary {
+		if senderAvatar == "" && !message.SenderIdentityIsTemporary && message.SenderIdentityAvatarTextStyle == "" {
 			senderAvatar = strings.TrimSpace(message.User.Avatar)
 		}
 	}

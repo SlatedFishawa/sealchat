@@ -266,11 +266,69 @@ const richContent = computed(() => {
   const content = message.value?.contentRichText || ''
   return content && isTipTapJson(content) ? content : ''
 })
+
+type TheaterRichRevealNode = {
+  type?: string
+  text?: string
+  attrs?: Record<string, unknown>
+  marks?: Array<{ type?: string; attrs?: Record<string, unknown> }>
+  content?: TheaterRichRevealNode[]
+  [key: string]: unknown
+}
+
+const hasRubyContent = computed(() => {
+  if (!richContent.value) return false
+  try {
+    const visit = (node: TheaterRichRevealNode): boolean => (
+      Boolean(node.marks?.some((mark) => mark?.type === 'ruby'))
+      || Boolean(node.content?.some(visit))
+    )
+    return visit(JSON.parse(richContent.value) as TheaterRichRevealNode)
+  } catch {
+    return false
+  }
+})
+
+const revealedRichContent = computed(() => {
+  if (!richContent.value || !typing.value || useRichPlayback.value || !hasRubyContent.value) return richContent.value
+  try {
+    let remaining = current.value?.revealedCharacters || 0
+    const revealNode = (node: TheaterRichRevealNode): TheaterRichRevealNode | null => {
+      if (typeof node.text === 'string') {
+        if (remaining <= 0) return null
+        const characters = Array.from(node.text)
+        const visible = characters.slice(0, remaining)
+        remaining -= visible.length
+        return visible.length ? { ...node, text: visible.join('') } : null
+      }
+      if (node.type === 'hardBreak') {
+        if (remaining <= 0) return null
+        remaining -= 1
+        return { ...node }
+      }
+      if (!node.content?.length) return null
+      const content: TheaterRichRevealNode[] = []
+      for (const child of node.content) {
+        const revealed = revealNode(child)
+        if (revealed) content.push(revealed)
+        if (remaining <= 0) break
+      }
+      if (node.type !== 'doc' && content.length === 0) return null
+      return { ...node, content }
+    }
+    const revealed = revealNode(JSON.parse(richContent.value) as TheaterRichRevealNode)
+    return JSON.stringify(revealed || { type: 'doc', content: [] })
+  } catch {
+    return ''
+  }
+})
 const useRichPlayback = computed(() => {
   if (!richContent.value) return false
   return hasTheaterDialoguePerformanceContent(message.value)
 })
-const showRichContent = computed(() => Boolean(richContent.value && (!typing.value || useRichPlayback.value)))
+const showRichContent = computed(() => Boolean(
+  richContent.value && (!typing.value || useRichPlayback.value || hasRubyContent.value),
+))
 const mediaActive = computed(() => Boolean(current.value && typing.value && visibleInViewport.value))
 const speakerColor = computed(() => {
   if (props.controller?.enabled) return presentation.value.dialogue.contentColor
@@ -580,7 +638,7 @@ onBeforeUnmount(() => {
                 ref="richTextRef"
                 :key="message?.messageId"
                 class="theater-dialogue-rich-text"
-                :content="richContent"
+                :content="revealedRichContent"
                 :autoplay="useRichPlayback && typing"
                 :debug-playback="isTheaterBridgeDebugEnabled()"
                 :characters-per-second="presentation.dialogue.charactersPerSecond"

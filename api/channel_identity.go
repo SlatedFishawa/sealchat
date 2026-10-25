@@ -18,6 +18,7 @@ type channelIdentityPayload struct {
 	DisplayName                string                               `json:"displayName"`
 	Color                      string                               `json:"color"`
 	AvatarAttachmentID         string                               `json:"avatarAttachmentId"`
+	AvatarTextStyle            *string                              `json:"avatarTextStyle"`
 	AvatarDecoration           *protocol.AvatarDecoration           `json:"avatarDecoration"`
 	AvatarDecorations          protocol.AvatarDecorationList        `json:"avatarDecorations"`
 	IsDefault                  bool                                 `json:"isDefault"`
@@ -100,6 +101,9 @@ func ChannelIdentityGet(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	if err := service.ApplyTemporaryIdentityActivateModes(ctx.TargetUserID, []*model.ChannelIdentityModel{item}); err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
 	return c.JSON(fiber.Map{"item": item})
 }
 
@@ -127,6 +131,7 @@ func ChannelIdentityCreate(c *fiber.Ctx) error {
 		DisplayName:                payload.DisplayName,
 		Color:                      payload.Color,
 		AvatarAttachmentID:         payload.AvatarAttachmentID,
+		AvatarTextStyle:            channelIdentityOptionalString(payload.AvatarTextStyle),
 		AvatarDecorations:          resolveChannelIdentityPayloadDecorations(payload),
 		IsDefault:                  payload.IsDefault,
 		IsTemporary:                payload.IsTemporary,
@@ -187,11 +192,20 @@ func ChannelIdentityUpdate(c *fiber.Ctx) error {
 	if payload.PromoteToShared && ctx.OperatorUserID != ctx.TargetUserID {
 		return c.Status(http.StatusForbidden).JSON(fiber.Map{"error": service.ErrSharedChannelIdentityOwnerOnly.Error()})
 	}
+	avatarTextStyle := channelIdentityAvatarTextStyleForUpdate(payload, "")
+	if payload.AvatarTextStyle == nil && strings.TrimSpace(payload.AvatarAttachmentID) == "" {
+		current, currentErr := model.ChannelIdentityValidateOwnership(identityID, ctx.TargetUserID, payload.ChannelID)
+		if currentErr != nil {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"error": currentErr.Error()})
+		}
+		avatarTextStyle = channelIdentityAvatarTextStyleForUpdate(payload, current.AvatarTextStyle)
+	}
 	updateInput := &service.ChannelIdentityInput{
 		ChannelID:                  payload.ChannelID,
 		DisplayName:                payload.DisplayName,
 		Color:                      payload.Color,
 		AvatarAttachmentID:         payload.AvatarAttachmentID,
+		AvatarTextStyle:            avatarTextStyle,
 		AvatarDecorations:          resolveChannelIdentityPayloadDecorations(payload),
 		IsDefault:                  payload.IsDefault,
 		IsTemporary:                payload.IsTemporary,
@@ -418,6 +432,16 @@ func resolveChannelIdentityPayloadDecorations(payload channelIdentityPayload) pr
 		return protocol.AvatarDecorationList{*payload.AvatarDecoration}
 	}
 	return nil
+}
+
+func channelIdentityAvatarTextStyleForUpdate(payload channelIdentityPayload, fallback string) string {
+	if payload.AvatarTextStyle != nil {
+		return *payload.AvatarTextStyle
+	}
+	if strings.TrimSpace(payload.AvatarAttachmentID) != "" {
+		return ""
+	}
+	return fallback
 }
 
 func channelIdentityOptionalString(value *string) string {

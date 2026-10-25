@@ -469,6 +469,30 @@ export const useUtilsStore = defineStore({
       return resp;
     },
 
+    async adminExportPDFGet() {
+      const user = useUserStore();
+      return api.get('api/v1/admin/export-pdf', {
+        headers: { 'Authorization': user.token },
+      });
+    },
+
+    // 保存与重新探测会同步运行浏览器冒烟测试，超时放宽到 3 分钟。
+    async adminExportPDFUpdate(config: Record<string, unknown>) {
+      const user = useUserStore();
+      return api.put('api/v1/admin/export-pdf', { config }, {
+        headers: { 'Authorization': user.token },
+        timeout: 180000,
+      });
+    },
+
+    async adminExportPDFProbe() {
+      const user = useUserStore();
+      return api.post('api/v1/admin/export-pdf/probe', {}, {
+        headers: { 'Authorization': user.token },
+        timeout: 180000,
+      });
+    },
+
     async adminAIConfigGet() {
       const user = useUserStore();
       const resp = await api.get('api/v1/admin/ai/config', {

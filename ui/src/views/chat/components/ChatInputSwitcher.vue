@@ -49,6 +49,7 @@ const emit = defineEmits<{
   (event: 'blur'): void
   (event: 'composition-start'): void
   (event: 'composition-end'): void
+  (event: 'selection-change'): void
   (event: 'rich-needed'): void
   (event: 'paste-image', payload: { files: File[]; selectionStart: number; selectionEnd: number }): void
   (event: 'drop-files', payload: { files: File[]; selectionStart: number; selectionEnd: number }): void
@@ -108,6 +109,10 @@ const handleCompositionStart = () => {
 
 const handleCompositionEnd = () => {
   emit('composition-end');
+};
+
+const handleSelectionChange = () => {
+  emit('selection-change');
 };
 
 const handlePasteImage = (payload: { files: File[]; selectionStart: number; selectionEnd: number }) => {
@@ -200,6 +205,15 @@ const setSelectionRange = (start: number, end: number) => {
   }
 };
 
+const commitInputMutation = (nextValue: string, cursor: number) => {
+  const input = plainRef.value;
+  if (modeRef.value !== 'plain' || !input?.commitInputMutation) {
+    return false;
+  }
+  input.commitInputMutation(nextValue, cursor);
+  return true;
+};
+
 const moveCursorToEnd = () => {
   if (modeRef.value === 'plain') {
     plainRef.value?.moveCursorToEnd?.();
@@ -219,6 +233,7 @@ defineExpose({
   getSelectionRange,
   setSelectionRange,
   moveCursorToEnd,
+  commitInputMutation,
   getMode: () => modeRef.value,
   switchMode,
 });
@@ -248,6 +263,7 @@ defineExpose({
     @blur="handleBlur"
     @composition-start="handleCompositionStart"
     @composition-end="handleCompositionEnd"
+    @selection-change="handleSelectionChange"
     @remove-image="handleRemoveImage"
     @paste-image="handlePasteImage"
     @drop-files="handleDropFiles"
@@ -276,6 +292,7 @@ defineExpose({
     @blur="handleBlur"
     @composition-start="handleCompositionStart"
     @composition-end="handleCompositionEnd"
+    @selection-change="handleSelectionChange"
     @paste-image="handlePasteImage"
     @drop-files="handleDropFiles"
     @drop-gallery-item="handleDropGalleryItem"

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,332 @@ import (
 	"sealchat/protocol"
 	"sealchat/utils"
 )
+
+func screenFixedReviewObject(id, kind, parent, space string) map[string]any {
+	object := map[string]any{"id": id, "kind": kind, "name": id, "parentId": parent,
+		"coordinateSpace": space, "viewportX": 0.2, "viewportY": 0.8,
+		"x": 2, "y": 3, "width": 10, "height": 10, "rotation": 0, "z": 0,
+		"orderKey": id, "visible": true, "content": map[string]any{}, "actions": []any{}, "metadata": map[string]any{}}
+	if kind == "effect" {
+		object["content"] = map[string]any{"effect": map[string]any{
+			"version": 1, "kind": "builtin", "keywords": []any{}, "durationMs": 3000, "cooldownMs": 0,
+			"builtin": map[string]any{"theme": "brush", "format": "popout", "text": "test", "subText": "",
+				"accentColor": "#fff", "mainTextColor": "#fff", "subTextColor": "#fff", "dimIntensity": 0, "shakeIntensity": 0,
+				"mediaTransform": map[string]any{"x": 0, "y": 0, "scale": 1, "rotation": 0, "mirror": false}},
+		}}
+	}
+	return object
+}
+
+func TestTheaterCoordinateSpaceTreeMutationRestoreAndDesign(t *testing.T) {
+	actor, world, _ := initWorldTheaterServiceTest(t)
+	revision := int64(0)
+	apply := func(kind string, payload any, wantError bool) {
+		t.Helper()
+		_, err := ApplyTheaterMutation(t.Context(), actor, TheaterMutationCommand{
+			MutationID: utils.NewID(), WorldID: world, ExpectedRevision: revision, Type: kind,
+			Payload: worldTheaterPayload(t, payload),
+		}, TheaterRequestMeta{})
+		if wantError {
+			if !IsTheaterErrorCode(err, TheaterErrorPayloadInvalid) {
+				t.Fatalf("expected payload error, got %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision++
+	}
+	apply(TheaterMutationSceneCreate, map[string]any{"sceneId": "scene", "name": "Scene", "order": 1, "state": map[string]any{}}, false)
+	create := func(id, kind, parent, space string, wantError bool) {
+		t.Helper()
+		apply(TheaterMutationObjectCreate, map[string]any{"sceneId": "scene", "object": screenFixedReviewObject(id, kind, parent, space)}, wantError)
+	}
+	create("z-root", "group", "", "viewport", false)
+	create("a-child", "group", "z-root", "world", false)
+	create("grandchild", "image", "a-child", "world", false)
+	create("world-root", "group", "", "world", false)
+	room, err := model.TheaterRoomCreateIfMissing(world, "", actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSpace := func(space string, ids ...string) {
+		t.Helper()
+		for _, id := range ids {
+			row, err := loadTheaterObject(model.GetDB(), room.ID, id)
+			if err != nil || row.CoordinateSpace != space {
+				t.Fatalf("%s expected %s: row=%#v err=%v", id, space, row, err)
+			}
+		}
+	}
+	assertSpace("viewport", "z-root", "a-child", "grandchild")
+	update := func(id string, fields map[string]any) {
+		t.Helper()
+		apply(TheaterMutationObjectUpdate, map[string]any{"objectId": id, "fields": fields}, false)
+	}
+	update("a-child", map[string]any{"coordinateSpace": "world"})
+	assertSpace("viewport", "a-child", "grandchild")
+	apply(TheaterMutationObjectUpdate, map[string]any{"objectId": "a-child", "fields": map[string]any{"parentId": "world-root"}}, true)
+	assertSpace("viewport", "a-child", "grandchild") // Cross-space reparent is rejected.
+	apply(TheaterMutationObjectBatchUpdate, map[string]any{"updates": []any{
+		map[string]any{"objectId": "a-child", "fields": map[string]any{
+			"parentId": "world-root", "x": 4.0, "y": 5.0, "rotation": 10.0, "scaleX": 1.1, "scaleY": 0.9,
+		}},
+		map[string]any{"objectId": "world-root", "fields": map[string]any{"coordinateSpace": "viewport"}},
+	}}, false)
+	assertSpace("viewport", "world-root", "a-child", "grandchild")
+	apply(TheaterMutationObjectUpdate, map[string]any{"objectId": "a-child", "fields": map[string]any{"parentId": ""}}, true)
+	update("a-child", map[string]any{
+		"parentId": "", "viewportX": 0.33, "viewportY": 0.66, "rotation": 12.0, "scaleX": 1.2, "scaleY": 0.8,
+	})
+	assertSpace("viewport", "a-child", "grandchild")
+	detached, err := loadTheaterObject(model.GetDB(), room.ID, "a-child")
+	if err != nil || detached.ParentID != "" || detached.ViewportX != 0.33 || detached.ViewportY != 0.66 {
+		t.Fatalf("detached viewport root lost target pose: row=%#v err=%v", detached, err)
+	}
+	apply(TheaterMutationObjectBatchUpdate, map[string]any{"updates": []any{
+		map[string]any{"objectId": "a-child", "fields": map[string]any{
+			"parentId": "world-root", "x": 4.0, "y": 5.0, "rotation": 10.0, "scaleX": 1.1, "scaleY": 0.9,
+		}},
+		map[string]any{"objectId": "world-root", "fields": map[string]any{"coordinateSpace": "world"}},
+	}}, true)
+	assertSpace("viewport", "world-root", "a-child", "grandchild")
+	detachedAfterRejectedBatch, err := loadTheaterObject(model.GetDB(), room.ID, "a-child")
+	if err != nil || detachedAfterRejectedBatch.ParentID != "" {
+		t.Fatalf("cross-space batch was not fully rolled back: row=%#v err=%v", detachedAfterRejectedBatch, err)
+	}
+	create("effect", "effect", "world-root", "world", true)
+	create("effect", "effect", "", "world", false)
+	for _, fields := range []map[string]any{{"coordinateSpace": "viewport"}, {"parentId": "world-root"}} {
+		apply(TheaterMutationObjectUpdate, map[string]any{"objectId": "effect", "fields": fields}, true)
+	}
+	assertSpace("world", "effect")
+	apply(TheaterMutationObjectBatchUpdate, map[string]any{"updates": []any{
+		map[string]any{"objectId": "world-root", "fields": map[string]any{"coordinateSpace": "world"}},
+		map[string]any{"objectId": "a-child", "fields": map[string]any{"parentId": "a-child"}},
+	}}, true)
+	assertSpace("viewport", "world-root") // Entire failed batch rolled back.
+
+	update("a-child", map[string]any{
+		"parentId": "z-root", "x": 6.0, "y": 7.0, "rotation": 14.0, "scaleX": 1.0, "scaleY": 1.0,
+	})
+	snapshot, err := GetTheaterSnapshot(t.Context(), actor, world, "", TheaterSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scene := snapshot.Snapshot.Scenes["scene"]
+	child := scene.Objects["a-child"]
+	child.CoordinateSpace, child.ViewportX, child.ViewportY = "world", nil, nil
+	scene.Objects[child.ID] = child // Simulate an older mixed canonical snapshot.
+	_, err = ReplaceTheaterSnapshot(t.Context(), actor, TheaterReplaceCommand{
+		MutationID: utils.NewID(), WorldID: world, ExpectedRevision: revision,
+		SchemaVersion: model.TheaterSchemaVersion, Snapshot: snapshot.Snapshot, Reason: "coordinate-space regression",
+	}, TheaterRequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision++
+	assertSpace("viewport", "z-root", "a-child", "grandchild")
+	update("world-root", map[string]any{"coordinateSpace": "world"})
+	coordinateSnapshot, err := GetTheaterSnapshot(t.Context(), actor, world, "", TheaterSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCoordinateObjects := theaterDesignAllObjects(coordinateSnapshot.Snapshot)
+	afterCoordinateObjects := cloneTheaterObjectCoordinateMap(beforeCoordinateObjects)
+	coordinateChild := afterCoordinateObjects["a-child"]
+	coordinateChild.ParentID = optionalString("world-root")
+	afterCoordinateObjects["a-child"] = coordinateChild
+	coordinateUpdate := theaterObjectUpdatePayload{ObjectID: "a-child", Fields: map[string]any{
+		"parentId": "world-root", "x": 8.0, "y": 9.0, "rotation": 16.0, "scaleX": 1.0, "scaleY": 1.0,
+	}}
+	if err := validateTheaterObjectReparentTransitions(beforeCoordinateObjects, afterCoordinateObjects, []theaterObjectUpdatePayload{coordinateUpdate}); !IsTheaterErrorCode(err, TheaterErrorPayloadInvalid) {
+		t.Fatalf("pure coordinate validator accepted cross-space reparent: %v", err)
+	}
+	crossSpacePlan := map[string]any{"steps": []any{
+		map[string]any{"kind": "object.update", "objectId": "a-child", "fields": map[string]any{
+			"parentId": "world-root", "x": 8.0, "y": 9.0, "rotation": 16.0, "scaleX": 1.0, "scaleY": 1.0,
+		}},
+	}}
+	if _, err := ValidateTheaterDesignPlan(t.Context(), actor, world, "", revision, worldTheaterPayload(t, crossSpacePlan)); !IsTheaterErrorCode(err, TheaterErrorPayloadInvalid) {
+		t.Fatalf("design accepted cross-space reparent: %v", err)
+	}
+	update("z-root", map[string]any{"coordinateSpace": "world"})
+	assertSpace("world", "z-root", "a-child", "grandchild")
+	plan := map[string]any{"steps": []any{
+		map[string]any{"kind": "object.update", "objectId": "a-child", "fields": map[string]any{
+			"parentId": "world-root", "x": 8.0, "y": 9.0, "rotation": 16.0, "scaleX": 1.0, "scaleY": 1.0,
+		}},
+	}}
+	if _, err := ValidateTheaterDesignPlan(t.Context(), actor, world, "", revision, worldTheaterPayload(t, plan)); err != nil {
+		t.Fatal(err)
+	}
+	rowBeforeDesign, err := loadTheaterObject(model.GetDB(), room.ID, "a-child")
+	if err != nil || rowBeforeDesign.ParentID != "z-root" {
+		t.Fatalf("design validation mutated canonical rows: row=%#v err=%v", rowBeforeDesign, err)
+	}
+	apply(TheaterMutationDesignApply, plan, false)
+	assertSpace("world", "world-root", "a-child", "grandchild")
+}
+
+func TestTheaterCoordinateSpaceNormalizationIsTreeScoped(t *testing.T) {
+	actor, world, _ := initWorldTheaterServiceTest(t)
+	revision := int64(0)
+	apply := func(kind string, payload any) {
+		t.Helper()
+		_, err := ApplyTheaterMutation(t.Context(), actor, TheaterMutationCommand{
+			MutationID: utils.NewID(), WorldID: world, ExpectedRevision: revision, Type: kind,
+			Payload: worldTheaterPayload(t, payload),
+		}, TheaterRequestMeta{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision++
+	}
+	apply(TheaterMutationSceneCreate, map[string]any{"sceneId": "scene", "name": "Scene", "order": 1, "state": map[string]any{}})
+	apply(TheaterMutationObjectCreate, map[string]any{"sceneId": "scene", "object": screenFixedReviewObject("viewport-root", "group", "", "viewport")})
+	apply(TheaterMutationObjectCreate, map[string]any{"sceneId": "scene", "object": screenFixedReviewObject("stale-child", "image", "viewport-root", "world")})
+	apply(TheaterMutationObjectCreate, map[string]any{"sceneId": "scene", "object": screenFixedReviewObject("unrelated", "group", "", "world")})
+
+	room, err := model.TheaterRoomCreateIfMissing(world, "", actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := model.GetDB().Model(&model.TheaterObjectModel{}).
+		Where("room_id = ? AND id = ?", room.ID, "stale-child").
+		Update("coordinate_space", "world").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	apply(TheaterMutationObjectUpdate, map[string]any{"objectId": "unrelated", "fields": map[string]any{"name": "Unrelated rename"}})
+	stale, err := loadTheaterObject(model.GetDB(), room.ID, "stale-child")
+	if err != nil || stale.CoordinateSpace != "world" {
+		t.Fatalf("ordinary edit unexpectedly normalized another tree: row=%#v err=%v", stale, err)
+	}
+
+	apply(TheaterMutationObjectUpdate, map[string]any{"objectId": "viewport-root", "fields": map[string]any{"coordinateSpace": "viewport"}})
+	stale, err = loadTheaterObject(model.GetDB(), room.ID, "stale-child")
+	if err != nil || stale.CoordinateSpace != "viewport" {
+		t.Fatalf("structural edit did not normalize its own tree: row=%#v err=%v", stale, err)
+	}
+}
+
+func TestTheaterPackageCoordinateSpaceVersionsAndImport(t *testing.T) {
+	for _, version := range []int{1, 2, 3, 4, 5} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			actor, world, _ := initWorldTheaterServiceTest(t)
+			theaterPackageWorkerState.Lock()
+			previous := theaterPackageWorkerState.config.StorageDir
+			theaterPackageWorkerState.config.StorageDir = t.TempDir()
+			theaterPackageWorkerState.Unlock()
+			t.Cleanup(func() {
+				theaterPackageWorkerState.Lock()
+				theaterPackageWorkerState.config.StorageDir = previous
+				theaterPackageWorkerState.Unlock()
+			})
+			if _, err := InitStorageManager(utils.StorageConfig{Mode: utils.StorageModeLocal, Local: utils.LocalStorageConfig{UploadDir: t.TempDir(), TempDir: t.TempDir()}}); err != nil {
+				t.Fatal(err)
+			}
+			space := "world"
+			if version == 5 {
+				space = "viewport"
+			}
+			for index, payload := range []map[string]any{
+				{"sceneId": "scene", "name": "Scene", "order": 1, "state": map[string]any{}},
+				{"sceneId": "scene", "object": screenFixedReviewObject("z-root", "group", "", space)},
+				{"sceneId": "scene", "object": screenFixedReviewObject("a-child", "image", "z-root", "world")},
+			} {
+				kind := TheaterMutationObjectCreate
+				if index == 0 {
+					kind = TheaterMutationSceneCreate
+				}
+				if _, err := ApplyTheaterMutation(t.Context(), actor, TheaterMutationCommand{MutationID: utils.NewID(), WorldID: world, ExpectedRevision: int64(index), Type: kind, Payload: worldTheaterPayload(t, payload)}, TheaterRequestMeta{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			job := &model.TheaterPackageJobModel{StringPKBaseModel: model.StringPKBaseModel{ID: utils.NewID()}, ActorUserID: actor, SourceWorldID: world, Type: model.TheaterPackageJobTypeExport}
+			if err := model.GetDB().Create(job).Error; err != nil {
+				t.Fatal(err)
+			}
+			if _, err := exportTheaterPackage(t.Context(), job); err != nil {
+				t.Fatal(err)
+			}
+			if err := model.GetDB().First(job, "id = ?", job.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			extracted := t.TempDir()
+			if err := extractTheaterPackageZIP(job.OutputFilePath, extracted); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := loadAndValidateTheaterPackage(extracted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantExportVersion := 4
+			if version == 5 {
+				wantExportVersion = 5
+			}
+			if manifest.PackageVersion != wantExportVersion || manifest.SchemaVersion != model.TheaterSchemaVersion {
+				t.Fatalf("export manifest = %#v", manifest)
+			}
+			var document TheaterSharedSnapshot
+			documentPath := theaterPackageAbsolutePath(extracted, manifest.Document.Path)
+			if err := decodeStrictJSONFile(documentPath, &document); err != nil {
+				t.Fatal(err)
+			}
+			if err := validateTheaterPackageDocumentVersion(version, document); err != nil {
+				t.Fatal(err)
+			}
+			if version == 5 {
+				if err := validateTheaterPackageDocumentVersion(4, document); !IsTheaterErrorCode(err, TheaterErrorSchemaUnsupported) {
+					t.Fatalf("v4 accepted viewport document: %v", err)
+				}
+				// Import normalizes old mixed children instead of persisting their stale world field.
+				scene := document.Scenes["scene"]
+				child := scene.Objects["a-child"]
+				child.CoordinateSpace, child.ViewportX, child.ViewportY = "", nil, nil
+				scene.Objects[child.ID] = child
+				file, err := writeJSONFile(documentPath, document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				file.Path = manifest.Document.Path
+				manifest.Document = file
+			} else {
+				raw, err := os.ReadFile(documentPath)
+				if err != nil || strings.Contains(string(raw), "coordinateSpace") || strings.Contains(string(raw), "viewportX") || strings.Contains(string(raw), "viewportY") {
+					t.Fatalf("world package leaked coordinate fields: %s err=%v", raw, err)
+				}
+			}
+			manifest.PackageVersion = version
+			if version == 1 {
+				manifest.PackageKind = "" // Original v1 omitted packageKind.
+			}
+			if _, err := writeJSONFile(filepath.Join(extracted, "manifest.json"), manifest); err != nil {
+				t.Fatal(err)
+			}
+			archive := filepath.Join(t.TempDir(), "import.zip")
+			if err := zipDirectory(extracted, archive); err != nil {
+				t.Fatal(err)
+			}
+			importJob := &model.TheaterPackageJobModel{StringPKBaseModel: model.StringPKBaseModel{ID: utils.NewID()}, ActorUserID: actor, TargetWorldID: world, InputFilePath: archive, Type: model.TheaterPackageJobTypeImport}
+			summary, err := importTheaterPackage(t.Context(), importJob)
+			if err != nil || len(summary.ImportedSceneIDs) != 1 {
+				t.Fatalf("import v%d: summary=%#v err=%v", version, summary, err)
+			}
+			var objects []model.TheaterObjectModel
+			if err := model.GetDB().Where("scene_id = ?", summary.ImportedSceneIDs[0]).Find(&objects).Error; err != nil || len(objects) != 2 {
+				t.Fatalf("imported objects=%#v err=%v", objects, err)
+			}
+			for _, object := range objects {
+				if object.CoordinateSpace != space {
+					t.Fatalf("imported mixed tree: %#v", object)
+				}
+			}
+		})
+	}
+}
 
 func TestCanonicalizeTheaterSceneStateKeepsSceneOverlays(t *testing.T) {
 	raw := []byte(`{"sceneOverlays":[{"version":1,"id":"rain-1","effectId":"weather.rain.light","name":"小雨","enabled":true,"opacity":0.65,"blendMode":"screen","layer":"aboveCharacters","media":{"resourceId":"resource-overlay","variant":"playback","mimeType":"video/webm","animated":true},"params":{"intensity":1.2,"color":"#b9dcff"}}],"unknownTopLevel":{"discard":true}}`)

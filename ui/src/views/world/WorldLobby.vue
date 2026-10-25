@@ -14,6 +14,7 @@ import AnnouncementPopupModal from '@/components/announcement/AnnouncementPopupM
 import WorldLobbyAnnouncementTicker from '@/components/announcement/WorldLobbyAnnouncementTicker.vue';
 import WorldDiceDefaultsFields from '@/views/world/WorldDiceDefaultsFields.vue';
 import type { AnnouncementItem } from '@/models/announcement';
+import { resolveAttachmentUrl } from '@/composables/useAttachmentResolver';
 import {
   WORLD_DESCRIPTION_MAX_DISPLAY_CHARS,
   WORLD_DESCRIPTION_MAX_WIDTH_UNITS,
@@ -212,6 +213,8 @@ const formatWorldGridDescription = (description?: string) => {
   const value = (description || '暂无简介').trim() || '暂无简介';
   return value;
 };
+
+const getWorldCoverUrl = (world?: { coverAttachmentId?: string }) => resolveAttachmentUrl(world?.coverAttachmentId || '');
 
 const updateCreateDescription = (value: string) => {
   createForm.value.description = truncateTextByDisplayWidth(value, WORLD_DESCRIPTION_MAX_WIDTH_UNITS);
@@ -1303,6 +1306,9 @@ const handleArchivePageSizeChange = (pageSize: number) => {
               </n-button>
 
               <div class="world-list-content">
+                <div v-if="getWorldCoverUrl(item.world)" class="world-list-cover" aria-hidden="true">
+                  <img :src="getWorldCoverUrl(item.world)" alt="" decoding="async" />
+                </div>
                 <div class="world-list-title-row">
                   <div class="world-list-name" :title="item.world.name">{{ item.world.name }}</div>
                   <n-tag
@@ -1375,6 +1381,9 @@ const handleArchivePageSizeChange = (pageSize: number) => {
             @mouseleave="handleGridCardMouseLeave(item)"
             @click="handleGridCardClick(item)"
           >
+            <div v-if="getWorldCoverUrl(item.world)" class="world-grid-card__cover" aria-hidden="true">
+              <img :src="getWorldCoverUrl(item.world)" alt="" decoding="async" />
+            </div>
             <div v-if="isGridTetherVisible(item.world.id)" class="world-grid-card__tether-layer">
               <span class="world-grid-card__tether-beam" :style="getGridTetherBeamStyle(item.world.id)" />
               <span
@@ -1964,6 +1973,23 @@ const handleArchivePageSizeChange = (pageSize: number) => {
   min-width: 0;
 }
 
+.world-list-cover {
+  width: 100%;
+  height: 56px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--sc-border-mute);
+  background: color-mix(in srgb, var(--sc-text-primary) 4%, transparent);
+}
+
+.world-list-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .world-list-title-row {
   display: flex;
   align-items: center;
@@ -2157,6 +2183,34 @@ const handleArchivePageSizeChange = (pageSize: number) => {
   box-shadow:
     0 15px 28px color-mix(in srgb, var(--sc-fg-primary) 14%, transparent),
     0 2px 8px color-mix(in srgb, var(--sc-fg-primary) 10%, transparent);
+}
+
+.world-grid-card__cover {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 0;
+  height: 96px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.world-grid-card__cover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--sc-bg-surface) 48%, transparent) 0%,
+    var(--sc-bg-surface) 100%
+  );
+}
+
+.world-grid-card__cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.62;
 }
 
 .world-grid-card__header {

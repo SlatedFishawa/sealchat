@@ -58,6 +58,8 @@
 
 当前场景前景/背景用 `surface_embed_set`，字段 `sceneId, target: background|foreground, url, scale(默认1), interactive(默认false)`；clear 用 sceneId/target。持久化仍为 `surfaceEmbeds.background/foreground` 的 StageSurfaceEmbed，不改变视觉层序。scale 合法范围 .25..5；关闭 interactive 时舞台接管操作，开启时内部接收输入，原开关语义不变。
 
+图片变体保存在可选的 `surfaceVariants.background/foreground`，每组为 `{ slots: [{ id, name, image: StageImageRef|null }], activeId: string|null, transition: { type, durationMs } }`。`activeId: null` 隐藏图片；`background/foreground` 继续保存活动媒体。旧场景只在编辑时写入该结构。MCP 的 surface 图片替换/清除同步更新活动槽位，保留其他槽位；隐藏状态下赋图会创建并选择新槽位。网页、样式及 Media FX 仍为表面共用配置。切换效果支持 none/fade/slide/dissolve/zoom/blur，默认 fade/350ms，时长范围 20–5000ms。只同步目标状态，各客户端本地执行动画；首次加载、恢复及重连不播放局部动画。ZIP 与资源引用递归保留所有槽位图片。
+
 ## 权限与执行
 
 平台 Theater 模块默认 off；read/write 不自动包含额外控制、截图或聊天。Key/OAuth 需分别明确授权 `theater:read/write/control/capture/chat`，并受实时业务权限限制。`theater:write` 不授予频道嵌入编辑权限；嵌入代码只能经独立的 `embed:write`（第二期）修改。scene apply 另检查原生场景切换权限；read 无法切换场景。
@@ -276,7 +278,11 @@ layout 是确定性几何原语，不做 AI 自动审美或 constraint solver。
 
 grid 使用传入 objectIds 顺序，列宽/行高取该列/行最大 AABB 尺寸，对象在单元格居中；origin 是布局区域左上角，省略时使用参与对象当前 AABB 的左上角。columns 为正且不超过对象数，gaps 为非负有限数。align/grid 接受 1..200 个对象，distribute 至少两个对象。
 
-参与对象必须同 scene/persistent scope、同 parentId，使用该父组的局部坐标；只产出 x/y transform 更新，不 reparent 或更改 scope。锁定对象/父组/场景、missing 对象、effect 均拒绝。effect 的 1920×1080 坐标不进入普通 layout，没有持久化 layout schema。
+参与对象必须同 scene/persistent scope、同 parentId，使用该父组的局部坐标；只产出 x/y transform 更新，不 reparent 或更改 scope。锁定对象/父组/场景、missing 对象、effect、屏幕固定（coordinateSpace=viewport）的顶层对象均拒绝。effect 的 1920×1080 坐标与屏幕固定对象的 viewportX/Y 都不进入普通 layout，没有持久化 layout schema。
+
+对象树的持久化 coordinateSpace 由顶级根决定，创建、重挂 parent、批量更新、快照恢复与包导入都会在事务内统一后代字段；effect 始终 world，不能加入 viewport 树。Design validate 使用相同规范化语义，后续 layout 按规范化后的对象判断。world↔viewport 的视觉保持转换要求目标 scale 在 0.01..100、viewportX/Y 在 -1..2 内，超出时拒绝整个切换，不截断或写入撤销历史。
+
+Bridge 1.1 支持坐标空间字段，同时保留 1.0 协商；ready 使用 1.0 信封引导，双方选取共同支持的最高版本。发往 1.0 的 StageObject 投影移除 coordinateSpace/viewportX/viewportY，保留 world transform，旧端不具备屏幕固定渲染语义。舞台包最高支持 v5，含 viewport 对象必须导出 v5；纯 world 舞台包和特效包仍导出 v4，继续接受 v1..v4 旧包。TheaterSchemaVersion 保持不变：包文档的新增字段由 packageVersion 区分，已有快照/数据库 schema 校验无需抬升。
 
 `theater_scene field_update` 的顶层类型化参数：backgroundColor、fieldWidth、fieldHeight、fieldObjectFit（cover/contain/fill）、displayGrid、gridOnTop、gridSize、alignWithGrid。Plan 的 scene.field 将这些字段放在 fields 中。尺寸范围为 1..1000000，gridSize 为 0.01..1000000。它们合并到现有 scene state/grid，不接收任意 state JSON，也不丢失其他 surface/overlay/music/transition/sequence 配置。
 

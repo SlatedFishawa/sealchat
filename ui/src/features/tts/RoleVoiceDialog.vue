@@ -147,6 +147,7 @@ async function save() {
   const current = generation
   try {
     await speechAPI.saveRole(props.identityId, { ...role.value, ...roleVoiceFields(selection.value), speechLanguage: role.value.speechLanguage })
+    speech.roleConfigRevision++
     if (current === generation) visible.value = false
   }
   catch (e) { if (current === generation) error.value = speechError(e) }

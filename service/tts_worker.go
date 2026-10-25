@@ -245,13 +245,18 @@ func ttsRecoverOutboxWithContext(ctx context.Context) {
 	for _, m := range messages {
 		status := "queued"
 		var s TTSSnapshot
-		if m.IsDeleted || m.IsRevoked || m.DeletedAt != nil || json.Unmarshal([]byte(m.TTSIntent), &s) != nil || (s.Translation == nil && time.Since(m.CreatedAt) > 2*time.Minute) {
+		decodeErr := json.Unmarshal([]byte(m.TTSIntent), &s)
+		requestedAt := m.CreatedAt
+		if s.ManualRequestedAt != 0 {
+			requestedAt = time.Unix(s.ManualRequestedAt, 0)
+		}
+		if m.IsDeleted || m.IsRevoked || m.DeletedAt != nil || decodeErr != nil || (s.Translation == nil && time.Since(requestedAt) > 2*time.Minute) {
 			status = "skipped"
 		} else {
 			if ttsRecoverTranslation(ctx, db, m, s) {
 				continue
 			}
-			j := &model.TTSJob{Operation: "message_synthesis", RequestKey: "message:" + m.ID, PayerUserID: m.UserID, ChannelID: m.ChannelID, MessageID: m.ID, MessageRevision: int64(m.EditCount), Snapshot: m.TTSIntent, VoiceID: s.VoiceID, Deadline: time.Now().Add(ttsMessageQueueWait)}
+			j := &model.TTSJob{Operation: "message_synthesis", RequestKey: ttsMessageRequestKey(m, s), PayerUserID: ttsMessagePayer(m, s), ChannelID: m.ChannelID, MessageID: m.ID, MessageRevision: int64(m.EditCount), Snapshot: m.TTSIntent, VoiceID: s.VoiceID, Deadline: time.Now().Add(ttsMessageQueueWait)}
 			if err := ttsReserveSnapshot(j, s); err != nil {
 				status = "skipped"
 			}
@@ -281,7 +286,7 @@ func ttsMessageCurrentWithDB(db *gorm.DB, job *model.TTSJob, s TTSSnapshot) bool
 		return false
 	}
 	text, err := ttsPlainText(m.Content, ttsMessageSynthesisMaxRunes)
-	if m.IsWhisper != (s.Whisper || len(s.Audience) > 0) || (job.ChannelID != "" && m.ChannelID != job.ChannelID) || (job.PayerUserID != "" && m.UserID != job.PayerUserID) {
+	if m.IsWhisper != (s.Whisper || len(s.Audience) > 0) || (job.ChannelID != "" && m.ChannelID != job.ChannelID) || (job.PayerUserID != "" && ttsMessagePayer(m, s) != job.PayerUserID) {
 		return false
 	}
 	expectedSource := s.SourceText
@@ -403,9 +408,6 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 				return
 			}
 		}
-		if err := db.Model(&model.TTSJob{}).Where("id = ? AND status = ?", j.ID, "running").Update("status", "succeeded").Error; err != nil {
-			return
-		}
 		ttsPublishMessage(parent, j, s, &resource, media, path)
 		return
 	}
@@ -459,6 +461,7 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 	requestID := ""
 	audioURL := ""
 	sseWAV := false
+	creationPreview := false
 	if j.Operation == "design" || j.Operation == "clone" {
 		var result ttsprovider.VoiceResult
 		result, err = ttsProviderCreateVoice(ctx, *provider, j, s)
@@ -476,8 +479,11 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 			_ = db.Model(&model.TTSVoice{}).Where("id = ?", j.VoiceID).Updates(updates).Error
 			if result.Output.PreviewAudio != nil {
 				data, e := base64.StdEncoding.DecodeString(result.Output.PreviewAudio.Data)
-				if e == nil && len(data) <= ttsprovider.MaxAudioBytes {
+				if e == nil && len(data) > 0 && len(data) <= ttsprovider.MaxAudioBytes {
 					_, e = f.Write(data)
+					if e == nil {
+						creationPreview = true
+					}
 				}
 				if e != nil {
 					err = e
@@ -557,17 +563,23 @@ func ttsRun(parent context.Context, j *model.TTSJob) {
 	}
 	if err != nil {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "error_code": ttsProviderErrorCode(err, "provider_or_spool_failed")}).Error
+		if ttsRetireFailedCreationVoice(db, j, time.Now()) == nil {
+			ttsCleanupCloneJobSource(j)
+		}
 		_ = os.Remove(j.SpoolPath)
 		ttsMessageStatus(j, "failed", nil)
 		return
 	}
-	if j.Operation == "clone" {
+	if j.Operation == "clone" && !creationPreview {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Update("status", "succeeded").Error
 		_ = os.Remove(j.SpoolPath)
 		return
 	}
 	if canonicalCode != "" {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "error_code": canonicalCode}).Error
+		if ttsRetireFailedCreationVoice(db, j, time.Now()) == nil {
+			ttsCleanupCloneJobSource(j)
+		}
 		_ = os.Remove(j.SpoolPath)
 		ttsMessageStatus(j, "failed", nil)
 		return
@@ -679,10 +691,27 @@ func ttsArchive(ctx context.Context, j *model.TTSJob, s TTSSnapshot) {
 	ttsArchiveFresh(ctx, j, s, nil)
 }
 
+func ttsAdoptAuditionAsVoicePreview(db *gorm.DB, j *model.TTSJob, s TTSSnapshot, resourceID string) {
+	if db == nil || j == nil || j.Operation != "audition" || !s.AdoptAsVoicePreview || s.VoiceID == "" || resourceID == "" {
+		return
+	}
+	_ = db.Transaction(func(tx *gorm.DB) error {
+		if err := ttsLockJobAudio(tx, resourceID); err != nil {
+			return err
+		}
+		return tx.Model(&model.TTSVoice{}).
+			Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND provider_status = ? AND deleted_at IS NULL AND (preview_resource_id = ? OR preview_resource_id IS NULL)", s.VoiceID, j.PayerUserID, "saved", "OK", "").
+			Update("preview_resource_id", resourceID).Error
+	})
+}
+
 func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *utils.SpeechConfig) {
 	db := model.GetDB()
 	if !TTSValidateSpool(j.SpoolPath) {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "error_code": "invalid_spool"}).Error
+		if ttsRetireFailedCreationVoice(db, j, time.Now()) == nil {
+			ttsCleanupCloneJobSource(j)
+		}
 		ttsMessageStatus(j, "failed", nil)
 		return
 	}
@@ -693,12 +722,20 @@ func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *u
 			status = "failed"
 		}
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": status, "error_code": "spool_unavailable"}).Error
+		if status == "failed" {
+			if ttsRetireFailedCreationVoice(db, j, time.Now()) == nil {
+				ttsCleanupCloneJobSource(j)
+			}
+		}
 		ttsMessageStatus(j, status, nil)
 		return
 	}
 	media, err := ttsprovider.InspectMedia(b)
 	if err != nil {
 		_ = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "error_code": "unsupported_or_incomplete_media"}).Error
+		if ttsRetireFailedCreationVoice(db, j, time.Now()) == nil {
+			ttsCleanupCloneJobSource(j)
+		}
 		_ = os.Remove(j.SpoolPath)
 		ttsMessageStatus(j, "failed", nil)
 		return
@@ -720,19 +757,24 @@ func ttsArchiveFresh(ctx context.Context, j *model.TTSJob, s TTSSnapshot, cfg *u
 	meta, _ := json.Marshal(media)
 	j.ResourceID = a.ID
 	j.MediaJSON = string(meta)
-	if err = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "succeeded", "resource_id": a.ID, "media_json": string(meta), "error_code": ""}).Error; err != nil {
-		return
-	}
-	if j.Operation == "design" {
+	if j.Operation == "design" || j.Operation == "clone" {
 		_ = db.Model(&model.TTSVoice{}).Where("id = ?", j.VoiceID).Update("preview_resource_id", a.ID).Error
 	}
+	ttsAdoptAuditionAsVoicePreview(db, j, s, a.ID)
 	if j.Operation == "audition" || j.Operation == "message_synthesis" {
-		cache := model.TTSCache{Fingerprint: s.Fingerprint, ResourceID: a.ID, Metadata: string(meta), Complete: true, ExpiresAt: time.Now().Add(30 * time.Minute)}
+		cache := model.TTSCache{Fingerprint: s.Fingerprint, ResourceID: a.ID, Metadata: string(meta), Complete: true, ExpiresAt: time.Now().Add(ttsAudioCacheTTL)}
 		// Expiry drops reuse eligibility, never the durable attachment reference.
 		_ = db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "fingerprint"}}, DoUpdates: clause.AssignmentColumns([]string{"resource_id", "metadata", "complete", "expires_at"})}).Create(&cache).Error
 	}
+	// Keep the job nonterminal until ready metadata is published. This protects
+	// the publication gap even if the optional cache write failed.
+	if err = db.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"resource_id": a.ID, "media_json": string(meta), "error_code": ""}).Error; err != nil {
+		return
+	}
 	// Publish from this validated local spool even when the archive is remote.
-	ttsPublishMessageWithLocal(ctx, j, s, a, media, j.SpoolPath, local)
+	if !ttsPublishMessageWithLocal(ctx, j, s, a, media, j.SpoolPath, local) {
+		return
+	}
 	if local != nil {
 		local.wait()
 	}
@@ -743,13 +785,16 @@ func ttsPublishMessage(ctx context.Context, j *model.TTSJob, s TTSSnapshot, a *m
 	ttsPublishMessageWithLocal(ctx, j, s, a, media, archiveLocalPath, nil)
 }
 
-func ttsPublishMessageWithLocal(ctx context.Context, j *model.TTSJob, s TTSSnapshot, a *model.AttachmentModel, media ttsprovider.Media, archiveLocalPath string, local *ttsCompletedPlayback) {
-	if j.MessageID != "" && ttsMessageCurrent(j, s) {
-		if !ttsMessageStatus(j, "ready", &protocol.MessageTTS{Status: "ready", AudioResourceID: a.ID, DurationMS: media.DurationMS, Format: media.Container, MessageRevision: int(j.MessageRevision)}) {
-			return
-		}
+func ttsPublishMessageWithLocal(ctx context.Context, j *model.TTSJob, s TTSSnapshot, a *model.AttachmentModel, media ttsprovider.Media, archiveLocalPath string, local *ttsCompletedPlayback) bool {
+	ready := j.MessageID != "" && ttsMessageCurrent(j, s) && ttsMessageStatus(j, "ready", &protocol.MessageTTS{Status: "ready", AudioResourceID: a.ID, DurationMS: media.DurationMS, Format: media.Container, MessageRevision: int(j.MessageRevision)})
+	// Ready metadata now protects the resource. Preserve the existing guarantee
+	// that playback callbacks see a durable succeeded job as well as the file.
+	if err := model.GetDB().Model(&model.TTSJob{}).Where("id = ?", j.ID).Update("status", "succeeded").Error; err != nil {
+		return false
+	}
+	if ready {
 		if j.Status == "storage_pending" {
-			return // Storage recovery publishes metadata without repeating playback.
+			return true // Storage recovery publishes metadata without repeating playback.
 		}
 		if local != nil {
 			local.start()
@@ -760,7 +805,7 @@ func ttsPublishMessageWithLocal(ctx context.Context, j *model.TTSJob, s TTSSnaps
 				if fn != nil {
 					fn(*j, media, "", true)
 				}
-				return
+				return true
 			}
 		}
 		stop := make(chan struct{})
@@ -790,6 +835,7 @@ func ttsPublishMessageWithLocal(ctx context.Context, j *model.TTSJob, s TTSSnaps
 		}
 		ttsTimelines.Unlock()
 	}
+	return true
 }
 func ttsReleaseMessageJob(db *gorm.DB, j *model.TTSJob, status string) {
 	if ttsReleaseJob(db, j.ID) == nil {
@@ -808,8 +854,18 @@ func ttsMessageStatusWithDB(db *gorm.DB, j *model.TTSJob, status string, data *p
 		b, _ := json.Marshal(data)
 		updates["tts_data"] = string(b)
 	}
-	r := db.Model(&model.MessageModel{}).Where("id = ? AND edit_count = ? AND tts_intent = ? AND deleted_at IS NULL AND is_deleted = ? AND (is_revoked = ? OR is_revoked IS NULL)", j.MessageID, j.MessageRevision, j.Snapshot, false, false).Updates(updates)
-	if r.Error != nil || r.RowsAffected != 1 {
+	var changed bool
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if data != nil && data.AudioResourceID != "" {
+			if err := ttsLockJobAudio(tx, data.AudioResourceID); err != nil {
+				return err
+			}
+		}
+		r := tx.Model(&model.MessageModel{}).Where("id = ? AND edit_count = ? AND tts_intent = ? AND deleted_at IS NULL AND is_deleted = ? AND (is_revoked = ? OR is_revoked IS NULL)", j.MessageID, j.MessageRevision, j.Snapshot, false, false).Updates(updates)
+		changed = r.RowsAffected == 1
+		return r.Error
+	})
+	if err != nil || !changed {
 		return false
 	}
 	ttsNotifyMessageState(j.MessageID)

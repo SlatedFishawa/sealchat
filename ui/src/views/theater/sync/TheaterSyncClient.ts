@@ -3,8 +3,9 @@ import { watch, type WatchStopHandle } from 'vue'
 import { api } from '@/stores/_config'
 import { chatEvent } from '@/stores/chat'
 import type { SceneFolder, StageAction, StageActionTriggeredPayload, StageClueActionEntry, StageDrawing, StageImageRef, StageLiveState, StageObject, StageObjectType, StagePointerTrace, StagePointerTraceInput, StageScene, StageSurfaceFit, StageWorkspaceState } from '../shared/stage-types'
-import { isSafeStageImageUrl, normalizeStageAudioRef, normalizeStageEntranceConfig, normalizeStageImageAnnotation, normalizeStageMusicSnapshot, normalizeStageSceneOverlays, normalizeStageSceneTransition, normalizeStageSurfaceStyle, normalizeStageSurfaceEmbeds } from '../shared/stage-types'
+import { isSafeStageImageUrl, normalizeStageAudioRef, normalizeStageObjectCoordinateSpace, normalizeStageViewportPosition, normalizeStageEntranceConfig, normalizeStageImageAnnotation, normalizeStageMusicSnapshot, normalizeStageSceneOverlays, normalizeStageSceneTransition, normalizeStageSurfaceStyle, normalizeStageSurfaceEmbeds } from '../shared/stage-types'
 import { createInitialTheaterStageState, type TheaterStageStore } from '../stage/StageStore'
+import { normalizeSurfaceVariantState } from '../shared/stage-surface-variants'
 import { STAGE_ACTION_CANCELLED } from '../stage/theater-action-sequence-runtime'
 import { stageActionSchema } from '../bridge/theater-bridge-protocol'
 import { defaultDialogueController, publishDialogueController, registerDialogueControllerWriter, type DialogueController, type DialogueControllerTemplate, type DialogueControllerPatch } from '../dialogue/theater-dialogue-controller'
@@ -28,6 +29,11 @@ interface TheaterObjectSnapshot {
   scaleY?: number
   z: number
   orderKey: string
+  // Omitted for world objects (and by servers predating screen-fixed objects); viewportX/Y only
+  // travel with coordinateSpace 'viewport'.
+  coordinateSpace?: 'world' | 'viewport'
+  viewportX?: number
+  viewportY?: number
   visible: boolean
   locked: boolean
   aspectRatioLocked?: boolean
@@ -246,9 +252,10 @@ const stageStateFromServer = (value: unknown, objects: Record<string, StageObjec
   const grid = asObject(raw.grid)
   const surfaceStyles = asObject(raw.surfaceStyles)
   const legacyFit: StageSurfaceFit = grid.objectFit === 'fill' || grid.objectFit === 'contain' ? grid.objectFit : 'cover'
-  return {
+  const state: StageLiveState = {
     background: imageRef(raw.background),
     foreground: imageRef(raw.foreground),
+    ...(raw.surfaceVariants ? { surfaceVariants: clone(raw.surfaceVariants) as StageLiveState['surfaceVariants'] } : {}),
     surfaceEmbeds: normalizeStageSurfaceEmbeds(raw.surfaceEmbeds),
     surfaceStyles: {
       background: normalizeStageSurfaceStyle(surfaceStyles.background, legacyFit, { opacity: 0.9, blurPx: 10 }),
@@ -269,12 +276,15 @@ const stageStateFromServer = (value: unknown, objects: Record<string, StageObjec
     sceneOverlays: normalizeStageSceneOverlays(raw.sceneOverlays),
     serverState: sceneStateExtensionsFromRaw(raw),
   }
+  normalizeSurfaceVariantState(state)
+  return state
 }
 
 const serverStateFromStage = (state: StageLiveState): JsonObject => ({
   ...sceneStateExtensionsFromRaw(asObject(state.serverState)),
   background: state.background,
   foreground: state.foreground,
+  ...(state.surfaceVariants ? { surfaceVariants: clone(state.surfaceVariants) } : {}),
   surfaceEmbeds: normalizeStageSurfaceEmbeds(state.surfaceEmbeds),
   surfaceStyles: clone(state.surfaceStyles),
   fieldWidth: state.fieldWidth,
@@ -320,6 +330,9 @@ const objectFromServer = (value: TheaterObjectSnapshot): StageObject | null => {
       z: finite(value.z, 0),
       order: finite(Number.parseFloat(value.orderKey), 0),
     },
+    coordinateSpace: normalizeStageObjectCoordinateSpace(value.coordinateSpace, kind),
+    viewportX: normalizeStageViewportPosition(value.viewportX),
+    viewportY: normalizeStageViewportPosition(value.viewportY),
     visible: value.visible !== false,
     locked: value.locked === true,
     aspectRatioLocked: kind === 'iframe' ? value.aspectRatioLocked === true : value.aspectRatioLocked !== false,
@@ -342,6 +355,13 @@ const objectFromServer = (value: TheaterObjectSnapshot): StageObject | null => {
   }
 }
 
+// World objects keep the pre-screen-fixed wire shape; their stored viewport position is irrelevant.
+const coordinateSpaceForServer = (object: StageObject): Pick<TheaterObjectSnapshot, 'coordinateSpace' | 'viewportX' | 'viewportY'> => (
+  object.coordinateSpace === 'viewport'
+    ? { coordinateSpace: 'viewport', viewportX: object.viewportX, viewportY: object.viewportY }
+    : {}
+)
+
 const objectForServer = (object: StageObject, sceneId: string | null): TheaterObjectSnapshot => {
   const content = { ...asObject(object.content) }
   if (object.type === 'image' && object.annotation) content.annotation = clone(object.annotation)
@@ -361,6 +381,7 @@ const objectForServer = (object: StageObject, sceneId: string | null): TheaterOb
     scaleY: object.transform.scaleY,
     z: object.transform.z,
     orderKey: String(object.transform.order),
+    ...coordinateSpaceForServer(object),
     visible: object.visible,
     locked: object.locked,
     aspectRatioLocked: object.aspectRatioLocked,
@@ -489,6 +510,9 @@ const objectFields = (object: TheaterObjectSnapshot, previous: TheaterObjectSnap
     scaleY: object.scaleY ?? object.scale ?? 1,
     z: object.z,
     orderKey: object.orderKey,
+    coordinateSpace: object.coordinateSpace || 'world',
+    viewportX: object.viewportX,
+    viewportY: object.viewportY,
     visible: object.visible,
     locked: object.locked,
     aspectRatioLocked: object.aspectRatioLocked,
@@ -511,6 +535,9 @@ const objectFields = (object: TheaterObjectSnapshot, previous: TheaterObjectSnap
     scaleY: previous.scaleY ?? previous.scale ?? 1,
     z: previous.z,
     orderKey: previous.orderKey,
+    coordinateSpace: previous.coordinateSpace || 'world',
+    viewportX: previous.viewportX,
+    viewportY: previous.viewportY,
     visible: previous.visible,
     locked: previous.locked,
     aspectRatioLocked: previous.aspectRatioLocked,
@@ -520,7 +547,23 @@ const objectFields = (object: TheaterObjectSnapshot, previous: TheaterObjectSnap
     actions: previous.actions,
     metadata: previous.metadata,
   }
-  return Object.fromEntries(Object.entries(values).filter(([key, value]) => !same(value, previousValues[key])))
+  // Leaving viewport space drops viewportX/Y from the wire shape; that is not a field change.
+  const fields = Object.fromEntries(Object.entries(values).filter(([key, value]) => (
+    value !== undefined && !same(value, previousValues[key])
+  )))
+  // Reparent is a geometry operation, not just a hierarchy pointer change. Force the complete
+  // target-space pose even when one numeric component happens to equal its previous value, so the
+  // server can reject ambiguous parent-only writes without breaking the StageApp diff path.
+  if ((object.parentId || '') !== (previous.parentId || '')) {
+    const required = !object.parentId && object.coordinateSpace === 'viewport'
+      ? ['viewportX', 'viewportY', 'rotation', 'scaleX', 'scaleY']
+      : ['x', 'y', 'rotation', 'scaleX', 'scaleY']
+    required.forEach((key) => {
+      const value = values[key]
+      if (value !== undefined) fields[key] = value
+    })
+  }
+  return fields
 }
 
 const objectInput = (object: TheaterObjectSnapshot): JsonObject => ({
@@ -537,6 +580,9 @@ const objectInput = (object: TheaterObjectSnapshot): JsonObject => ({
   scaleY: object.scaleY ?? object.scale ?? 1,
   z: object.z,
   orderKey: object.orderKey,
+  ...(object.coordinateSpace === 'viewport'
+    ? { coordinateSpace: 'viewport', viewportX: object.viewportX, viewportY: object.viewportY }
+    : {}),
   visible: object.visible,
   locked: object.locked,
   aspectRatioLocked: object.aspectRatioLocked,
@@ -701,8 +747,10 @@ const diffDocuments = (before: TheaterDocument, after: TheaterDocument): Theater
   return mutations
 }
 
+// Members may move a screen-fixed editable object (viewportX/Y, like x/y) but never toggle its
+// coordinateSpace; that stays a full-editor field. Keep in sync with delegatedTheaterObjectFields.
 const delegatedObjectFields = new Set([
-  'name', 'x', 'y', 'width', 'height', 'rotation', 'scaleX', 'scaleY', 'z', 'orderKey', 'content',
+  'name', 'x', 'y', 'viewportX', 'viewportY', 'width', 'height', 'rotation', 'scaleX', 'scaleY', 'z', 'orderKey', 'content',
   'locked', 'aspectRatioLocked', 'metadata',
 ])
 const delegatedLockedObjectFields = new Set(['locked', 'aspectRatioLocked', 'content', 'metadata'])
@@ -803,11 +851,15 @@ export class TheaterSyncClient {
     return `api/v1/worlds/${encodeURIComponent(this.options.worldId)}/channels/${encodeURIComponent(this.options.channelId)}/theater`
   }
 
-  private readonly onGatewayEvent = (event: any) => {
+  private pendingSurfaceRevision = 0
+  private surfaceAnimationEpoch = 0
+  private readonly onGatewayMutation = (event: any) => this.onGatewayEvent(event, true)
+  private readonly onGatewayEvent = (event: any, animateSurfaceChanges = false) => {
     const theater = event?.theater
     if (!theater || theater.worldId !== this.options.worldId || theater.channelId !== (this.options.scopeType === 'world' ? '' : this.options.channelId)) return
     const revision = finite(theater.revision, 0)
     if (revision <= this.revision) return
+    if (animateSurfaceChanges) this.pendingSurfaceRevision = Math.max(this.pendingSurfaceRevision, revision)
     if (this.saving) {
       this.pendingRemoteRevision = Math.max(this.pendingRemoteRevision, revision)
       return
@@ -817,7 +869,7 @@ export class TheaterSyncClient {
       void this.flushNow()
       return
     }
-    void this.reload()
+    void this.reload(false, undefined, false, true, animateSurfaceChanges)
   }
 
   private readonly onPreloadRequested = (event: any) => {
@@ -925,6 +977,8 @@ export class TheaterSyncClient {
   }
 
   private readonly onGatewayConnected = () => {
+    this.pendingSurfaceRevision = 0
+    this.surfaceAnimationEpoch++
     void this.subscribe()
   }
 
@@ -969,7 +1023,7 @@ export class TheaterSyncClient {
     this.started = true
     this.unregisterDialogueWriter = registerDialogueControllerWriter(this.options.worldId, patch => this.patchDialogueController(patch))
     chatEvent.on('theater.snapshot' as any, this.onGatewayEvent)
-    chatEvent.on('theater.mutation.applied' as any, this.onGatewayEvent)
+    chatEvent.on('theater.mutation.applied' as any, this.onGatewayMutation)
     chatEvent.on('theater.mutation.rejected' as any, this.onGatewayEvent)
     chatEvent.on('theater.preload.requested' as any, this.onPreloadRequested)
     chatEvent.on('theater.pointer.trace' as any, this.onPointerTrace)
@@ -995,6 +1049,8 @@ export class TheaterSyncClient {
   async stop() {
     if (!this.started) return
     this.started = false
+    this.pendingSurfaceRevision = 0
+    this.surfaceAnimationEpoch++
     this.unregisterDialogueWriter?.()
     this.unregisterDialogueWriter = null
     this.stopWatch?.()
@@ -1007,7 +1063,7 @@ export class TheaterSyncClient {
     this.pendingSceneAudioTriggers.clear()
     this.runningClueExecutions.clear()
     chatEvent.off('theater.snapshot' as any, this.onGatewayEvent)
-    chatEvent.off('theater.mutation.applied' as any, this.onGatewayEvent)
+    chatEvent.off('theater.mutation.applied' as any, this.onGatewayMutation)
     chatEvent.off('theater.mutation.rejected' as any, this.onGatewayEvent)
     chatEvent.off('theater.preload.requested' as any, this.onPreloadRequested)
     chatEvent.off('theater.pointer.trace' as any, this.onPointerTrace)
@@ -1274,8 +1330,10 @@ export class TheaterSyncClient {
     localChange?: { base: TheaterDocument, desired: TheaterDocument },
     silent = false,
     preserveLocalChanges = true,
+    animateSurfaceChanges = false,
   ) {
     if (!this.started) return
+    const surfaceAnimationEpoch = this.surfaceAnimationEpoch
     try {
       const response = await api.get<TheaterSnapshotResponse>(this.theaterBase())
       if (!this.started) return
@@ -1314,7 +1372,10 @@ export class TheaterSyncClient {
         : hasPendingLocalChanges && preserveLocalChanges
           ? rebaseDocument(this.baseDocument, currentDocument!, remoteDocument)
           : remoteDocument
+      const shouldAnimateSurfaces = !force && this.hasLoaded && surfaceAnimationEpoch === this.surfaceAnimationEpoch
+        && (animateSurfaceChanges || this.pendingSurfaceRevision > this.revision)
       this.revision = nextRevision
+      if (this.pendingSurfaceRevision <= nextRevision) this.pendingSurfaceRevision = 0
       this.baseDocument = remoteDocument
       this.applyingRemote = true
       try {
@@ -1329,7 +1390,7 @@ export class TheaterSyncClient {
             || workspace.liveState.sceneObjects[current.selectedObjectId]
           ) ? current.selectedObjectId : null
         }
-        this.options.store.replaceState(workspace)
+        this.options.store.replaceState(workspace, shouldAnimateSurfaces)
         if (this.options.store.selection.bulkMode) {
           const validIds = selectedIds.filter((id) => (
             workspace.persistentObjects[id] || workspace.liveState.sceneObjects[id]

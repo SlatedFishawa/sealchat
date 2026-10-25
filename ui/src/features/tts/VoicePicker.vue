@@ -135,8 +135,8 @@ const facets = computed(() => collectVoiceFacets([...scopedPersonal.value, ...sc
 const filteredPresets = computed(() => scopedPresets.value.filter(item => matchesVoiceFilters(item, filters.value)))
 // Defensive only: the server already applied scope/search/kind/tag.
 const filteredPersonal = computed(() => scopedPersonal.value.filter(item => matchesVoiceFilters(item, filters.value)))
-// Personal voices carry no language metadata, so a language filter matches none
-// of them and they must not occupy pagination slots.
+// Personal voices carry no catalog/source language metadata. Their speech
+// translation capability must not make them match the language facet.
 const effectivePersonalTotal = computed(() => filters.value.language ? 0 : personalTotal.value)
 const pagePersonalCount = computed(() => filters.value.language ? 0 : personal.value.length)
 // "All" continues the server's personal pages with local preset pages, so each
@@ -193,7 +193,13 @@ const current = computed<CurrentState>(() => {
 })
 
 // Independent of browsing source/search/language filters.
-const speechLanguages = computed(() => selectedSpeechLanguages(selection.value, system.value, props.voiceContexts, props.voiceContext, props.defaultVoice ?? ''))
+const speechLanguages = computed(() => {
+  if (selection.value.type === 'personal') {
+    if (current.value.status === 'pending') return null
+    return current.value.status === 'ready' && current.value.item.source === 'personal' ? current.value.item.speechLanguages : []
+  }
+  return selectedSpeechLanguages(selection.value, system.value, props.voiceContexts, props.voiceContext, props.defaultVoice ?? '')
+})
 watch(speechLanguages, languages => emit?.('speech-languages', languages), { immediate: true })
 const systemProvider = computed(() => selection.value.type === 'inherit' ? props.voiceContext?.providerKind ?? '' : current.value.status === 'ready' && current.value.item.source === 'system' ? current.value.item.providerKind ?? '' : '')
 watch(systemProvider, kind => emit?.('system-provider', kind), { immediate: true })

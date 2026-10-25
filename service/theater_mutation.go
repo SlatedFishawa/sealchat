@@ -393,8 +393,10 @@ func applyTheaterMutation(ctx context.Context, actorID string, command TheaterMu
 	return result, nil
 }
 
+// Members may move a screen-fixed editable object (viewportX/Y) but not toggle coordinateSpace.
+// Keep in sync with delegatedObjectFields in ui/src/views/theater/sync/TheaterSyncClient.ts.
 var delegatedTheaterObjectFields = map[string]bool{
-	"name": true, "x": true, "y": true, "width": true, "height": true,
+	"name": true, "x": true, "y": true, "viewportX": true, "viewportY": true, "width": true, "height": true,
 	"rotation": true, "scale": true, "scaleX": true, "scaleY": true, "z": true, "orderKey": true,
 	"locked": true, "aspectRatioLocked": true, "content": true, "metadata": true,
 }
@@ -434,7 +436,7 @@ func validateDelegatedTheaterObjectUpdate(tx *gorm.DB, roomID string, payload *t
 }
 
 var delegatedTheaterObjectTransformFields = map[string]bool{
-	"x": true, "y": true, "width": true, "height": true, "rotation": true,
+	"x": true, "y": true, "viewportX": true, "viewportY": true, "width": true, "height": true, "rotation": true,
 	"scale": true, "scaleX": true, "scaleY": true,
 }
 
@@ -559,20 +561,40 @@ func applyDecodedTheaterMutationWithDelegatedObjectEdit(tx *gorm.DB, room *model
 	case *theaterObjectCreatePayload:
 		return applyTheaterObjectCreate(tx, room, actorID, payload)
 	case *theaterObjectUpdatePayload:
+		if err := validateTheaterDBReparentTransitions(tx, room.ID, []theaterObjectUpdatePayload{*payload}); err != nil {
+			return err
+		}
 		if err := applyTheaterObjectUpdateWithDelegatedObjectEdit(tx, room, actorID, payload, delegatedObjectEdit); err != nil {
 			return err
+		}
+		if theaterObjectFieldsChangeCoordinateTree(payload.Fields) {
+			if err := normalizeTheaterObjectTreeCoordinateSpaces(tx, room.ID, payload.ObjectID); err != nil {
+				return err
+			}
 		}
 		if _, scopeChanged := payload.Fields["sceneId"]; scopeChanged {
 			return nil
 		}
 		return validateTheaterObjectHierarchy(tx, room.ID)
 	case *theaterObjectBatchUpdatePayload:
+		if err := validateTheaterDBReparentTransitions(tx, room.ID, payload.Updates); err != nil {
+			return err
+		}
 		scopeChanged := false
+		coordinateTreeObjectIDs := []string{}
 		for i := range payload.Updates {
 			if _, ok := payload.Updates[i].Fields["sceneId"]; ok {
 				scopeChanged = true
 			}
 			if err := applyTheaterObjectUpdateWithDelegatedObjectEdit(tx, room, actorID, &payload.Updates[i], delegatedObjectEdit || actionVisibilityBatch); err != nil {
+				return err
+			}
+			if theaterObjectFieldsChangeCoordinateTree(payload.Updates[i].Fields) {
+				coordinateTreeObjectIDs = append(coordinateTreeObjectIDs, payload.Updates[i].ObjectID)
+			}
+		}
+		if len(coordinateTreeObjectIDs) > 0 {
+			if err := normalizeTheaterObjectTreeCoordinateSpaces(tx, room.ID, coordinateTreeObjectIDs...); err != nil {
 				return err
 			}
 		}
@@ -588,7 +610,10 @@ func applyDecodedTheaterMutationWithDelegatedObjectEdit(tx *gorm.DB, room *model
 	case *theaterObjectTogglePayload:
 		return applyTheaterObjectToggle(tx, room, payload)
 	case *theaterCharacterBindPayload:
-		return applyTheaterCharacterBind(tx, room, actorID, payload)
+		if err := applyTheaterCharacterBind(tx, room, actorID, payload); err != nil {
+			return err
+		}
+		return normalizeTheaterObjectTreeCoordinateSpaces(tx, room.ID, payload.Object.ID)
 	case *theaterResourceReferencePayload:
 		return applyTheaterResourceReference(tx, room, mutationType == TheaterMutationResourceAttach, payload)
 	default:
@@ -821,8 +846,17 @@ func applyTheaterRoomConstructionSet(tx *gorm.DB, room *model.TheaterRoomModel, 
 	return tx.Model(&model.TheaterRoomModel{}).Where("id = ?", room.ID).Update("construction_scene_id", sceneID).Error
 }
 
+func theaterObjectFieldsChangeCoordinateTree(fields map[string]any) bool {
+	_, parentChanged := fields["parentId"]
+	_, spaceChanged := fields["coordinateSpace"]
+	return parentChanged || spaceChanged
+}
+
 func applyTheaterObjectCreate(tx *gorm.DB, room *model.TheaterRoomModel, actorID string, payload *theaterObjectCreatePayload) error {
-	return createTheaterObject(tx, room, actorID, payload.SceneID, &payload.Object)
+	if err := createTheaterObject(tx, room, actorID, payload.SceneID, &payload.Object); err != nil {
+		return err
+	}
+	return normalizeTheaterObjectTreeCoordinateSpaces(tx, room.ID, payload.Object.ID)
 }
 
 func createTheaterObject(tx *gorm.DB, room *model.TheaterRoomModel, actorID string, sceneID *string, input *theaterObjectInput) error {
@@ -858,14 +892,24 @@ func createTheaterObject(tx *gorm.DB, room *model.TheaterRoomModel, actorID stri
 		if parent.Kind != "group" {
 			return theaterPayloadError("parent 必须是组")
 		}
+		input.CoordinateSpace = normalizedTheaterObjectCoordinateSpace(parent.CoordinateSpace)
+	}
+	if err := validateTheaterObjectCoordinateSpace(input.Kind, input.CoordinateSpace, input.CoordinateSpace != ""); err != nil {
+		return err
 	}
 	object := theaterObjectModelFromInput(room, actorID, sceneValue, input)
-	visible := object.Visible // GORM's default may mutate false to true on Create.
+	visible := object.Visible                                  // GORM's default may mutate false to true on Create.
+	viewportX, viewportY := object.ViewportX, object.ViewportY // Likewise 0 (a viewport edge) to 0.5.
 	if err := tx.Select("*").Create(&object).Error; err != nil {
 		return err
 	}
 	if !visible {
-		return tx.Exec("UPDATE theater_objects SET visible = ? WHERE room_id = ? AND id = ?", false, room.ID, object.ID).Error
+		if err := tx.Exec("UPDATE theater_objects SET visible = ? WHERE room_id = ? AND id = ?", false, room.ID, object.ID).Error; err != nil {
+			return err
+		}
+	}
+	if viewportX == 0 || viewportY == 0 {
+		return tx.Exec("UPDATE theater_objects SET viewport_x = ?, viewport_y = ? WHERE room_id = ? AND id = ?", viewportX, viewportY, room.ID, object.ID).Error
 	}
 	return nil
 }
@@ -896,9 +940,17 @@ func theaterObjectModelFromInput(room *model.TheaterRoomModel, actorID, sceneVal
 	if input.AspectRatioLocked != nil {
 		aspectRatioLocked = *input.AspectRatioLocked
 	}
+	viewportX, viewportY := 0.5, 0.5
+	if input.ViewportX != nil {
+		viewportX = *input.ViewportX
+	}
+	if input.ViewportY != nil {
+		viewportY = *input.ViewportY
+	}
 	object := model.TheaterObjectModel{
 		StringPKBaseModel: model.StringPKBaseModel{ID: input.ID}, RoomID: room.ID, SceneID: sceneValue, ParentID: derefString(input.ParentID), Kind: input.Kind, Name: input.Name,
 		X: input.X, Y: input.Y, Width: input.Width, Height: input.Height, Rotation: input.Rotation, Scale: scaleX, ScaleX: scaleX, ScaleY: scaleY, Z: input.Z, OrderKey: input.OrderKey,
+		CoordinateSpace: normalizedTheaterObjectCoordinateSpace(input.CoordinateSpace), ViewportX: viewportX, ViewportY: viewportY,
 		Visible: visible, Locked: input.Locked, AspectRatioLocked: aspectRatioLocked, Interactive: input.Interactive, Editable: input.Editable,
 		OwnerUserID: derefString(input.OwnerUserID), CharacterIdentityID: derefString(input.CharacterIdentityID), ContentJSON: defaultJSON(input.Content, `{}`), ActionsJSON: defaultJSON(input.Actions, `[]`), MetadataJSON: defaultJSON(input.Metadata, `{}`),
 		SchemaVersion: model.TheaterSchemaVersion, CreatedBy: actorID, UpdatedBy: actorID,
@@ -940,6 +992,11 @@ func applyTheaterObjectUpdateWithDelegatedObjectEdit(tx *gorm.DB, room *model.Th
 			return theaterPayloadError("组不能设置点击动作")
 		}
 	}
+	if space, ok := payload.Fields["coordinateSpace"].(string); ok {
+		if err := validateTheaterObjectCoordinateSpace(object.Kind, space, true); err != nil {
+			return err
+		}
+	}
 	desiredSceneID := object.SceneID
 	if value, scopeChanged := payload.Fields["sceneId"]; scopeChanged {
 		if object.Kind != "group" && object.Kind != "effect" {
@@ -958,7 +1015,7 @@ func applyTheaterObjectUpdateWithDelegatedObjectEdit(tx *gorm.DB, room *model.Th
 		}
 	}
 	updates := map[string]any{"updated_by": actorID, "updated_at": time.Now()}
-	columnMap := map[string]string{"parentId": "parent_id", "name": "name", "x": "x", "y": "y", "width": "width", "height": "height", "rotation": "rotation", "z": "z", "orderKey": "order_key", "visible": "visible", "locked": "locked", "aspectRatioLocked": "aspect_ratio_locked", "interactive": "interactive", "editable": "editable"}
+	columnMap := map[string]string{"parentId": "parent_id", "name": "name", "x": "x", "y": "y", "width": "width", "height": "height", "rotation": "rotation", "z": "z", "orderKey": "order_key", "coordinateSpace": "coordinate_space", "viewportX": "viewport_x", "viewportY": "viewport_y", "visible": "visible", "locked": "locked", "aspectRatioLocked": "aspect_ratio_locked", "interactive": "interactive", "editable": "editable"}
 	// Explicit axes override the uniform scale, as in object.create. Map iteration
 	// order must not decide the transform produced by a design update.
 	if value, ok := payload.Fields["scale"]; ok {
@@ -997,6 +1054,11 @@ func applyTheaterObjectUpdateWithDelegatedObjectEdit(tx *gorm.DB, room *model.Th
 				if parent.Kind != "group" {
 					return theaterPayloadError("parent 必须是组")
 				}
+			}
+			if parentID != object.ParentID && parentID == "" {
+				// validateTheaterDBReparentTransitions normalized the source tree before this
+				// update, so the descendant's stored value is its pre-reparent effective space.
+				updates["coordinate_space"] = normalizedTheaterObjectCoordinateSpace(object.CoordinateSpace)
 			}
 			updates["parent_id"] = parentID
 			continue

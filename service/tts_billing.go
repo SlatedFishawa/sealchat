@@ -122,6 +122,9 @@ func ttsReserveJob(db *gorm.DB, cfg *utils.SpeechConfig, job *model.TTSJob, prov
 			return err
 		}
 		if job.UsageStatus == "cached" && job.ResourceID != "" && job.Operation == "audition" {
+			if err := ttsLockJobAudio(tx, job.ResourceID); err != nil {
+				return err
+			}
 			job.Status = "succeeded"
 			return tx.Create(job).Error
 		}
@@ -150,6 +153,9 @@ func ttsReserveJob(db *gorm.DB, cfg *utils.SpeechConfig, job *model.TTSJob, prov
 			}
 		}
 		if job.UsageStatus == "cached" && job.ResourceID != "" && job.Operation == "message_synthesis" {
+			if err := ttsLockJobAudio(tx, job.ResourceID); err != nil {
+				return err
+			}
 			job.Status = "queued"
 			return tx.Create(job).Error
 		}
@@ -172,6 +178,12 @@ func ttsReserveJob(db *gorm.DB, cfg *utils.SpeechConfig, job *model.TTSJob, prov
 			}
 		}
 		if job.Operation == "design" || job.Operation == "clone" {
+			var snapshot TTSSnapshot
+			if job.Snapshot != "" {
+				if err := json.Unmarshal([]byte(job.Snapshot), &snapshot); err != nil {
+					return err
+				}
+			}
 			if provider.AccountVoiceLimit != nil {
 				var used int64
 				if err := tx.Model(&model.TTSVoice{}).Where("credential_scope = ? AND region = ? AND workspace = ? AND lifecycle <> ?", provider.CredentialScope, provider.Region, provider.Workspace, "deleted").Count(&used).Error; err != nil {
@@ -188,15 +200,14 @@ func ttsReserveJob(db *gorm.DB, cfg *utils.SpeechConfig, job *model.TTSJob, prov
 			if count >= int64(cfg.PreviewLimit) {
 				return TTSValidationError("临时音色名额已满")
 			}
-			expires := now.Add(time.Duration(cfg.PreviewTTLMinutes) * time.Minute)
-			voice := model.TTSVoice{OwnerUserID: job.PayerUserID, ProviderID: provider.ID, CredentialScope: provider.CredentialScope, Region: provider.Region, Workspace: provider.Workspace, TargetModel: provider.Model, Kind: job.Operation, Lifecycle: "creating", ProviderStatus: "DEPLOYING", Revision: 1, PreviewExpiresAt: &expires}
-			var snapshot TTSSnapshot
-			if job.Snapshot != "" {
-				if err := json.Unmarshal([]byte(job.Snapshot), &snapshot); err != nil {
+			if job.Operation == "clone" && snapshot.SourceResourceID != "" {
+				if err := ttsLockCloneSource(tx, snapshot.SourceResourceID, job.PayerUserID, now); err != nil {
 					return err
 				}
-				voice.Name, voice.Description, voice.SourceResourceID = snapshot.Name, snapshot.Description, snapshot.SourceResourceID
 			}
+			expires := now.Add(time.Duration(cfg.PreviewTTLMinutes) * time.Minute)
+			voice := model.TTSVoice{OwnerUserID: job.PayerUserID, ProviderID: provider.ID, CredentialScope: provider.CredentialScope, Region: provider.Region, Workspace: provider.Workspace, TargetModel: provider.Model, Kind: job.Operation, Lifecycle: "creating", ProviderStatus: "DEPLOYING", Revision: 1, PreviewExpiresAt: &expires}
+			voice.Name, voice.Description, voice.SourceResourceID = snapshot.Name, snapshot.Description, snapshot.SourceResourceID
 			if err := tx.Create(&voice).Error; err != nil {
 				return err
 			}

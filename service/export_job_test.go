@@ -1,14 +1,463 @@
 package service
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"sealchat/model"
 )
+
+// Keep LOG export regression coverage in this tracked file (new *_test.go files are ignored).
+func logExportFixture(t *testing.T, sections []LogSection) *model.LogProjectModel {
+	t.Helper()
+	initTestDB(t)
+	db := model.GetDB()
+	for _, id := range []string{"export-owner", "export-member", "export-target"} {
+		createExportTestUser(t, id, id, id)
+	}
+	rows := []any{
+		&model.WorldModel{StringPKBaseModel: model.StringPKBaseModel{ID: "export-world"}, Name: "Export", OwnerID: "export-owner", Status: "active", AllowMemberAccessLogLayout: true},
+		&model.WorldMemberModel{WorldID: "export-world", UserID: "export-owner", Role: model.WorldRoleOwner},
+		&model.WorldMemberModel{WorldID: "export-world", UserID: "export-member", Role: model.WorldRoleMember},
+	}
+	for _, id := range []string{"export-a", "export-b", "export-c"} {
+		rows = append(rows, &model.ChannelModel{StringPKBaseModel: model.StringPKBaseModel{ID: id}, WorldID: "export-world", UserID: "export-owner", Name: id, Status: model.ChannelStatusActive, PermType: "public"})
+	}
+	for _, row := range rows {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var draft LogDraft
+	if err := json.Unmarshal([]byte(defaultLogDraft("Export narrative")), &draft); err != nil {
+		t.Fatal(err)
+	}
+	draft.Sections = sections
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &model.LogProjectModel{WorldID: "export-world", Enabled: true, DraftVersion: 7, DraftJSON: string(raw)}
+	if err := db.Create(p).Error; err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func logExportSection(id, channel string, order int) LogSection {
+	return LogSection{ID: id, Order: order, Source: LogSourceSpec{ChannelID: channel, ToTime: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), IdentityIDs: []string{}, IncludeOOC: true, IncludeArchived: true}}
+}
+
+func logExportMessage(t *testing.T, id, channel string, created time.Time, order float64, mutate func(*model.MessageModel)) {
+	t.Helper()
+	m := &model.MessageModel{StringPKBaseModel: model.StringPKBaseModel{ID: id, CreatedAt: created}, ChannelID: channel, UserID: "export-owner", SenderIdentityID: "export-role", SenderIdentityName: "Narrator", SenderIdentityColor: "#123abc", Content: id, ICMode: "ic", DisplayOrder: order}
+	if mutate != nil {
+		mutate(m)
+	}
+	if err := model.GetDB().Create(m).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func logExportJob(t *testing.T, p *model.LogProjectModel, merge bool) *model.MessageExportJobModel {
+	t.Helper()
+	job, err := CreateLogMessageExportJob(p.ID, "export-owner", LogExportInput{ExpectedDraftVersion: p.DraftVersion, Format: "txt", MergeMessages: &merge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+func assertLogExportIDs(t *testing.T, job *model.MessageExportJobModel, want ...string) []*model.MessageModel {
+	t.Helper()
+	messages, err := loadLogMessagesForExport(job, parseExportExtraOptions(job.ExtraOptions))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(messages))
+	for i, m := range messages {
+		got[i] = m.ID
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("section sequence: got %v want %v", got, want)
+	}
+	return messages
+}
+
+func TestLoadLogMessagesForExportRespectsSectionOrder(t *testing.T) {
+	a, b := logExportSection("a", "export-a", 1), logExportSection("b", "export-b", 0)
+	p := logExportFixture(t, []LogSection{a, b}) // Deliberately unsorted JSON.
+	base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+	logExportMessage(t, "A1", "export-a", base, 1, nil)
+	logExportMessage(t, "A2", "export-a", base.Add(2*time.Minute), 2, nil)
+	logExportMessage(t, "B1", "export-b", base.Add(4*time.Hour), 1, nil)
+	logExportMessage(t, "B2", "export-b", base.Add(4*time.Hour+time.Minute), 2, nil)
+	assertLogExportIDs(t, logExportJob(t, p, false), "B1", "B2", "A1", "A2")
+}
+
+func TestLoadLogMessagesForExportAllowsSameChannelMultipleSections(t *testing.T) {
+	base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+	a, b := logExportSection("late", "export-a", 0), logExportSection("early", "export-a", 1)
+	from := base.Add(2 * time.Minute)
+	a.Source.FromTime = &from
+	b.Source.ToTime = base.Add(time.Minute)
+	p := logExportFixture(t, []LogSection{a, b})
+	for i := 0; i < 4; i++ {
+		logExportMessage(t, fmt.Sprintf("m%d", i+1), "export-a", base.Add(time.Duration(i)*time.Minute), float64(i+1), nil)
+	}
+	assertLogExportIDs(t, logExportJob(t, p, false), "m3", "m4", "m1", "m2")
+}
+
+func TestLoadLogMessagesForExportUsesDisplayOrderAndStableTies(t *testing.T) {
+	p := logExportFixture(t, []LogSection{logExportSection("a", "export-a", 0)})
+	base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+	logExportMessage(t, "created-first", "export-a", base, 2, nil)
+	logExportMessage(t, "tie-b", "export-a", base.Add(time.Hour), 1, nil)
+	logExportMessage(t, "tie-a", "export-a", base.Add(time.Hour), 1, nil)
+	assertLogExportIDs(t, logExportJob(t, p, false), "tie-a", "tie-b", "created-first")
+}
+
+func TestLoadLogMessagesForExportSourceFilters(t *testing.T) {
+	base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		configure func(*LogSection)
+		want      []string
+	}{
+		{"inclusive", func(s *LogSection) { s.Source.FromTime = &base; s.Source.ToTime = base }, []string{"boundary"}},
+		{"exclusive", func(s *LogSection) {
+			s.Source.FromTime = &base
+			s.Source.FromExclusive = true
+			s.Source.ToTime = base.Add(time.Second)
+		}, []string{"after"}},
+		{"ooc", func(s *LogSection) { s.Source.IncludeOOC = false }, []string{"before", "boundary", "after", "archived", "other-identity", "own-whisper"}},
+		{"archive", func(s *LogSection) { s.Source.IncludeArchived = false }, []string{"before", "boundary", "after", "ooc", "other-identity", "own-whisper"}},
+		{"identity", func(s *LogSection) { s.Source.IdentityIDs = []string{"another-role"} }, []string{"other-identity"}},
+		{"all", func(s *LogSection) {}, []string{"before", "boundary", "after", "ooc", "archived", "other-identity", "own-whisper"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := logExportSection("source", "export-a", 0)
+			tc.configure(&s)
+			p := logExportFixture(t, []LogSection{s})
+			for i, id := range []string{"before", "boundary", "after", "ooc", "archived", "other-identity", "excluded", "own-whisper", "hidden-whisper", "deleted", "revoked"} {
+				logExportMessage(t, id, "export-a", base.Add(time.Duration(i-1)*time.Second), float64(i+1), func(m *model.MessageModel) {
+					switch id {
+					case "ooc":
+						m.ICMode = "ooc"
+					case "archived":
+						m.IsArchived = true
+					case "other-identity":
+						m.SenderIdentityID = "another-role"
+					case "own-whisper":
+						m.IsWhisper = true
+						m.WhisperTo = "export-target"
+					case "hidden-whisper":
+						m.IsWhisper = true
+						m.UserID = "export-target"
+						m.WhisperTo = "export-member"
+					case "deleted":
+						m.IsDeleted = true
+					case "revoked":
+						m.IsRevoked = true
+					}
+				})
+			}
+			if err := model.GetDB().Create(&model.LogMessageExclusionModel{ProjectID: p.ID, SectionID: s.ID, MessageID: "excluded"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			job := logExportJob(t, p, false)
+			// These job-level flags must never remove messages selected by a LOG source.
+			job.IncludeOOC, job.IncludeArchived = false, false
+			messages := assertLogExportIDs(t, job, tc.want...)
+			for _, m := range messages {
+				if m.ID == "own-whisper" && (m.User == nil || len(m.WhisperTargets) != 1 || m.WhisperTargets[0].ID != "export-target") {
+					t.Fatalf("missing exporter associations: %+v", m)
+				}
+			}
+		})
+	}
+}
+
+func TestLogExportDoesNotMergeAcrossSections(t *testing.T) {
+	base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+	a, b := logExportSection("a", "export-a", 0), logExportSection("b", "export-a", 1)
+	a.Source.ToTime = base.Add(time.Second)
+	from := a.Source.ToTime
+	b.Source.FromTime, b.Source.FromExclusive = &from, true
+	p := logExportFixture(t, []LogSection{a, b})
+	for i, id := range []string{"first", "second", "third", "fourth"} {
+		logExportMessage(t, id, "export-a", base.Add(time.Duration(i)*time.Second), float64(i+1), nil)
+	}
+	messages := assertLogExportIDs(t, logExportJob(t, p, true), "first", "third")
+	if messages[0].Content != "first\nsecond" || messages[1].Content != "third\nfourth" || messages[0].MergedMessages != 2 || messages[1].MergedMessages != 2 {
+		t.Fatalf("section-local merge failed: %+v", messages)
+	}
+}
+
+func TestLogExportAppliesTraditionalOutputOptions(t *testing.T) {
+	p := logExportFixture(t, []LogSection{logExportSection("a", "export-a", 0)})
+	base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+	logExportMessage(t, "dice", "export-a", base, 1, func(m *model.MessageModel) { m.Content = ".r1d6" })
+	logExportMessage(t, "image", "export-a", base.Add(time.Second), 2, func(m *model.MessageModel) { m.Content = "[CQ:image,file=picture.png]" })
+	logExportMessage(t, "text", "export-a", base.Add(2*time.Second), 3, func(m *model.MessageModel) { m.Content = "你好,世界!" })
+	job := logExportJob(t, p, true)
+	messages := assertLogExportIDs(t, job, "text")
+	if messages[0].Content != "你好，世界！" {
+		t.Fatalf("punctuation correction not applied: %q", messages[0].Content)
+	}
+	var original model.MessageModel
+	if err := model.GetDB().Where("id = ?", "text").Take(&original).Error; err != nil {
+		t.Fatal(err)
+	}
+	if original.Content != "你好,世界!" {
+		t.Fatal("export changed the original message")
+	}
+	for _, enabled := range []bool{false, true} {
+		raw, err := buildExportExtraOptions(&ExportJobOptions{SourceKind: "log", LogProjectID: p.ID, LogDraftVersion: p.DraftVersion, IncludeImages: true, IncludeDiceCommand: true, AutoCorrectPunctuation: enabled})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.ExtraOptions = raw
+		extra := parseExportExtraOptions(raw)
+		messages, err := loadLogMessagesForExport(job, extra)
+		if err != nil || len(messages) != 1 || !strings.Contains(messages[0].Content, ".r1d6") || !strings.Contains(messages[0].Content, "[CQ:image") {
+			t.Fatalf("include options not applied: %+v %v", messages, err)
+		}
+		want := "你好,世界!"
+		if enabled {
+			want = "你好，世界！"
+		}
+		if !strings.Contains(messages[0].Content, want) {
+			t.Fatalf("punctuation option: %q", messages[0].Content)
+		}
+	}
+}
+
+func TestChannelExportOmitsLogSourceMetadata(t *testing.T) {
+	raw, err := buildExportExtraOptions(&ExportJobOptions{IncludeImages: true, IncludeDiceCommand: true, AutoCorrectPunctuation: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"source_kind", "log_project_id", "log_draft_version"} {
+		if strings.Contains(raw, field) {
+			t.Fatalf("channel job wrote %s: %s", field, raw)
+		}
+	}
+	legacy := parseExportExtraOptions(`{"include_images":false,"include_dice_commands":true}`)
+	if legacy.SourceKind != "" || legacy.LogProjectID != "" || legacy.LogDraftVersion != 0 || legacy.IncludeImages || !legacy.IncludeDiceCommand || !legacy.AutoCorrectPunctuation {
+		t.Fatalf("legacy options changed: %+v", legacy)
+	}
+}
+
+func TestLogExportRejectsStaleDraftVersion(t *testing.T) {
+	p := logExportFixture(t, []LogSection{logExportSection("a", "export-a", 0)})
+	_, err := CreateLogMessageExportJob(p.ID, "export-owner", LogExportInput{ExpectedDraftVersion: p.DraftVersion - 1, Format: "txt"})
+	logAssertExportCode(t, err, "VERSION_CONFLICT")
+	job := logExportJob(t, p, false)
+	if err := model.GetDB().Model(p).UpdateColumn("draft_version", p.DraftVersion+1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := processExportJob(job, MessageExportWorkerConfig{StorageDir: t.TempDir()}); err == nil {
+		t.Fatal("worker exported a newer draft")
+	}
+	stored, err := GetMessageExportJob(job.ID)
+	if err != nil || stored.Status != model.MessageExportStatusFailed || !strings.Contains(stored.ErrorMsg, "LOG 排版已变化，请重新导出") || stored.FilePath != "" {
+		t.Fatalf("stale job: %+v %v", stored, err)
+	}
+}
+
+func logAssertExportCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var domain *LogError
+	if !errors.As(err, &domain) || domain.Code != code {
+		t.Fatalf("got %v want %s", err, code)
+	}
+}
+
+func TestRetryMessageExportJobPreservesLogSource(t *testing.T) {
+	p := logExportFixture(t, []LogSection{logExportSection("a", "export-a", 0)})
+	job := logExportJob(t, p, true)
+	retried, err := RetryMessageExportJob(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := parseExportExtraOptions(retried.ExtraOptions)
+	if extra.SourceKind != "log" || extra.LogProjectID != p.ID || extra.LogDraftVersion != p.DraftVersion || retried.ChannelID != "" || retried.ID == job.ID {
+		t.Fatalf("lost LOG source on retry: %+v %+v", retried, extra)
+	}
+}
+
+func TestLogExportWorkerRechecksSourcePermission(t *testing.T) {
+	p := logExportFixture(t, []LogSection{logExportSection("a", "export-a", 0)})
+	job := logExportJob(t, p, false)
+	if err := model.GetDB().Model(&model.ChannelModel{}).Where("id = ?", "export-a").Update("is_private", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadLogMessagesForExport(job, parseExportExtraOptions(job.ExtraOptions))
+	logAssertExportCode(t, err, "PERMISSION_DENIED")
+}
+
+func TestLogExportGlobalMessageLimit(t *testing.T) {
+	sections := make([]LogSection, 200)
+	for i := range sections {
+		sections[i] = logExportSection(fmt.Sprintf("s%d", i), "export-a", i)
+	}
+	p := logExportFixture(t, sections)
+	base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+	for i := 0; i < 330; i++ {
+		logExportMessage(t, fmt.Sprintf("m%d", i), "export-a", base, float64(i+1), nil)
+	}
+	job := logExportJob(t, p, false)
+	messages, err := loadLogMessagesForExport(job, parseExportExtraOptions(job.ExtraOptions))
+	if err != nil || len(messages) != messageExportLimit || messages[len(messages)-1].ID != fmt.Sprintf("m%d", (messageExportLimit-1)%330) {
+		t.Fatalf("global limit: len=%d err=%v", len(messages), err)
+	}
+}
+
+func TestLogExportWorkerReusesTraditionalFormats(t *testing.T) {
+	for _, format := range []string{"txt", "bbcode-txt", "docx", "json", "html"} {
+		t.Run(format, func(t *testing.T) {
+			p := logExportFixture(t, []LogSection{logExportSection("b", "export-b", 0), logExportSection("a", "export-a", 1), logExportSection("c", "export-c", 2)})
+			base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+			for i, channel := range []string{"export-a", "export-c", "export-b"} {
+				logExportMessage(t, "content-"+channel, channel, base.Add(time.Duration(i)*time.Hour), 1, nil)
+			}
+			input := LogExportInput{ExpectedDraftVersion: p.DraftVersion, Format: format, TextBBCodeColorize: format == "bbcode-txt"}
+			if format == "bbcode-txt" {
+				input.Format = "txt"
+			}
+			job, err := CreateLogMessageExportJob(p.ID, "export-owner", input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := processExportJob(job, MessageExportWorkerConfig{StorageDir: t.TempDir()}); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := GetMessageExportJob(job.ID)
+			if err != nil || stored.Status != model.MessageExportStatusDone || stored.ChannelID != "" {
+				t.Fatalf("job: %+v %v", stored, err)
+			}
+			data, err := os.ReadFile(stored.FilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if format == "docx" || format == "html" {
+				archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = nil
+				for _, f := range archive.File {
+					want := format == "docx" && f.Name == "word/document.xml"
+					want = want || (format == "html" && strings.HasPrefix(f.Name, "parts/part-") && strings.HasSuffix(f.Name, ".html"))
+					if !want {
+						continue
+					}
+					r, err := f.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					part, err := io.ReadAll(r)
+					r.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+					data = append(data, part...)
+				}
+			}
+			body := string(data)
+			b, a, c := strings.Index(body, "content-export-b"), strings.Index(body, "content-export-a"), strings.Index(body, "content-export-c")
+			if b < 0 || a <= b || c <= a {
+				t.Fatalf("formatter reordered sections: %s", body)
+			}
+			if format == "bbcode-txt" && !strings.Contains(body, "[color=#123abc]") {
+				t.Fatalf("missing snapshot BBCode color: %s", body)
+			}
+			if format == "docx" && !strings.Contains(strings.ToLower(body), "123abc") {
+				t.Fatalf("missing snapshot DOCX color: %s", body)
+			}
+		})
+	}
+}
+
+func TestLogExportDocxUsesPerMessageChannelImageLayout(t *testing.T) {
+	initTestDB(t)
+	sourcePayload := buildExportPayload(
+		&model.MessageExportJobModel{UserID: "export-owner", Format: "docx"},
+		"",
+		[]*model.MessageModel{{StringPKBaseModel: model.StringPKBaseModel{ID: "source"}, ChannelID: "export-a", Content: "source"}},
+		nil,
+		&exportExtraOptions{IncludeImages: true, IncludeDiceCommand: true},
+	)
+	if len(sourcePayload.Messages) != 1 || sourcePayload.Messages[0].ChannelID != "export-a" {
+		t.Fatalf("message channel was not carried into export payload: %+v", sourcePayload.Messages)
+	}
+	const attachmentID = "log-export-docx-layout"
+	createWorldClueExportImageAttachment(t, attachmentID, "export-owner", "export-world")
+	for _, tc := range []struct {
+		channel string
+		width   int
+		height  int
+	}{
+		{channel: "export-a", width: 120, height: 80},
+		{channel: "export-b", width: 240, height: 160},
+	} {
+		if err := model.ChannelAttachmentImageLayoutUpsertBatch(tc.channel, "export-owner", []model.ChannelAttachmentImageLayoutUpsertItem{{AttachmentID: attachmentID, Width: tc.width, Height: tc.height}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := &AgentRichDocument{Type: "document", Blocks: []AgentRichNode{{Type: "paragraph", Children: []AgentRichNode{{Type: "image", Attrs: map[string]string{"attachment_id": attachmentID}}}}}}
+	payload := &ExportPayload{IncludeImages: true, Messages: []ExportMessage{
+		{ID: "a", ChannelID: "export-a", SenderName: "A", ContentRich: content},
+		{ID: "b", ChannelID: "export-b", SenderName: "B", ContentRich: content},
+	}}
+	data, err := (docxFormatter{}).Build(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document []byte
+	for _, f := range archive.File {
+		if f.Name != "word/document.xml" {
+			continue
+		}
+		r, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		document, err = io.ReadAll(r)
+		r.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	matches := regexp.MustCompile(`<wp:extent cx="([0-9]+)" cy="([0-9]+)"`).FindAllStringSubmatch(string(document), -1)
+	if len(matches) < 2 {
+		t.Fatalf("expected two image extents, got %d: %s", len(matches), document)
+	}
+	firstX, _ := strconv.ParseInt(matches[0][1], 10, 64)
+	firstY, _ := strconv.ParseInt(matches[0][2], 10, 64)
+	secondX, _ := strconv.ParseInt(matches[1][1], 10, 64)
+	secondY, _ := strconv.ParseInt(matches[1][2], 10, 64)
+	if secondX != firstX*2 || secondY != firstY*2 {
+		t.Fatalf("channel image layouts were not preserved: first=%dx%d second=%dx%d", firstX, firstY, secondX, secondY)
+	}
+}
 
 func TestLoadMessagesForExportHydratesMultiWhisperTargets(t *testing.T) {
 	initTestDB(t)

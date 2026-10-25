@@ -15,6 +15,9 @@ func sanitizeConfigForClient(cfg *utils.AppConfig) utils.AppConfig {
 	ret.AI.Providers = nil
 	ret.AI.Speech = nil
 	ret.Certificate = utils.CertificateConfig{}
+	// External tool paths are server-local details; administrators read them via /admin/export-pdf.
+	ret.Export.PDF.BrowserPath = ""
+	ret.Export.PDF.MergerPath = ""
 	return ret
 }
 

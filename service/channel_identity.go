@@ -39,6 +39,7 @@ type ChannelIdentityInput struct {
 	DisplayName                string
 	Color                      string
 	AvatarAttachmentID         string
+	AvatarTextStyle            string
 	AvatarDecorations          protocol.AvatarDecorationList
 	IsDefault                  bool
 	IsTemporary                bool
@@ -65,7 +66,15 @@ type ChannelIdentityUpdateResult struct {
 	SharedSync *SharedChannelIdentitySyncResult `json:"sharedSync,omitempty"`
 }
 
+// Keep the historical key and helper names for compatibility; these preferences
+// now apply to all user channel identities, scoped by the channel copy's ID.
 const temporaryIdentityActivateModePrefPrefix = "tmpMode:"
+
+var (
+	ErrChannelIdentityModeConfigSameRole       = errors.New("场内和场外默认角色不能相同")
+	ErrChannelIdentityModeConfigICRoleInvalid  = errors.New("场内角色不存在或不属于当前用户")
+	ErrChannelIdentityModeConfigOOCRoleInvalid = errors.New("场外角色不存在或不属于当前用户")
+)
 
 func normalizeTemporaryIdentityActivateMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -127,6 +136,22 @@ func loadTemporaryIdentityActivateModeMap(userID string) (map[string]string, err
 	return result, nil
 }
 
+func channelIdentityMappedActivateMode(config *model.ChannelIdentityModeConfigModel, identityID string) string {
+	identityID = strings.TrimSpace(identityID)
+	if config == nil || identityID == "" {
+		return ""
+	}
+	isIC := strings.TrimSpace(config.ICIdentityID) == identityID
+	isOOC := strings.TrimSpace(config.OOCIdentityID) == identityID
+	if isIC == isOOC {
+		return ""
+	}
+	if isOOC {
+		return "ooc"
+	}
+	return "ic"
+}
+
 func ApplyTemporaryIdentityActivateModes(userID string, identities []*model.ChannelIdentityModel) error {
 	if len(identities) == 0 {
 		return nil
@@ -135,11 +160,92 @@ func ApplyTemporaryIdentityActivateModes(userID string, identities []*model.Chan
 	if err != nil {
 		return err
 	}
+	configs := map[string]*model.ChannelIdentityModeConfigModel{}
+	loadedConfigs := map[string]bool{}
 	for _, identity := range identities {
-		if identity == nil || !identity.IsTemporary {
+		if identity == nil {
 			continue
 		}
 		identity.ICOOCOnActivate = modeMap[identity.ID]
+		channelID := strings.TrimSpace(identity.ChannelID)
+		if channelID == "" {
+			continue
+		}
+		if !loadedConfigs[channelID] {
+			config, err := model.ChannelIdentityModeConfigGet(userID, channelID)
+			if err != nil {
+				return err
+			}
+			configs[channelID] = config
+			loadedConfigs[channelID] = true
+		}
+		if mappedMode := channelIdentityMappedActivateMode(configs[channelID], identity.ID); mappedMode != "" {
+			identity.ICOOCOnActivate = mappedMode
+		}
+	}
+	return nil
+}
+
+func ChannelIdentityModeConfigSet(userID, channelID, icRoleID, oocRoleID string) (*model.ChannelIdentityModeConfigModel, error) {
+	userID = strings.TrimSpace(userID)
+	channelID = strings.TrimSpace(channelID)
+	icRoleID = strings.TrimSpace(icRoleID)
+	oocRoleID = strings.TrimSpace(oocRoleID)
+	if icRoleID != "" && icRoleID == oocRoleID {
+		return nil, ErrChannelIdentityModeConfigSameRole
+	}
+
+	var result *model.ChannelIdentityModeConfigModel
+	err := model.GetDB().Transaction(func(tx *gorm.DB) error {
+		validateRole := func(identityID string, invalidErr error) error {
+			if identityID == "" {
+				return nil
+			}
+			var identity model.ChannelIdentityModel
+			err := tx.Where("id = ? AND user_id = ? AND channel_id = ?", identityID, userID, channelID).Take(&identity).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return invalidErr
+			}
+			return err
+		}
+		if err := validateRole(icRoleID, ErrChannelIdentityModeConfigICRoleInvalid); err != nil {
+			return err
+		}
+		if err := validateRole(oocRoleID, ErrChannelIdentityModeConfigOOCRoleInvalid); err != nil {
+			return err
+		}
+
+		if icRoleID == "" && oocRoleID == "" {
+			return model.ChannelIdentityModeConfigDeleteTx(tx, userID, channelID)
+		}
+		record, err := model.ChannelIdentityModeConfigUpsertTx(tx, userID, channelID, icRoleID, oocRoleID)
+		if err != nil {
+			return err
+		}
+		if icRoleID != "" {
+			if err := syncTemporaryIdentityActivateModeTx(tx, userID, icRoleID, "ic"); err != nil {
+				return err
+			}
+		}
+		if oocRoleID != "" {
+			if err := syncTemporaryIdentityActivateModeTx(tx, userID, oocRoleID, "ooc"); err != nil {
+				return err
+			}
+		}
+		result = record
+		return nil
+	})
+	return result, err
+}
+
+func validateAvatarTextStyle(style, attachmentID string) error {
+	switch style {
+	case "", "a", "b", "c":
+	default:
+		return errors.New("文字头像样式无效，仅支持 a、b、c 或空字符串")
+	}
+	if style != "" && attachmentID != "" {
+		return errors.New("文字头像与头像附件不能同时设置")
 	}
 	return nil
 }
@@ -147,6 +253,12 @@ func ApplyTemporaryIdentityActivateModes(userID string, identities []*model.Chan
 func validateIdentityInput(input *ChannelIdentityInput) error {
 	if input == nil {
 		return errors.New("参数不能为空")
+	}
+	if err := validateAvatarTextStyle(input.AvatarTextStyle, input.AvatarAttachmentID); err != nil {
+		return err
+	}
+	if input.IsTemporary && input.AvatarTextStyle != "" {
+		return errors.New("临时身份需使用上传的头像附件")
 	}
 	if strings.TrimSpace(input.DisplayName) == "" {
 		return errors.New("频道昵称不能为空")
@@ -203,6 +315,9 @@ func ChannelIdentityCreateWithAccess(ownerUserID string, operatorUserID string, 
 	if err := validateIdentityInput(input); err != nil {
 		return nil, err
 	}
+	if !input.IsTemporary && input.ICOOCOnActivate == "" {
+		input.ICOOCOnActivate = "ic"
+	}
 	if strings.TrimSpace(operatorUserID) == "" {
 		operatorUserID = ownerUserID
 	}
@@ -234,6 +349,7 @@ func ChannelIdentityCreateWithAccess(ownerUserID string, operatorUserID string, 
 		DisplayName:              strings.TrimSpace(input.DisplayName),
 		Color:                    input.Color,
 		AvatarAttachmentID:       input.AvatarAttachmentID,
+		AvatarTextStyle:          input.AvatarTextStyle,
 		AvatarDecorations:        avatarDecorations,
 		SortOrder:                sortMax + 1,
 		IsDefault:                input.IsDefault,
@@ -265,10 +381,8 @@ func ChannelIdentityCreateWithAccess(ownerUserID string, operatorUserID string, 
 	}
 	item.FolderIDs = membership[item.ID]
 	item.ICOOCOnActivate = input.ICOOCOnActivate
-	if item.IsTemporary {
-		if err := syncTemporaryIdentityActivateMode(ownerUserID, item.ID, input.ICOOCOnActivate); err != nil {
-			return nil, err
-		}
+	if err := syncTemporaryIdentityActivateMode(ownerUserID, item.ID, input.ICOOCOnActivate); err != nil {
+		return nil, err
 	}
 
 	// 如果当前无默认身份，则自动设置为默认
@@ -358,6 +472,7 @@ func channelIdentityUpdateAndPromoteWithAccess(ownerUserID, operatorUserID strin
 		values := map[string]any{
 			"display_name": strings.TrimSpace(input.DisplayName), "color": input.Color,
 			"avatar_attachment_id": strings.TrimSpace(input.AvatarAttachmentID),
+			"avatar_text_style":    input.AvatarTextStyle,
 			"avatar_decoration":    avatarDecorations, "is_default": input.IsDefault,
 		}
 		if input.BotAppearanceMode != "" {
@@ -410,7 +525,7 @@ func channelIdentityUpdateAndPromoteWithAccess(ownerUserID, operatorUserID strin
 				}
 			}
 		}
-		if err := syncTemporaryIdentityActivateModeTx(tx, locked.UserID, locked.ID, ""); err != nil {
+		if err := syncTemporaryIdentityActivateModeTx(tx, locked.UserID, locked.ID, input.ICOOCOnActivate); err != nil {
 			return err
 		}
 		var updated model.ChannelIdentityModel
@@ -442,7 +557,7 @@ func channelIdentityUpdateAndPromoteWithAccess(ownerUserID, operatorUserID strin
 	if err != nil {
 		return nil, err
 	}
-	result.Item.ICOOCOnActivate = ""
+	result.Item.ICOOCOnActivate = input.ICOOCOnActivate
 	for _, copy := range result.SharedSync.Copies {
 		affectedAssetIDs = append(affectedAssetIDs, theaterPresentationAssetIDs(copy.TheaterPresentation)...)
 	}
@@ -475,6 +590,7 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 			}
 			input.Color = model.ChannelIdentityNormalizeColor(owner.NickColor)
 			input.AvatarAttachmentID = strings.TrimSpace(owner.Avatar)
+			input.AvatarTextStyle = ""
 		}
 	}
 	if err := validateIdentityInput(input); err != nil {
@@ -483,6 +599,9 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 	identity, err := model.ChannelIdentityValidateOwnership(identityID, ownerUserID, input.ChannelID)
 	if err != nil {
 		return nil, err
+	}
+	if identity.IsTemporary && input.AvatarTextStyle != "" {
+		return nil, errors.New("临时身份需使用上传的头像附件")
 	}
 	affectedAssetIDs := theaterPresentationAssetIDs(identity.TheaterPresentation)
 	if strings.TrimSpace(operatorUserID) == "" {
@@ -517,6 +636,7 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 	sharedSyncChanged := sharedOwnerUpdate && (strings.TrimSpace(input.DisplayName) != identity.DisplayName ||
 		input.Color != identity.Color ||
 		strings.TrimSpace(input.AvatarAttachmentID) != identity.AvatarAttachmentID ||
+		input.AvatarTextStyle != identity.AvatarTextStyle ||
 		!sharedAvatarDecorationsEqual(avatarDecorations, identity.AvatarDecorations) ||
 		botManaged && input.TheaterPresentationSet && !reflect.DeepEqual(input.TheaterPresentation, identity.TheaterPresentation) ||
 		botManaged && input.BotAppearanceMode != "" && input.BotAppearanceMode != identity.BotAppearanceMode ||
@@ -537,6 +657,7 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 		values["display_name"] = strings.TrimSpace(input.DisplayName)
 		values["color"] = input.Color
 		values["avatar_attachment_id"] = input.AvatarAttachmentID
+		values["avatar_text_style"] = input.AvatarTextStyle
 		values["avatar_decoration"] = avatarDecorations
 	}
 	if input.BotAppearanceMode != "" && !(botManaged && sharedOwnerUpdate) {
@@ -574,7 +695,10 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 	if err != nil {
 		return nil, err
 	}
-	updated.ICOOCOnActivate = ""
+	updated.ICOOCOnActivate = input.ICOOCOnActivate
+	if botManaged {
+		updated.ICOOCOnActivate = ""
+	}
 	if input.FolderIDs != nil {
 		membership, err := ChannelIdentityFolderAssignWithAccess(ownerUserID, operatorUserID, input.ChannelID, []string{identity.ID}, input.FolderIDs, "replace")
 		if err != nil {
@@ -587,15 +711,8 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 			updated.FolderIDs = membership[identity.ID]
 		}
 	}
-	if updated.IsTemporary {
-		updated.ICOOCOnActivate = input.ICOOCOnActivate
-		if err := syncTemporaryIdentityActivateMode(ownerUserID, updated.ID, input.ICOOCOnActivate); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := syncTemporaryIdentityActivateMode(ownerUserID, updated.ID, ""); err != nil {
-			return nil, err
-		}
+	if err := syncTemporaryIdentityActivateMode(ownerUserID, updated.ID, updated.ICOOCOnActivate); err != nil {
+		return nil, err
 	}
 	affectedAssetIDs = append(affectedAssetIDs, theaterPresentationAssetIDs(updated.TheaterPresentation)...)
 	if sharedSyncChanged {
@@ -605,6 +722,7 @@ func channelIdentityUpdateDetailedWithAccess(ownerUserID string, operatorUserID 
 			DisplayName:            strings.TrimSpace(input.DisplayName),
 			Color:                  input.Color,
 			AvatarAttachmentID:     input.AvatarAttachmentID,
+			AvatarTextStyle:        input.AvatarTextStyle,
 			AvatarDecorations:      avatarDecorations,
 			TheaterPresentation:    input.TheaterPresentation,
 			TheaterPresentationSet: botManaged && input.TheaterPresentationSet,
@@ -670,6 +788,9 @@ func ChannelIdentityReplaceTemporaryWithAccess(ownerUserID string, operatorUserI
 	}
 	if !identity.IsTemporary {
 		return nil, errors.New("仅临时身份支持替换式编辑")
+	}
+	if input.AvatarTextStyle != "" {
+		return nil, errors.New("临时身份需使用上传的头像附件")
 	}
 	affectedAssetIDs, err := channelIdentityReferencedTheaterAssetIDs(identity)
 	if err != nil {
@@ -977,6 +1098,7 @@ func ChannelIdentitySerialize(item *model.ChannelIdentityModel) map[string]any {
 		"displayName":              item.DisplayName,
 		"color":                    item.Color,
 		"avatarAttachmentId":       item.AvatarAttachmentID,
+		"avatarTextStyle":          item.AvatarTextStyle,
 		"avatarDecorations":        item.AvatarDecorations,
 		"theaterPresentation":      item.TheaterPresentation,
 		"isDefault":                item.IsDefault,

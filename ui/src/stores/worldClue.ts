@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from './_config'
 
@@ -149,6 +149,7 @@ export interface WorldClueRevealResult {
 }
 
 type ResolveWaiter = { resolve: (value: WorldClueResolveItem) => void; reject: (reason?: unknown) => void }
+type ChangedRefresh = { timer?: ReturnType<typeof setTimeout>; inFlight: boolean; dirty: boolean }
 
 export const useWorldClueStore = defineStore('worldClue', () => {
   const currentWorldId = ref('')
@@ -166,6 +167,71 @@ export const useWorldClueStore = defineStore('worldClue', () => {
   const resolveWaiters = new Map<string, ResolveWaiter[]>()
   const resolveTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const presentationKeys = new Set<string>()
+  const changedRefreshes = new Map<string, ChangedRefresh>()
+  let listEpoch = 0
+  let folderEpoch = 0
+
+  function cancelChangedRefresh(worldId: string) {
+    const refresh = changedRefreshes.get(worldId)
+    if (refresh?.timer !== undefined) clearTimeout(refresh.timer)
+    changedRefreshes.delete(worldId)
+  }
+
+  onScopeDispose(() => {
+    for (const worldId of changedRefreshes.keys()) cancelChangedRefresh(worldId)
+  })
+
+  // Immediate list operations supersede older snapshots. If an upsert snapshot
+  // is already in flight, retain a trailing refresh so none of its events are lost.
+  function beginListRequest(worldId: string, includeFolders = false) {
+    const refresh = changedRefreshes.get(worldId)
+    if (refresh?.inFlight) refresh.dirty = true
+    return { clues: ++listEpoch, folders: includeFolders ? ++folderEpoch : folderEpoch }
+  }
+
+  function scheduleChangedRefresh(worldId: string) {
+    let refresh = changedRefreshes.get(worldId)
+    if (!refresh) {
+      refresh = { inFlight: false, dirty: false }
+      changedRefreshes.set(worldId, refresh)
+    }
+    refresh.dirty = true
+    if (refresh.inFlight) return
+    if (refresh.timer !== undefined) clearTimeout(refresh.timer)
+    const pendingRefresh = refresh
+    refresh.timer = setTimeout(() => void flushChangedRefresh(worldId, pendingRefresh), 300)
+  }
+
+  async function flushChangedRefresh(worldId: string, refresh: ChangedRefresh) {
+    refresh.timer = undefined
+    if (changedRefreshes.get(worldId) !== refresh || currentWorldId.value !== worldId) return
+    refresh.inFlight = true
+    refresh.dirty = false
+    const epoch = ++listEpoch
+    const foldersEpoch = ++folderEpoch
+    const keyword = keywordsByWorld.value[worldId] || ''
+    try {
+      const [cluesResponse, foldersResponse] = await Promise.all([
+        api.get(`api/v1/worlds/${worldId}/clues`, { params: keyword ? { keyword } : undefined }),
+        api.get(`api/v1/worlds/${worldId}/clue-folders`).catch(() => null),
+      ])
+      if (changedRefreshes.get(worldId) !== refresh || currentWorldId.value !== worldId) return
+      if (listEpoch === epoch) {
+        summariesByWorld.value[worldId] = Object.fromEntries(
+          ((cluesResponse.data?.items || []) as WorldClueSummary[]).map(item => [item.id, item]),
+        )
+      }
+      if (foldersResponse && folderEpoch === foldersEpoch) foldersByWorld.value[worldId] = foldersResponse.data?.items || []
+    } catch {
+      // Keep the last good snapshot on a network failure.
+    } finally {
+      refresh.inFlight = false
+      if (changedRefreshes.get(worldId) === refresh) {
+        if (refresh.dirty) scheduleChangedRefresh(worldId)
+        else changedRefreshes.delete(worldId)
+      }
+    }
+  }
 
   const summaries = computed(() => Object.values(summariesByWorld.value[currentWorldId.value] || {}))
   const folders = computed(() => foldersByWorld.value[currentWorldId.value] || [])
@@ -201,6 +267,9 @@ export const useWorldClueStore = defineStore('worldClue', () => {
 
   function setWorld(worldId: string) {
     if (worldId === currentWorldId.value) return
+    cancelChangedRefresh(currentWorldId.value)
+    listEpoch++
+    folderEpoch++
     currentWorldId.value = worldId
     detail.value = null
     uiVisible.value = false
@@ -223,6 +292,7 @@ export const useWorldClueStore = defineStore('worldClue', () => {
     if (!worldId) return
     setWorld(worldId)
     keywordsByWorld.value[worldId] = keyword
+    const epoch = beginListRequest(worldId, true)
     loading.value = true
     try {
       const [cluesResponse, foldersResponse] = await Promise.all([
@@ -230,13 +300,20 @@ export const useWorldClueStore = defineStore('worldClue', () => {
         api.get(`api/v1/worlds/${worldId}/clue-folders`),
       ])
       if (currentWorldId.value !== worldId || keywordsByWorld.value[worldId] !== keyword) return
-      summariesByWorld.value[worldId] = Object.fromEntries(
-        ((cluesResponse.data?.items || []) as WorldClueSummary[]).map(item => [item.id, item]),
-      )
-      foldersByWorld.value[worldId] = (foldersResponse.data?.items || []) as WorldClueFolder[]
+      if (listEpoch === epoch.clues) {
+        summariesByWorld.value[worldId] = Object.fromEntries(
+          ((cluesResponse.data?.items || []) as WorldClueSummary[]).map(item => [item.id, item]),
+        )
+      }
+      if (folderEpoch === epoch.folders) foldersByWorld.value[worldId] = (foldersResponse.data?.items || []) as WorldClueFolder[]
     } finally {
       if (currentWorldId.value === worldId && keywordsByWorld.value[worldId] === keyword) loading.value = false
     }
+  }
+
+  async function fetchSummariesReadonly(worldId: string): Promise<WorldClueSummary[]> {
+    const response = await api.get(`api/v1/worlds/${worldId}/clues`)
+    return response.data?.items || []
   }
 
   async function loadRoster(worldId: string) {
@@ -453,10 +530,19 @@ export const useWorldClueStore = defineStore('worldClue', () => {
     }
     invalidate(worldId, payload.clueId)
     if (worldId !== currentWorldId.value) return
-    if (payload.action === 'remove' && payload.clueId) {
-      delete summariesByWorld.value[worldId]?.[payload.clueId]
+    if (payload.action === 'upsert' && payload.clueId) {
+      scheduleChangedRefresh(worldId)
       return
     }
+    if (payload.action === 'remove' && payload.clueId) {
+      delete summariesByWorld.value[worldId]?.[payload.clueId]
+      // Reject older clue snapshots, then guarantee a trailing authoritative refresh.
+      cancelChangedRefresh(worldId)
+      listEpoch++
+      scheduleChangedRefresh(worldId)
+      return
+    }
+    const epoch = beginListRequest(worldId, payload.action !== 'reorder')
     if (payload.action === 'folders') {
       const keyword = keywordsByWorld.value[worldId] || ''
       const [foldersResponse, cluesResponse] = await Promise.all([
@@ -464,17 +550,19 @@ export const useWorldClueStore = defineStore('worldClue', () => {
         api.get(`api/v1/worlds/${worldId}/clues`, { params: keyword ? { keyword } : undefined }),
       ])
       if (currentWorldId.value === worldId && keywordsByWorld.value[worldId] === keyword) {
-        foldersByWorld.value[worldId] = foldersResponse.data?.items || []
-        summariesByWorld.value[worldId] = Object.fromEntries(
-          ((cluesResponse.data?.items || []) as WorldClueSummary[]).map(item => [item.id, item]),
-        )
+        if (folderEpoch === epoch.folders) foldersByWorld.value[worldId] = foldersResponse.data?.items || []
+        if (listEpoch === epoch.clues) {
+          summariesByWorld.value[worldId] = Object.fromEntries(
+            ((cluesResponse.data?.items || []) as WorldClueSummary[]).map(item => [item.id, item]),
+          )
+        }
       }
       return
     }
     if (payload.action === 'reorder') {
       const keyword = keywordsByWorld.value[worldId] || ''
       const response = await api.get(`api/v1/worlds/${worldId}/clues`, { params: keyword ? { keyword } : undefined })
-      if (currentWorldId.value === worldId && keywordsByWorld.value[worldId] === keyword) {
+      if (currentWorldId.value === worldId && keywordsByWorld.value[worldId] === keyword && listEpoch === epoch.clues) {
         summariesByWorld.value[worldId] = Object.fromEntries(
           ((response.data?.items || []) as WorldClueSummary[]).map(item => [item.id, item]),
         )
@@ -489,9 +577,10 @@ export const useWorldClueStore = defineStore('worldClue', () => {
           api.get(`api/v1/worlds/${worldId}/clue-folders`).catch(() => null),
         ])
         if (currentWorldId.value !== worldId || keywordsByWorld.value[worldId] !== keyword) return
-        if (foldersResponse) {
+        if (foldersResponse && folderEpoch === epoch.folders) {
           foldersByWorld.value[worldId] = (foldersResponse.data?.items || []) as WorldClueFolder[]
         }
+        if (listEpoch !== epoch.clues) return
         const item = ((cluesResponse.data?.items || []) as WorldClueSummary[]).find(candidate => candidate.id === payload.clueId)
         if (!item) {
           delete summariesByWorld.value[worldId]?.[payload.clueId]
@@ -500,7 +589,7 @@ export const useWorldClueStore = defineStore('worldClue', () => {
         summariesByWorld.value[worldId] ||= {}
         summariesByWorld.value[worldId][item.id] = item
       } catch {
-        delete summariesByWorld.value[worldId]?.[payload.clueId]
+        if (currentWorldId.value === worldId && listEpoch === epoch.clues) delete summariesByWorld.value[worldId]?.[payload.clueId]
       }
     }
   }
@@ -554,6 +643,6 @@ export const useWorldClueStore = defineStore('worldClue', () => {
     currentWorldId, summariesByWorld, foldersByWorld, rosterByWorld, editLocksByClue, detail, resolveCache, presentationQueue, uiVisible, loading,
     summaries, folders, roster, unreadCount, setWorld, setVisible, toggleVisible, loadWorld, loadRoster, loadAccess, addRosterMember, removeRosterMember, fetchDetail, saveClue,
     removeClue, publish, reveal, unpublish, enqueuePresentation, loadPendingPresentations, acknowledgePresented, markSeen, fetchDetailReadonly,
-    invalidate, handleChanged, requestResolve, loadEditLocks, acquireEditLock, releaseEditLock,
+    invalidate, handleChanged, cancelChangedRefresh, fetchSummariesReadonly, requestResolve, loadEditLocks, acquireEditLock, releaseEditLock,
   }
 })

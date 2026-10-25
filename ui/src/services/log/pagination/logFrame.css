@@ -1,0 +1,223 @@
+/* LOG 隔离预览 iframe 的基础样式；样式包 CSS 在其后注入，可覆盖排版但不能覆盖工具层。 */
+:root {
+  --log-page-bg: #ffffff;
+  --log-font-family: sans-serif;
+  --log-font-size: 12pt;
+  --log-line-height: 1.5;
+  --log-workspace-bg: #e9e7e2;
+  --log-selection: #2f6fde;
+  --log-tool-fg: rgba(28, 31, 38, 0.88);
+  --log-tool-bg: color-mix(in srgb, var(--log-workspace-bg) 70%, rgba(255, 255, 255, 0.72));
+  --log-tool-bg-hover: color-mix(in srgb, var(--log-workspace-bg) 55%, rgba(255, 255, 255, 0.88));
+  --log-tool-border: color-mix(in srgb, var(--log-tool-fg) 22%, transparent);
+  --log-tool-border-strong: color-mix(in srgb, var(--log-tool-fg) 42%, transparent);
+  --log-tool-shadow: rgba(15, 23, 42, 0.14);
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--log-workspace-bg);
+  font-family: var(--log-font-family);
+  font-size: var(--log-font-size);
+  line-height: var(--log-line-height);
+  color: #1d1d1f;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-break: strict;
+  -webkit-font-smoothing: antialiased;
+}
+#log-root { padding: 24px 16px 48px; }
+/* 设计态顶部为外层浮动工具条留出空间，底部为缩放控件留出空间。 */
+.log-design #log-root { padding: 64px 24px 72px; }
+/* safe：纸张比视口宽时从左缘开始溢出，保证横向滚动能到达纸张左侧。 */
+.log-pages { display: flex; flex-direction: column; align-items: center; align-items: safe center; gap: 20px; }
+.log-pages.log-spread { display: grid; grid-template-columns: repeat(2, max-content); justify-content: center; justify-content: safe center; gap: 20px 4px; }
+.log-pages.log-flow { display: block; max-width: 760px; margin: 0 auto; background: var(--log-page-bg); padding: 32px clamp(16px, 5vw, 56px); border-radius: 6px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12); }
+.log-page {
+  position: relative;
+  background-color: var(--log-page-bg);
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 6px 18px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+.log-laid-out .log-page { content-visibility: auto; }
+.log-page-content { position: absolute; overflow: hidden; }
+.log-page-content.log-columns-2 { column-count: 2; column-fill: auto; }
+.log-page-header, .log-page-footer {
+  position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 0.75em; color: #777; overflow: hidden;
+}
+.log-page-number { font-variant-numeric: tabular-nums; }
+.log-node { position: relative; break-inside: auto; }
+.log-node img { max-width: 100%; max-height: var(--log-content-height, 100%); height: auto; }
+.log-node figure img, .log-node .log-fit-contain img { object-fit: contain; }
+.log-node.log-fit-cover img { object-fit: cover; width: 100%; }
+/* 未计算尺寸前用 display: contents 保留样式包原有图片约束；确定尺寸后再生成交互包装盒。 */
+.log-node .log-image-box { display: contents; }
+.log-node .log-image-box.log-image-box--sized { display: inline-block; position: relative; max-width: 100%; vertical-align: bottom; line-height: 0; break-inside: avoid; }
+.log-node .log-image-box.log-image-box--sized > img { display: block; width: 100% !important; min-width: 0 !important; max-width: 100% !important; height: auto !important; min-height: 0 !important; }
+.log-img-missing {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 8em; min-height: 4.5em; padding: 0.5em; border: 1px dashed #b8b8b8; color: #888; font-size: 0.85em; background: #f6f6f6;
+}
+.log-oversize { outline: 2px dashed #d97706; }
+.log-link { text-decoration: underline; }
+.log-fallback-message { margin: 0 0 0.8em; }
+.log-fallback-message .log-speaker { font-weight: 700; }
+/* 页面字体明确作用于消息正文，避免旧样式在消息外壳上指定字体后让正文只继承样式字体；更具体的骰子/富文本字体仍可覆盖。 */
+.log-body { font-family: var(--log-font-family); }
+/* 消息语义的默认呈现：样式包未声明时兜底，样式包 CSS 在其后注入可覆盖。 */
+.log-embed { margin: 0.2em 0; padding: 0.45em 0.75em; border-left: 3px solid rgba(0, 0, 0, 0.18); background: rgba(0, 0, 0, 0.03); }
+.log-embed > p:first-child strong { font-weight: 700; }
+/* 线索结构的兜底呈现（零优先级）：旧样式不认识 .log-clue__* 时，标题、类型、来源仍可辨识。 */
+:where(.log-clue) + :where(.log-clue) { margin-top: 0.6em; }
+:where(.log-clue__head) { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2em 0.5em; margin-bottom: 0.2em; }
+:where(.log-clue__label, .log-clue__kind) { padding: 0 0.35em; border: 1px solid rgba(0, 0, 0, 0.25); border-radius: 0.3em; font-size: 0.75em; }
+:where(.log-clue__media) { margin: 0.3em 0; }
+:where(.log-clue__media img) { display: block; max-height: 22em; }
+:where(.log-clue__body--empty) { color: #777; }
+:where(.log-clue__source) { margin-top: 0.2em; font-size: 0.85em; }
+:where(.log-clue__source-label)::after { content: "："; }
+.log-whisper-fallback, .log-quote-fallback { margin: 0 0 0.25em; font-size: 0.78em; line-height: 1.45; color: #6b6b6b; overflow-wrap: anywhere; }
+.log-whisper-fallback__label { display: inline-block; margin-right: 0.45em; padding: 0 0.4em; border: 1px dashed currentColor; border-radius: 0.6em; }
+.log-whisper-fallback__targets { font-weight: 600; }
+.log-quote-fallback { padding-left: 0.6em; border-left: 2px solid rgba(0, 0, 0, 0.15); }
+.log-quote-fallback__who { margin-right: 0.4em; font-weight: 600; }
+.log-element-placeholder { padding: 0.6em; border: 1px dashed #aaa; color: #666; font-size: 0.85em; }
+.log-toc-list { list-style: none; padding: 0; margin: 0; }
+.log-toc-item { display: flex; gap: 0.5em; align-items: baseline; }
+.log-toc-item[data-level="2"] { padding-left: 1.2em; }
+.log-toc-item[data-level="3"] { padding-left: 2.4em; }
+.log-toc-text { flex: 1 1 auto; }
+.log-toc-page { flex: 0 0 3em; text-align: right; font-variant-numeric: tabular-nums; }
+.log-page-break { break-after: page; }
+
+/* 设计态交互层：只在 design 模式出现，打印时隐藏。 */
+body.log-design {
+  background-color: var(--log-workspace-bg);
+  background-image: radial-gradient(rgba(0, 0, 0, 0.07) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+/* 设计态滚动条：细、无箭头、透明轨道。 */
+html:has(> body.log-design) { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, 0.45) transparent; }
+html:has(> body.log-design)::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+html:has(> body.log-design)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: rgba(128, 128, 128, 0.45) padding-box; }
+html:has(> body.log-design)::-webkit-scrollbar-button { display: none; }
+.log-canvas-dark {
+  --log-tool-fg: rgba(255, 255, 255, 0.9);
+  --log-tool-bg: color-mix(in srgb, var(--log-workspace-bg) 62%, rgba(18, 20, 26, 0.7));
+  --log-tool-bg-hover: color-mix(in srgb, var(--log-workspace-bg) 46%, rgba(28, 30, 38, 0.86));
+  --log-tool-border: color-mix(in srgb, var(--log-tool-fg) 20%, transparent);
+  --log-tool-border-strong: color-mix(in srgb, var(--log-tool-fg) 38%, transparent);
+  --log-tool-shadow: rgba(0, 0, 0, 0.28);
+}
+.log-canvas-dark body.log-design { background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px); }
+.log-canvas-dark .log-page { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 8px 28px rgba(0, 0, 0, 0.45); }
+.log-design .log-node[data-log-kind="message"], .log-design .log-node[data-log-kind="element"] { cursor: default; position: relative; border-radius: 3px; }
+.log-design .log-node:hover { box-shadow: inset 0 0 0 1px rgba(47, 111, 222, 0.35); }
+.log-design .log-node.log-selected { box-shadow: inset 0 0 0 1.5px var(--log-selection), inset 3px 0 0 var(--log-selection); background: rgba(47, 111, 222, 0.06); }
+.log-design .log-node.log-flash { animation: log-flash 1.2s ease-out 1; }
+@keyframes log-flash { from { background: rgba(255, 200, 0, 0.45); } to { background: transparent; } }
+.log-message-actions {
+  position: absolute; top: 4px; right: 4px; z-index: 12; display: flex; align-items: center; gap: 1px;
+  padding: 3px; border-radius: 8px;
+  background: rgba(28, 28, 32, 0.92); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  opacity: 0; transform: translateY(2px); pointer-events: none; transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.log-design .log-node:hover > .log-message-actions, .log-design .log-node.log-selected > .log-message-actions, .log-node:focus-within > .log-message-actions {
+  opacity: 1; transform: none; pointer-events: auto;
+}
+.log-message-action {
+  min-width: 26px; height: 24px; border: 0; border-radius: 5px; padding: 0 6px;
+  background: transparent; color: rgba(255, 255, 255, 0.82); font: 600 12px/1 sans-serif; cursor: pointer;
+}
+.log-message-action:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.log-message-action:disabled { opacity: 0.35; cursor: not-allowed; }
+.log-message-action:disabled:hover { background: transparent; }
+.log-handle { cursor: grab; touch-action: none; }
+.log-handle:active { cursor: grabbing; }
+.log-drop-indicator { position: absolute; height: 3px; background: var(--log-selection); border-radius: 2px; pointer-events: none; z-index: 20; }
+.log-drop-indicator::before, .log-drop-indicator::after { content: ''; position: absolute; top: -2px; width: 7px; height: 7px; border-radius: 50%; background: var(--log-selection); }
+.log-drop-indicator::before { left: -3px; }
+.log-drop-indicator::after { right: -3px; }
+.log-dragging { opacity: 0.45; }
+/* 重定位只改变设计态绘制，不参与消息测量与分页。 */
+.log-design.log-relocating .log-node.log-relocate-source { opacity: 0.5; }
+.log-design.log-relocating .log-node:hover { box-shadow: none; }
+.log-design.log-relocating .log-node.log-relocate-target::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  border-radius: 2px; background: var(--log-selection); pointer-events: none; opacity: 0;
+}
+.log-design.log-relocating .log-node.log-relocate-target:hover::after,
+.log-design.log-relocating .log-node.log-relocate-target:focus-visible::after { opacity: 1; }
+.log-design.log-relocating .log-message-actions,
+.log-design.log-relocating .log-image-control { display: none; }
+.log-design.log-relocating .log-node.log-relocate-source.log-selected { box-shadow: none; outline: 1.5px dashed var(--log-selection); outline-offset: -2px; }
+/* 多选：单条快捷操作与图片手柄让位；原消息首个片段右上角绘制勾选标记（绝对定位，不参与测量）。元素不参与多选。 */
+.log-design.log-multi .log-message-actions,
+.log-design.log-multi .log-image-control { display: none; }
+.log-design.log-multi .log-node[data-log-kind="message"] { cursor: pointer; }
+.log-design.log-multi .log-node[data-log-kind="element"] { cursor: default; }
+.log-design.log-multi .log-node[data-log-kind="element"]:hover { box-shadow: none; }
+.log-design.log-multi .log-node[data-log-kind="message"][data-log-fragment="0"]::before {
+  content: ''; position: absolute; top: 5px; right: 5px; z-index: 12; box-sizing: border-box; width: 18px; height: 18px;
+  border-radius: 50%; border: 1.5px solid rgba(100, 116, 139, 0.6); background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12); pointer-events: none; transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.log-design.log-multi .log-node[data-log-kind="message"]:hover::before { border-color: var(--log-selection); }
+.log-design.log-multi .log-node.log-selected[data-log-kind="message"][data-log-fragment="0"]::before {
+  border-color: var(--log-selection);
+  background: var(--log-selection) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.4l2.6 2.6L12 5.6' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 12px no-repeat;
+}
+.log-image-control {
+  position: absolute; bottom: 4px; z-index: 14; width: 26px; height: 26px; padding: 0;
+  border: 1px solid var(--log-tool-border); border-radius: 7px;
+  background: var(--log-tool-bg); color: var(--log-tool-fg);
+  box-shadow: 0 2px 8px var(--log-tool-shadow);
+  -webkit-backdrop-filter: blur(7px) saturate(115%); backdrop-filter: blur(7px) saturate(115%);
+  font: 15px/24px sans-serif; opacity: 0; pointer-events: none; touch-action: none;
+  transition: opacity 0.12s ease, background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.log-image-control:hover { background: var(--log-tool-bg-hover); border-color: var(--log-tool-border-strong); box-shadow: 0 3px 10px var(--log-tool-shadow); }
+.log-image-control:active { transform: translateY(1px); box-shadow: 0 1px 4px var(--log-tool-shadow); }
+.log-image-control:focus-visible { outline: 2px solid var(--log-tool-border-strong); outline-offset: 1px; }
+.log-image-resize { right: 4px; cursor: nwse-resize; }
+.log-image-reset { right: 34px; cursor: pointer; }
+.log-design .log-image-box:hover > .log-image-control, .log-design .log-selected .log-image-control, .log-design .log-image-box:focus-within > .log-image-control, .log-design .log-image-resizing > .log-image-control { opacity: 1; pointer-events: auto; }
+.log-design .log-image-box:hover, .log-design .log-selected .log-image-box, .log-design .log-image-resizing { box-shadow: 0 0 0 1px var(--log-tool-border); }
+.log-design .log-image-resizing { box-shadow: 0 0 0 1px var(--log-tool-border-strong); user-select: none; }
+.log-design .log-node.log-selected[data-log-kind="element"][data-log-element-type="imagePlate"],
+.log-design .log-node.log-selected[data-log-kind="element"][data-log-element-type="cover"] {
+  box-shadow: inset 0 0 0 1px var(--log-tool-border-strong);
+  background: color-mix(in srgb, var(--log-workspace-bg) 12%, transparent);
+}
+@media (hover: none) { .log-design .log-image-control { opacity: 0.9; pointer-events: auto; } }
+.log-node:focus-visible { outline: 2px solid var(--log-selection); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .log-design .log-node.log-flash { animation: none; outline: 2px solid #f0b400; }
+}
+@media print {
+  body, body.log-design { background: none; }
+  .log-canvas-dark .log-page { box-shadow: none; }
+  #log-root, .log-design #log-root { padding: 0; zoom: 1 !important; }
+  .log-pages { display: block; gap: 0; }
+  .log-page {
+    box-shadow: none;
+    break-after: page;
+    content-visibility: visible !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .log-page, .log-body {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+  }
+  .log-message-actions, .log-drop-indicator, .log-image-control { display: none !important; }
+  .log-design .log-node.log-selected, .log-design .log-node:hover { box-shadow: none; background: none; }
+  .log-design.log-relocating .log-node.log-relocate-source { opacity: 1; }
+  .log-design.log-relocating .log-node.log-relocate-target::after { display: none; }
+  .log-design.log-relocating .log-node.log-relocate-source.log-selected { outline: none; }
+  .log-design.log-multi .log-node::before { display: none !important; }
+}

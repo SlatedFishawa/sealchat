@@ -1903,6 +1903,7 @@ export const useCharacterCardStore = defineStore('characterCard', () => {
     createCard,
     saveCard,
     updateCard,
+    updateCardStrict,
     tagCard,
     untagAllCard,
     loadCard,

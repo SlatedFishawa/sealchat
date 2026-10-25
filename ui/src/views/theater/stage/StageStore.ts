@@ -18,6 +18,9 @@ import {
   normalizeStageSceneTransition,
   normalizeStageActionSchedule,
   normalizeStageSurfaceStyle,
+  normalizeStageObjectCoordinateSpace,
+  normalizeStageViewportPosition,
+  STAGE_VIEWPORT_POSITION_DEFAULT,
   type StageAction,
   type StageActionSchedule,
   type StageAudioRef,
@@ -33,6 +36,7 @@ import {
   type StageSceneOverlayBinding,
   type SceneFolder,
   type StageSceneTransition,
+  type StageSurfaceStyle,
   type StageSurfaceStylePatch,
   type StageSurfaceTarget,
   type StageSurfaceEmbed,
@@ -40,6 +44,7 @@ import {
   type StageWorkspaceState,
 } from '../shared/stage-types'
 import { normalizeStageClueExecutePayload, normalizeStageRandomTablePayload, normalizeStageSequenceAction } from '../shared/stage-actions'
+import { normalizeSurfaceVariantState, operateSurfaceVariant, surfaceVariantsFor, type SurfaceVariantOperation } from '../shared/stage-surface-variants'
 import {
   applyObjectHistoryEntry,
   cloneStageData,
@@ -63,6 +68,13 @@ import {
   type StageLayerRank,
 } from './stage-layer-order'
 import { createDefaultTheaterEffectConfig, normalizeTheaterEffectConfig } from '../effects/theater-effect-types'
+import {
+  applyStageRootPose,
+  stageObjectEffectiveCoordinateSpace,
+  stageObjectIsRoot,
+  stageObjectTreeRoot,
+  type StageRootPose,
+} from './stage-coordinate-space'
 
 const palette = ['#60a5fa', '#a78bfa', '#f472b6', '#34d399', '#fbbf24', '#fb7185']
 const newObjectOffsets = [
@@ -150,6 +162,8 @@ const snapObjectToGrid = (
 ) => {
   // Effects use an independent 1920x1080 design canvas, not world coordinates.
   if (!liveState.alignWithGrid || object.type === 'effect') return
+  // Screen-fixed trees are not placed on the world map grid (first version: no viewport snapping).
+  if (stageObjectEffectiveCoordinateSpace(object, objects) === 'viewport') return
   const world = objectWorldPosition(object, objects)
   if (anchor === 'bounds' && object.type !== 'group') {
     const angle = object.transform.rotation * Math.PI / 180
@@ -230,6 +244,9 @@ const makeObject = (
     z: 0,
     order,
   },
+  coordinateSpace: 'world',
+  viewportX: STAGE_VIEWPORT_POSITION_DEFAULT,
+  viewportY: STAGE_VIEWPORT_POSITION_DEFAULT,
   visible: true,
   locked: false,
   aspectRatioLocked: type === 'text' || type === 'iframe' ? false : type !== 'effect',
@@ -251,12 +268,18 @@ const makeObject = (
   ...overrides,
 })
 
+export const DEFAULT_NEW_SCENE_COLOR = '#172033'
+
+export const createDefaultSceneBackgroundStyle = () => (
+  createDefaultStageSurfaceStyle('cover', { opacity: 0.9, blurPx: 10, brightness: 1, overlay: { enabled: false, color: '#000000', opacity: 0.4 } })
+)
+
 const createLiveState = (color: string, sceneObjects: Record<string, StageObject> = {}): StageLiveState => ({
   background: null,
   foreground: null,
   surfaceEmbeds: normalizeStageSurfaceEmbeds(null),
   surfaceStyles: {
-    background: createDefaultStageSurfaceStyle('cover', { opacity: 0.9, blurPx: 10, brightness: 1, overlay: { enabled: false, color: '#000000', opacity: 0.4 } }),
+    background: createDefaultSceneBackgroundStyle(),
     foreground: createDefaultStageSurfaceStyle(),
   },
   backgroundColor: color,
@@ -427,6 +450,10 @@ const normalizeObject = (input: StageObject): StageObject | null => {
     },
     type: input.type,
     parentId: typeof input.parentId === 'string' ? input.parentId : null,
+    // Objects saved before screen-fixed support have no coordinate fields and stay in world space.
+    coordinateSpace: normalizeStageObjectCoordinateSpace(input.coordinateSpace, input.type),
+    viewportX: normalizeStageViewportPosition(input.viewportX),
+    viewportY: normalizeStageViewportPosition(input.viewportY),
     visible: input.visible !== false,
     locked: input.locked === true,
     aspectRatioLocked: input.type === 'iframe' ? input.aspectRatioLocked === true : input.aspectRatioLocked !== false,
@@ -466,9 +493,10 @@ const normalizeObjects = (input: unknown) => {
   }, {})
 }
 
-const normalizeLiveState = (input: Partial<StageLiveState> | undefined, fallbackColor = '#111827'): StageLiveState => ({
+const normalizeLiveState = (input: Partial<StageLiveState> | undefined, fallbackColor = '#111827'): StageLiveState => normalizeSurfaceVariantState({
   background: normalizeImageRef(input?.background),
   foreground: normalizeImageRef(input?.foreground),
+  ...(input?.surfaceVariants ? { surfaceVariants: clone(input.surfaceVariants) } : {}),
   surfaceEmbeds: normalizeStageSurfaceEmbeds(input?.surfaceEmbeds),
   surfaceStyles: {
     background: normalizeStageSurfaceStyle(input?.surfaceStyles?.background, input?.fieldObjectFit || 'cover', { opacity: 0.9, blurPx: 10 }),
@@ -496,8 +524,21 @@ const normalizeLiveState = (input: Partial<StageLiveState> | undefined, fallback
   serverState: input?.serverState && typeof input.serverState === 'object' ? input.serverState : {},
 })
 
+// Initial values for a scene appended without switching to it. Omitted fields keep
+// the regular new-scene defaults.
+export interface StageSceneCreateOptions {
+  name: string
+  folderId?: string | null
+  backgroundColor?: string
+  background?: { image: StageImageRef, name?: string }
+  backgroundStyle?: StageSurfaceStyle
+}
+
 export interface TheaterStageStore {
   state: StageWorkspaceState
+  surfaceChanges: Record<StageSurfaceTarget | 'reset', number>
+  operateSurfaceVariant: (target: StageSurfaceTarget, operation: SurfaceVariantOperation) => boolean
+  rollbackFailedSurfaceVariant: (target: StageSurfaceTarget, image: StageImageRef | null) => boolean
   scenes: ComputedRef<StageScene[]>
   activeScene: ComputedRef<StageScene>
   activeObjects: ComputedRef<Record<string, StageObject>>
@@ -512,6 +553,7 @@ export interface TheaterStageStore {
   setObjectFlag: (objectId: string, key: StageObjectQuickFlag, value: boolean) => boolean
   selectScene: (sceneId: string) => void
   addScene: () => void
+  appendScene: (options: StageSceneCreateOptions) => string | null
   duplicateScene: (sourceSceneId?: string, activateDuplicate?: boolean) => { sceneId: string, objectIdMap: ReadonlyMap<string, string> }
   removeScene: (sceneId?: string) => void
   updateSceneDetails: (sceneId: string, name: string, switchText: string) => boolean
@@ -526,6 +568,7 @@ export interface TheaterStageStore {
   moveSceneToFolder: (sceneId: string, folderId: string | null) => boolean
   setScenePublished: (sceneId: string, published: boolean) => boolean
   reorderScenes: (sceneId: string, targetId: string, placement: 'before' | 'after') => boolean
+  moveScene: (sceneId: string, target: StageSceneMoveTarget) => boolean
   addObject: (type: StageInsertableObjectType, scope?: StageObjectScope, placement?: StageObjectPlacement) => StageObject
   addDrawing: (
     drawing: StageDrawing,
@@ -552,15 +595,16 @@ export interface TheaterStageStore {
   reparentObject: (
     objectId: string,
     parentId: string | null,
-    transform: Pick<StageObjectTransform, 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>,
+    transform: StageObjectReparentTransform,
   ) => boolean
   moveObject: (
     objectId: string,
     parentId: string | null,
-    transform: Pick<StageObjectTransform, 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>,
+    transform: StageObjectReparentTransform,
     targetId?: string | null,
     placement?: 'before' | 'after',
   ) => boolean
+  setRootCoordinateSpaces: (poses: Record<string, StageRootPose>) => number
   moveOrder: (objectId: string, direction: -1 | 1) => void
   reorderObject: (objectId: string, targetId: string, placement: 'before' | 'after') => void
   setSceneImage: (target: 'background' | 'foreground', url: string, resourceId?: string, mimeType?: string, animated?: boolean, loopCount?: number) => boolean
@@ -588,8 +632,13 @@ export interface TheaterStageStore {
   resetCamera: () => void
   getSnapshot: () => StageWorkspaceState
   applyScene: (sceneId: string) => boolean
-  replaceState: (next: StageWorkspaceState) => void
+  replaceState: (next: StageWorkspaceState, animateSurfaceChanges?: boolean) => void
 }
+
+// A scene target adopts that scene's folder; a folder target appends to it.
+export type StageSceneMoveTarget =
+  | { kind: 'scene', sceneId: string, placement: 'before' | 'after' }
+  | { kind: 'folder', folderId: string | null }
 
 export interface TheaterStageSelectionState {
   bulkMode: boolean
@@ -602,8 +651,37 @@ export type StageObjectBatchPatch = Partial<Pick<StageObject,
 
 export type StageObjectQuickFlag = 'visible' | 'editable' | 'locked'
 
+// Pose that keeps a reparented object visually still. A child needs parent-local x/y; a new top-level
+// root carries its coordinate space and, when screen-fixed, viewportX/Y instead of world x/y.
+export type StageObjectReparentTransform = Pick<StageObjectTransform, 'rotation' | 'scaleX' | 'scaleY'>
+  & Partial<Pick<StageObjectTransform, 'x' | 'y'>>
+  & Partial<Pick<StageObject, 'coordinateSpace' | 'viewportX' | 'viewportY'>>
+
 export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore => {
   const state = reactive<StageWorkspaceState>(createInitialTheaterStageState())
+  const surfaceChanges = reactive({ background: 0, foreground: 0, reset: 0 })
+  const rollbackStates: Partial<Record<StageSurfaceTarget, { sceneId: string, before: ReturnType<typeof surfaceVariantsFor>, after: string }>> = {}
+  const editSurfaceVariant = (target: StageSurfaceTarget, operation: SurfaceVariantOperation) => {
+    const beforeImage = JSON.stringify(state.liveState[target])
+    const beforeGroup = clone(surfaceVariantsFor(state.liveState, target))
+    const changed = operateSurfaceVariant(state.liveState, target, operation)
+    if (changed && beforeImage !== JSON.stringify(state.liveState[target])) {
+      rollbackStates[target] = { sceneId: state.activeSceneId, before: beforeGroup, after: JSON.stringify(surfaceVariantsFor(state.liveState, target)) }
+      surfaceChanges[target]++
+    }
+    return changed
+  }
+  const rollbackFailedSurfaceVariant = (target: StageSurfaceTarget, image: StageImageRef | null) => {
+    const previous = rollbackStates[target]
+    if (!previous || previous.sceneId !== state.activeSceneId
+      || previous.after !== JSON.stringify(surfaceVariantsFor(state.liveState, target))
+      || JSON.stringify(state.liveState[target]) !== JSON.stringify(image)) return false
+    delete rollbackStates[target]
+    state.liveState.surfaceVariants = { ...state.liveState.surfaceVariants, [target]: previous.before }
+    state.liveState[target] = previous.before.slots.find(slot => slot.id === previous.before.activeId)?.image ?? null
+    surfaceChanges[target]++
+    return true
+  }
   const scenes = computed(() => Object.values(state.scenes).sort((a, b) => a.order - b.order))
   const activeScene = computed(() => state.scenes[state.activeSceneId] || scenes.value[0])
   const activeObjects = computed(() => ({ ...state.liveState.sceneObjects, ...state.persistentObjects }))
@@ -917,13 +995,77 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     return true
   }
 
+  const effectiveSceneFolderId = (scene: StageScene) => (
+    scene.folderId && state.sceneFolders.some((folder) => folder.id === scene.folderId) ? scene.folderId : ''
+  )
+
+  // Folder and order change together so one sync flush carries the whole move.
+  const moveScene = (sceneId: string, target: StageSceneMoveTarget) => {
+    const scene = state.scenes[sceneId]
+    if (!scene) return false
+    let folderId = ''
+    let anchorId: string | null = null
+    let placement: 'before' | 'after' = 'after'
+    if (target.kind === 'scene') {
+      const anchor = state.scenes[target.sceneId]
+      if (!anchor || anchor.id === sceneId) return false
+      folderId = effectiveSceneFolderId(anchor)
+      anchorId = anchor.id
+      placement = target.placement
+    } else {
+      folderId = target.folderId?.trim() || ''
+      if (folderId && !state.sceneFolders.some((folder) => folder.id === folderId)) return false
+      const folderScenes = scenes.value.filter((item) => item.id !== sceneId && effectiveSceneFolderId(item) === folderId)
+      anchorId = folderScenes.length ? folderScenes[folderScenes.length - 1].id : null
+    }
+    const current = scenes.value
+    const ordered = current.filter((item) => item.id !== sceneId)
+    const insertionIndex = anchorId
+      ? ordered.findIndex((item) => item.id === anchorId) + (placement === 'after' ? 1 : 0)
+      : current.findIndex((item) => item.id === sceneId)
+    if (insertionIndex < 0) return false
+    ordered.splice(insertionIndex, 0, scene)
+    const folderChanged = (scene.folderId || '') !== folderId
+    const orderChanged = ordered.some((item, index) => item.order !== index)
+    if (!folderChanged && !orderChanged) return false
+    if (folderChanged) {
+      if (folderId) scene.folderId = folderId
+      else delete scene.folderId
+    }
+    if (orderChanged) ordered.forEach((item, index) => { item.order = index })
+    return true
+  }
+
+  const nextSceneOrder = () => scenes.value.reduce((highest, item) => Math.max(highest, item.order), -1) + 1
+
+  // Appends after the last scene and leaves activeSceneId/liveState untouched.
+  const appendScene = (options: StageSceneCreateOptions): string | null => {
+    const name = options.name.trim()
+    const folderId = options.folderId?.trim() || ''
+    const color = options.backgroundColor?.trim() || ''
+    if (!name || [...name].length > 512) return null
+    if (folderId && !state.sceneFolders.some((folder) => folder.id === folderId)) return null
+    const scene = createScene(name, nextSceneOrder(), color && color.length <= 64 ? color : DEFAULT_NEW_SCENE_COLOR)
+    if (options.backgroundStyle) {
+      scene.state.surfaceStyles.background = normalizeStageSurfaceStyle(options.backgroundStyle, 'cover', createDefaultSceneBackgroundStyle())
+    }
+    if (options.background && (!options.background.image || !operateSurfaceVariant(scene.state, 'background', {
+      type: 'add',
+      id: uid('surface'),
+      name: options.background.name?.trim() || '图片 1',
+      image: options.background.image,
+    }))) return null
+    if (folderId) scene.folderId = folderId
+    state.scenes[scene.id] = scene
+    return scene.id
+  }
+
   const addScene = () => {
     saveLiveState()
-    const order = scenes.value.reduce((highest, item) => Math.max(highest, item.order), -1) + 1
-    const scene = createScene(`场景 ${order + 1}`, order, '#172033')
-    state.scenes[scene.id] = scene
-    state.activeSceneId = scene.id
-    state.liveState = clone(scene.state)
+    const sceneId = appendScene({ name: `场景 ${nextSceneOrder() + 1}` })
+    if (!sceneId) return
+    state.activeSceneId = sceneId
+    state.liveState = clone(state.scenes[sceneId].state)
     clearSelection()
   }
 
@@ -989,8 +1131,13 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
   ) => {
     const reference = referenceId ? activeObjects.value[referenceId] : undefined
     if (reference && collection[reference.id]) {
-      object.parentId = reference.parentId
-      reorderObject(object.id, reference.id, 'before')
+      // A tree has one coordinate space: a reference inside a tree of another space only decides
+      // the z-order, and the object is placed above that tree's root instead of joining it.
+      const anchor = stageObjectEffectiveCoordinateSpace(reference, activeObjects.value) === object.coordinateSpace
+        ? reference
+        : stageObjectTreeRoot(reference, activeObjects.value)
+      object.parentId = anchor.parentId
+      reorderObject(object.id, anchor.id, 'before')
       return
     }
 
@@ -1300,6 +1447,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
         snapObjectToGrid(object, state.liveState, activeObjects.value)
       })
       reconcileGroupScopes()
+      reconcileCoordinateSpaces()
       const pastedRootIds = pasted.roots.map((root) => root.id)
       const primaryId = pastedRootIds[pastedRootIds.length - 1] || null
       setSelectedObjectIds(pastedRootIds, primaryId)
@@ -1330,6 +1478,28 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     return false
   }
 
+  // Descendants mirror their root's coordinate space so a detached child keeps the tree's space.
+  const reconcileCoordinateSpaces = () => {
+    const objects = activeObjects.value
+    Object.values(objects).forEach((object) => {
+      const space = stageObjectEffectiveCoordinateSpace(object, objects)
+      if (object.coordinateSpace !== space) object.coordinateSpace = space
+    })
+  }
+
+  const applyReparentTransform = (object: StageObject, transform: StageObjectReparentTransform) => {
+    if (transform.x !== undefined) object.transform.x = transform.x
+    if (transform.y !== undefined) object.transform.y = transform.y
+    object.transform.rotation = transform.rotation
+    object.transform.scaleX = Math.min(100, Math.max(0.01, transform.scaleX))
+    object.transform.scaleY = Math.min(100, Math.max(0.01, transform.scaleY))
+    if (transform.coordinateSpace !== undefined) {
+      object.coordinateSpace = normalizeStageObjectCoordinateSpace(transform.coordinateSpace, object.type)
+    }
+    if (transform.viewportX !== undefined) object.viewportX = normalizeStageViewportPosition(transform.viewportX)
+    if (transform.viewportY !== undefined) object.viewportY = normalizeStageViewportPosition(transform.viewportY)
+  }
+
   const canSetParent = (objectId: string, parentId: string | null) => {
     const object = getObject(objectId)
     if (!object || objectId === parentId) return false
@@ -1337,6 +1507,11 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     const parent = getObject(parentId)
     if (!parent || parent.type !== 'group') return false
     if (collectDescendants(objectId).includes(parentId)) return false
+    // World and screen-fixed trees never mix: toggle the object or the group first.
+    if (
+      stageObjectEffectiveCoordinateSpace(object, activeObjects.value)
+      !== stageObjectEffectiveCoordinateSpace(parent, activeObjects.value)
+    ) return false
     const objectScope = componentScopeInSubtree(objectId)
     const parentScope = componentScopeInSubtree(rootGroupId(parentId))
     if (objectScope === 'mixed' || parentScope === 'mixed') return false
@@ -1349,30 +1524,28 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     const object = getObject(objectId)!
     object.parentId = parentId
     reconcileGroupScopes()
+    reconcileCoordinateSpaces()
     return true
   })
 
   const reparentObject = (
     objectId: string,
     parentId: string | null,
-    transform: Pick<StageObjectTransform, 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>,
+    transform: StageObjectReparentTransform,
   ) => runObjectEdit('调整对象分组', () => {
     if (!canSetParent(objectId, parentId)) return false
     const object = getObject(objectId)!
     object.parentId = parentId
-    object.transform.x = transform.x
-    object.transform.y = transform.y
-    object.transform.rotation = transform.rotation
-    object.transform.scaleX = Math.min(100, Math.max(0.01, transform.scaleX))
-    object.transform.scaleY = Math.min(100, Math.max(0.01, transform.scaleY))
+    applyReparentTransform(object, transform)
     reconcileGroupScopes()
+    reconcileCoordinateSpaces()
     return true
   })
 
   const moveObject = (
     objectId: string,
     parentId: string | null,
-    transform: Pick<StageObjectTransform, 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'>,
+    transform: StageObjectReparentTransform,
     targetId: string | null = null,
     placement: 'before' | 'after' = 'after',
   ) => {
@@ -1398,7 +1571,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
       normalizeRanks = rank === null
     }
 
-    const affectedIds = new Set<string>([objectId])
+    const affectedIds = new Set<string>([objectId, ...collectDescendants(objectId)])
     Object.values(activeObjects.value).forEach((item) => {
       if (item.type === 'group') affectedIds.add(item.id)
     })
@@ -1407,13 +1580,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     const selectionBefore = snapshotSelection()
 
     object.parentId = parentId
-    Object.assign(object.transform, {
-      x: transform.x,
-      y: transform.y,
-      rotation: transform.rotation,
-      scaleX: Math.min(100, Math.max(0.01, transform.scaleX)),
-      scaleY: Math.min(100, Math.max(0.01, transform.scaleY)),
-    })
+    applyReparentTransform(object, transform)
 
     if (target) {
       if (normalizeRanks) {
@@ -1430,10 +1597,24 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     }
 
     reconcileGroupScopes()
+    reconcileCoordinateSpaces()
     setSelectedObjectIds([objectId], objectId)
     commitObjectSubsetEdit('调整对象层级', before, selectionBefore, affectedIds)
     return true
   }
+
+  // Poses come from the view (camera + viewport size) so the switch keeps every root visually still.
+  const setRootCoordinateSpaces = (poses: Record<string, StageRootPose>) => runObjectEdit('切换屏幕固定', () => {
+    let changed = 0
+    Object.entries(poses).forEach(([objectId, pose]) => {
+      const object = getObject(objectId)
+      if (!object || object.type === 'effect' || !stageObjectIsRoot(object, activeObjects.value)) return
+      applyStageRootPose(object, pose)
+      changed += 1
+    })
+    if (changed) reconcileCoordinateSpaces()
+    return changed
+  })
 
   const moveOrder = (objectId: string, direction: -1 | 1) => runObjectEdit('调整对象顺序', () => {
     const object = getObject(objectId)
@@ -1473,14 +1654,12 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
   })
 
   const setSceneImage = (target: 'background' | 'foreground', url: string, resourceId?: string, mimeType?: string, animated?: boolean, loopCount?: number) => {
-    if (!url.trim()) {
-      state.liveState[target] = null
-      return true
-    }
-    const image = createImageRef(url, target === 'background' ? '场景背景' : '场景前景', resourceId, mimeType, animated, loopCount)
-    if (!image) return false
-    state.liveState[target] = image
-    return true
+    const image = url.trim() ? createImageRef(url, target === 'background' ? '场景背景' : '场景前景', resourceId, mimeType, animated, loopCount) : null
+    if (url.trim() && !image) return false
+    const group = surfaceVariantsFor(state.liveState, target)
+    const id = group.activeId
+    if (!id) return image ? editSurfaceVariant(target, { type: 'add', id: uid('surface'), name: '默认', image }) : true
+    return editSurfaceVariant(target, { type: 'replace', id, image })
   }
 
   const patchSceneSurfaceStyle = (target: StageSurfaceTarget, patch: StageSurfaceStylePatch) => {
@@ -1689,13 +1868,22 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     selectScene(sceneId)
     return true
   }
-  const replaceState = (next: StageWorkspaceState) => {
+  const replaceState = (next: StageWorkspaceState, animateSurfaceChanges = false) => {
+    delete rollbackStates.background
+    delete rollbackStates.foreground
     transaction = null
     const value = clone(next)
     value.liveState.surfaceEmbeds = normalizeStageSurfaceEmbeds(value.liveState.surfaceEmbeds)
+    normalizeSurfaceVariantState(value.liveState)
     Object.values(value.scenes).forEach(scene => {
       scene.state.surfaceEmbeds = normalizeStageSurfaceEmbeds(scene.state.surfaceEmbeds)
+      normalizeSurfaceVariantState(scene.state)
     })
+    if (animateSurfaceChanges && state.activeSceneId === value.activeSceneId) {
+      for (const target of ['background', 'foreground'] as const) {
+        if (JSON.stringify(state.liveState[target]) !== JSON.stringify(value.liveState[target])) surfaceChanges[target]++
+      }
+    } else surfaceChanges.reset++
     value.sceneFolders = Array.isArray(value.sceneFolders)
       ? value.sceneFolders.filter((folder) => folder && typeof folder.id === 'string' && typeof folder.name === 'string' && folder.id.trim() && folder.name.trim())
         .map((folder) => ({ id: folder.id.trim(), name: folder.name.trim() }))
@@ -1722,6 +1910,9 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
 
   return {
     state,
+    surfaceChanges,
+    operateSurfaceVariant: editSurfaceVariant,
+    rollbackFailedSurfaceVariant,
     scenes,
     activeScene,
     activeObjects,
@@ -1747,7 +1938,9 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     moveSceneToFolder,
     setScenePublished,
     reorderScenes,
+    moveScene,
     addScene,
+    appendScene,
     duplicateScene,
     removeScene,
     addObject,
@@ -1771,6 +1964,7 @@ export const createTheaterStageStore = (_storageKey?: string): TheaterStageStore
     canSetParent,
     setParent,
     reparentObject,
+    setRootCoordinateSpaces,
     moveObject,
     moveOrder,
     reorderObject,

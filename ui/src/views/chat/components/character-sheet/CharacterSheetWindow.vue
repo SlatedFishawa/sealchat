@@ -88,21 +88,6 @@
         </div>
         <div class="sheet-window__back">
           <n-tabs type="line" size="small" class="sheet-window__tabs">
-            <n-tab-pane name="data" tab="数据">
-              <div class="sheet-window__editor">
-                <n-input
-                  v-model:value="jsonText"
-                  type="textarea"
-                  placeholder="JSON 数据"
-                  :autosize="{ minRows: 8 }"
-                  class="sheet-window__json-input"
-                  @blur="handleJsonSave"
-                />
-                <div v-if="jsonError" class="sheet-window__json-error">
-                  {{ jsonError }}
-                </div>
-              </div>
-            </n-tab-pane>
             <n-tab-pane name="template" tab="模板">
               <div class="sheet-window__editor">
                 <div class="sheet-window__template-source">
@@ -156,6 +141,21 @@
                   >
                     覆盖同步到模板库
                   </n-button>
+                </div>
+              </div>
+            </n-tab-pane>
+            <n-tab-pane name="data" tab="序列化数据">
+              <div class="sheet-window__editor">
+                <n-input
+                  v-model:value="jsonText"
+                  type="textarea"
+                  placeholder="JSON 数据"
+                  :autosize="{ minRows: 8 }"
+                  class="sheet-window__json-input"
+                  @blur="handleJsonSave"
+                />
+                <div v-if="jsonError || windowData?.syncError" class="sheet-window__json-error">
+                  {{ jsonError || windowData?.syncError }}
                 </div>
               </div>
             </n-tab-pane>
@@ -434,7 +434,7 @@ const startDrag = (e: PointerEvent) => {
 const onDrag = (e: PointerEvent) => {
   if (!isDragging.value) return;
   if (dragPointerId.value !== e.pointerId) return;
-  if (e.buttons === 0) {
+  if (e.pointerType === 'mouse' && e.buttons === 0) {
     stopDrag(e);
     return;
   }
@@ -505,7 +505,7 @@ const startResize = (e: PointerEvent) => {
 const onResize = (e: PointerEvent) => {
   if (!isResizing.value) return;
   if (resizePointerId.value !== e.pointerId) return;
-  if (e.buttons === 0) {
+  if (e.pointerType === 'mouse' && e.buttons === 0) {
     stopResize(e);
     return;
   }

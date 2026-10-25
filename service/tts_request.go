@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ const TTSAutoPreference = "tts.autoSynthesis"
 const ttsMessageSynthesisMaxRunes = 20000
 
 type TTSRequest struct {
+	instructionSet        bool
 	RequestKey            string  `json:"requestKey"`
 	ChannelID             string  `json:"channelId,omitempty"`
 	Text                  string  `json:"text"`
@@ -44,25 +46,29 @@ type TTSRequest struct {
 	SpeechLanguage        string  `json:"speechLanguage,omitempty"`
 	IdentityID            string  `json:"identityId,omitempty"`
 	ClonePreprocess       bool    `json:"clonePreprocess,omitempty"`
+	AdoptAsVoicePreview   bool    `json:"adoptAsVoicePreview,omitempty"`
 }
 type TTSSnapshot struct {
-	Version           int                        `json:"version"`
-	Provider          utils.SpeechProviderConfig `json:"provider"`
-	Input             ttsprovider.Input          `json:"input"`
-	VoiceID           string                     `json:"voiceId"`
-	VoiceRevision     int64                      `json:"voiceRevision"`
-	Owner             string                     `json:"owner"`
-	Scope             string                     `json:"scope"`
-	Fingerprint       string                     `json:"fingerprint"`
-	SourceResourceID  string                     `json:"sourceResourceId,omitempty"`
-	Name              string                     `json:"name,omitempty"`
-	Description       string                     `json:"description,omitempty"`
-	CloneLanguageHint string                     `json:"cloneLanguageHint,omitempty"`
-	ClonePreprocess   bool                       `json:"clonePreprocess,omitempty"`
-	Audience          []string                   `json:"audience,omitempty"`
-	Whisper           bool                       `json:"whisper,omitempty"`
-	SourceText        string                     `json:"sourceText,omitempty"`
-	Translation       *TTSTranslationSnapshot    `json:"translation,omitempty"`
+	Version             int                        `json:"version"`
+	Provider            utils.SpeechProviderConfig `json:"provider"`
+	Input               ttsprovider.Input          `json:"input"`
+	VoiceID             string                     `json:"voiceId"`
+	VoiceRevision       int64                      `json:"voiceRevision"`
+	Owner               string                     `json:"owner"`
+	Scope               string                     `json:"scope"`
+	Fingerprint         string                     `json:"fingerprint"`
+	SourceResourceID    string                     `json:"sourceResourceId,omitempty"`
+	Name                string                     `json:"name,omitempty"`
+	Description         string                     `json:"description,omitempty"`
+	CloneLanguageHint   string                     `json:"cloneLanguageHint,omitempty"`
+	ClonePreprocess     bool                       `json:"clonePreprocess,omitempty"`
+	AdoptAsVoicePreview bool                       `json:"adoptAsVoicePreview,omitempty"`
+	Audience            []string                   `json:"audience,omitempty"`
+	Whisper             bool                       `json:"whisper,omitempty"`
+	ManualRequestedAt   int64                      `json:"manualRequestedAt,omitempty"`
+	ManualRequestKey    string                     `json:"manualRequestKey,omitempty"`
+	SourceText          string                     `json:"sourceText,omitempty"`
+	Translation         *TTSTranslationSnapshot    `json:"translation,omitempty"`
 }
 
 type TTSTranslationSnapshot struct {
@@ -276,7 +282,7 @@ func ttsSnapshotForOperation(userID string, r TTSRequest, scope string, automati
 			if voice.Parameters != "" {
 				var defaults TTSRequest
 				if json.Unmarshal([]byte(voice.Parameters), &defaults) == nil {
-					if r.Instruction == "" {
+					if r.Instruction == "" && !r.instructionSet {
 						r.Instruction = defaults.Instruction
 					}
 					if r.Rate == 0 {
@@ -299,9 +305,13 @@ func ttsSnapshotForOperation(userID string, r TTSRequest, scope string, automati
 	}
 	if operation != "design" && operation != "clone" && r.SpeechLanguage != "" {
 		if voice != nil {
-			return s, TTSValidationError("个人音色暂不支持指定朗读语言，请选择跟随原文")
-		}
-		if !slices.Contains(ttsSystemVoiceSpeechLanguages(s.Provider, s.Provider.Model, v), r.SpeechLanguage) {
+			if voice.Kind != "clone" {
+				return s, TTSValidationError("个人音色暂不支持指定朗读语言，请选择跟随原文")
+			}
+			if !slices.Contains(ttsPersonalVoiceSpeechLanguages(s.Provider, *voice), r.SpeechLanguage) {
+				return s, TTSValidationError("当前克隆音色不支持此朗读语言")
+			}
+		} else if !slices.Contains(ttsSystemVoiceSpeechLanguages(s.Provider, s.Provider.Model, v), r.SpeechLanguage) {
 			return s, TTSValidationError("当前音色不支持此朗读语言")
 		}
 	}
@@ -401,7 +411,7 @@ func ttsPlainText(content string, maxRunes int) (string, error) {
 	} else if strings.ContainsAny(input, "<>") || strings.Contains(input, "[CQ:") || strings.Contains(input, "[clue:") {
 		return "", TTSValidationError("此消息类型不朗读")
 	}
-	text := strings.TrimSpace(NormalizeMessageContentToPlainText(input))
+	text := strings.TrimSpace(ttsStripURLs(NormalizeMessageContentToPlainText(input)))
 	if text == "" || utf8.RuneCountInString(text) > maxRunes {
 		if maxRunes == 500 {
 			return "", TTSValidationError("朗读文本须为 1–500 字符")
@@ -414,22 +424,70 @@ func ttsPlainText(content string, maxRunes int) (string, error) {
 	return text, nil
 }
 
-func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn bool) {
+// TTSQuickOverride is request-only. Omitted fields continue to inherit role defaults.
+type TTSQuickOverride struct {
+	Rate        *float64 `json:"rate,omitempty"`
+	Pitch       *float64 `json:"pitch,omitempty"`
+	Volume      *int     `json:"volume,omitempty"`
+	Instruction *string  `json:"instruction,omitempty"`
+}
+
+func (o TTSQuickOverride) apply(r *TTSRequest) error {
+	for _, v := range []*float64{o.Rate, o.Pitch} {
+		if v != nil && (math.IsNaN(*v) || math.IsInf(*v, 0) || *v < 0.5 || *v > 2) {
+			return TTSValidationError("语音参数超出范围")
+		}
+	}
+	if o.Volume != nil && (*o.Volume < 0 || *o.Volume > 100) || o.Instruction != nil && utf8.RuneCountInString(*o.Instruction) > 500 {
+		return TTSValidationError("语音参数超出范围")
+	}
+	if o.Rate != nil {
+		r.Rate = *o.Rate
+	}
+	if o.Pitch != nil {
+		r.Pitch = *o.Pitch
+	}
+	if o.Volume != nil {
+		v := *o.Volume
+		r.Volume = &v
+	}
+	if o.Instruction != nil {
+		r.Instruction = *o.Instruction
+		r.instructionSet = true
+	}
+	return nil
+}
+
+func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn bool, overrides ...*TTSQuickOverride) error {
 	if !optIn || user == nil || user.IsBot || m.ICMode != "ic" || len(m.ChannelID) >= 30 || m.WidgetData != "" || !TTSAutomaticEnabled(user.ID) {
-		return
+		return nil
+	}
+	return ttsPrepareMessageIntent(m, user, 0, "", overrides...)
+}
+
+// Both entry points freeze the same current role settings and audience. Manual
+// historical synthesis is strict about stale legacy voice routes so it never
+// silently substitutes the platform default voice.
+func ttsPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, manualRequestedAt int64, manualRequestKey string, overrides ...*TTSQuickOverride) error {
+	if user == nil || user.IsBot || m.ICMode != "ic" || len(m.ChannelID) >= 30 || m.WidgetData != "" {
+		return TTSValidationError("此消息类型不朗读")
 	}
 	text, err := ttsPlainText(m.Content, ttsMessageSynthesisMaxRunes)
 	if err != nil {
 		m.TTSStatus = "skipped"
-		return
+		return err
 	}
 	r := TTSRequest{Text: text}
 	if m.SenderIdentityID != "" {
-		var role model.ChannelIdentityTTSConfig
-		if model.GetDB().Where("identity_id = ? AND deleted_at IS NULL", m.SenderIdentityID).First(&role).Error == nil {
+		role, found, roleErr := channelIdentityTTSConfigTx(model.GetDB(), m.SenderIdentityID, m.SenderSharedIdentityID, false)
+		if roleErr != nil {
+			m.TTSStatus = "unavailable"
+			return roleErr
+		}
+		if found {
 			if role.Disabled {
 				m.TTSStatus = "skipped"
-				return
+				return TTSValidationError("此角色已禁用语音")
 			}
 			r.VoiceID = role.VoiceID
 			r.SystemVoice = role.SystemVoice
@@ -443,11 +501,18 @@ func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn
 			r.Volume = &role.Volume
 		}
 	}
-	// Start with an isolated scope, then freeze the actual audience below.
-	s, err := ttsSnapshotForRequest(user.ID, r, m.ChannelID+":"+m.ID, true)
+	if len(overrides) > 0 && overrides[0] != nil {
+		if err := overrides[0].apply(&r); err != nil {
+			return err
+		}
+	}
+	// Start with an isolated scope, then freeze the actual audience below. Only
+	// automatic sends may use the legacy system-voice fallback; a manual history
+	// request must surface a stale binding instead of changing the character voice.
+	s, err := ttsSnapshotForRequest(user.ID, r, m.ChannelID+":"+m.ID, manualRequestedAt == 0)
 	if err != nil {
 		m.TTSStatus = "unavailable"
-		return
+		return err
 	}
 	if m.IsWhisper {
 		seen := map[string]bool{}
@@ -470,12 +535,16 @@ func TTSPrepareMessageIntent(m *model.MessageModel, user *model.UserModel, optIn
 		fingerprint, _ := json.Marshal(s)
 		s.Fingerprint = ttsHash(string(fingerprint))
 	}
+	// Outbox timing is not part of the speech/cache identity.
+	s.ManualRequestedAt = manualRequestedAt
+	s.ManualRequestKey = manualRequestKey
 	b, err := json.Marshal(s)
 	if err != nil {
-		return
+		return err
 	}
 	m.TTSIntent = string(b)
 	m.TTSStatus = "pending"
+	return nil
 }
 
 func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {
@@ -552,8 +621,11 @@ func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {
 	}
 	if operation == "clone" {
 		var a model.AttachmentModel
-		if model.GetDB().Where("id = ? AND user_id = ? AND root_id_type = ? AND parent_id_type = ? AND deleted_at IS NULL", r.SourceResourceID, userID, "tts", "clone_source").First(&a).Error != nil {
+		if model.GetDB().Where("id = ? AND user_id = ? AND root_id_type = ? AND parent_id_type = ? AND deleted_at IS NULL AND COALESCE(extra, '') <> ?", r.SourceResourceID, userID, "tts", "clone_source", ttsCloneSourceCleanupClaim).First(&a).Error != nil {
 			return nil, ErrTTSDenied
+		}
+		if err := ttsProviderValidateCloneTransport(s.Provider, &a); err != nil {
+			return nil, err
 		}
 	}
 	if operation == "audition" && s.Translation != nil {
@@ -573,6 +645,7 @@ func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {
 		ttsCompleteTranslation(&s, text)
 		s.Fingerprint = auditionFingerprint
 	}
+	s.AdoptAsVoicePreview = operation == "audition" && r.AdoptAsVoicePreview
 	b, _ := json.Marshal(s)
 	job := &model.TTSJob{Operation: operation, RequestKey: key, PayerUserID: userID, ChannelID: r.ChannelID, Snapshot: string(b), InputHash: inputHash, Deadline: time.Now().Add(2 * time.Minute), VoiceID: r.VoiceID}
 	// Auditions are cached only inside this authenticated user's safety domain.
@@ -607,11 +680,13 @@ func TTSSubmit(userID, operation string, r TTSRequest) (*model.TTSJob, error) {
 						var duplicate model.TTSJob
 						if model.GetDB().Where("request_key = ? AND payer_user_id = ? AND input_hash = ?", key, userID, inputHash).First(&duplicate).Error == nil {
 							ensureSystemPreview()
+							ttsAdoptAuditionAsVoicePreview(model.GetDB(), &duplicate, s, duplicate.ResourceID)
 							return &duplicate, nil
 						}
 						return nil, err
 					}
 					ensureSystemPreview()
+					ttsAdoptAuditionAsVoicePreview(model.GetDB(), job, s, job.ResourceID)
 					return job, nil
 				}
 			}

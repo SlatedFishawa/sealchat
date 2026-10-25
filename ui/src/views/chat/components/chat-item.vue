@@ -1,4 +1,5 @@
 <script setup lang="tsx">
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar';
 import MessageSpeechButton from '@/features/tts/MessageSpeechButton.vue'
 import { speechPlayer } from '@/features/tts/player'
 import dayjs from 'dayjs';
@@ -30,7 +31,9 @@ import 'viewerjs/dist/viewer.css';
 import { useWorldGlossaryStore } from '@/stores/worldGlossary'
 import { useDisplayStore, type BotBadgeStyle, type TimestampFormat } from '@/stores/display'
 import { useChannelImageLayoutStore } from '@/stores/channelImageLayout';
-import { refreshWorldKeywordHighlights } from '@/utils/worldKeywordHighlighter'
+import { clearExistingHighlights, refreshWorldKeywordHighlights } from '@/utils/worldKeywordHighlighter'
+import { getEffectiveShortcutRules } from '@/features/shortcut-command/ruleCache'
+import { refreshShortcutMessageActions } from '@/features/shortcut-command/messageActionEnhancer'
 import { createKeywordTooltip } from '@/utils/keywordTooltip'
 import type { KeywordTooltipSessionState } from '@/utils/worldKeywordTooltipCandidates'
 import { formatWorldKeywordSourceLabel } from '@/utils/worldKeywordSourceLabel'
@@ -80,6 +83,8 @@ type EditingPreviewInfo = {
   indicatorOnly: boolean;
   isSelf: boolean;
   isTemporary?: boolean;
+  avatarTextStyle?: '' | 'a' | 'b' | 'c';
+  color?: string;
   summary: string;
   previewHtml: string;
   tone: 'ic' | 'ooc';
@@ -2200,6 +2205,8 @@ const compiledKeywords = computed(() => {
 })
 
 const keywordHighlightEnabled = computed(() => displayStore.settings.worldKeywordHighlightEnabled !== false)
+// 快捷消息按钮（显示时增强，只读当前用户在当前世界生效的 message_action 规则）
+const shortcutMessageActionRules = computed(() => getEffectiveShortcutRules(String(chat.currentWorldId || '')).messageAction)
 const keywordUnderlineOnly = computed(() => !!displayStore.settings.worldKeywordUnderlineOnly)
 const keywordTooltipEnabled = computed(() => displayStore.settings.worldKeywordTooltipEnabled !== false)
 const keywordTooltipHoverEnabled = computed(() => displayStore.settings.worldKeywordTooltipHoverEnabled !== false)
@@ -2301,6 +2308,9 @@ const applyKeywordHighlights = async () => {
   }
   
   pendingHighlights = false
+  // 先清理术语高亮再增强快捷按钮，避免触发词被高亮 span 拆开；术语高亮随后重新应用并跳过按钮
+  clearExistingHighlights(host)
+  refreshShortcutMessageActions(host, shortcutMessageActionRules.value)
   const compiled = compiledKeywords.value
   if (!keywordHighlightEnabled.value || !compiled.length) {
     refreshWorldKeywordHighlights(host, [], { underlineOnly: false })
@@ -3368,7 +3378,7 @@ const doAvatarDblClick = (e: MouseEvent) => {
   e.preventDefault();
   e.stopPropagation();
   chat.avatarMenu.show = false;
-  const avatarUrl = displayAvatar.value || props.item?.member?.avatar || props.item?.user?.avatar;
+  const avatarUrl = displayAvatar.value || (useTextAvatarFallback.value ? '' : (props.item?.member?.avatar || props.item?.user?.avatar));
   if (!avatarUrl) return;
 
   const resolvedUrl = resolveAttachmentUrl(avatarUrl) || avatarUrl;
@@ -3577,6 +3587,7 @@ watch(
     () => displayStore.settings.worldKeywordDeduplicateEnabled,
     () => displayStore.settings.worldKeywordTooltipTextIndent,
     () => displayContent.value,
+    () => shortcutMessageActionRules.value,
   ],
   () => {
     // Recreate tooltip instance when settings change
@@ -3654,9 +3665,10 @@ const displayAvatar = computed(() => {
   if (shouldUseSelfPreviewIdentity.value) {
     return selfEditingPreview.value?.avatar || '';
   }
-  if (otherEditingPreview.value?.avatar) {
+  if (otherEditingPreview.value && (otherEditingPreview.value.avatar || otherEditingPreview.value.avatarTextStyle)) {
     return otherEditingPreview.value.avatar;
   }
+  if (avatarTextStyle.value) return '';
   return props.avatar;
 });
 
@@ -3690,7 +3702,22 @@ const displayAvatarDecorations = computed(() => {
   return normalizeAvatarDecorations(liveIdentity?.avatarDecorations, liveIdentity?.avatarDecoration || null);
 });
 
+const avatarTextStyle = computed(() => {
+  if (shouldUseSelfPreviewIdentity.value) return normalizeAvatarTextStyle(selfEditingPreview.value?.avatarTextStyle);
+  if (otherEditingPreview.value) return normalizeAvatarTextStyle(otherEditingPreview.value.avatarTextStyle);
+  const item = props.item as any;
+  return normalizeAvatarTextStyle(item?.identity?.avatarTextStyle ?? item?.sender_identity_avatar_text_style ?? item?.senderIdentityAvatarTextStyle);
+});
+
+const avatarTextAccentColor = computed(() => {
+  if (!avatarTextStyle.value) return undefined;
+  if (shouldUseSelfPreviewIdentity.value) return selfEditingPreview.value?.color || '';
+  if (otherEditingPreview.value) return otherEditingPreview.value.color || '';
+  return props.item?.identity?.color || props.item?.sender_identity_color || '';
+});
+
 const useTextAvatarFallback = computed(() => {
+  if (avatarTextStyle.value) return true;
   if (shouldUseSelfPreviewIdentity.value) {
     return Boolean(selfEditingPreview.value?.isTemporary);
   }
@@ -3704,10 +3731,11 @@ const useTextAvatarFallback = computed(() => {
 });
 
 const avatarFallbackText = computed(() => (
-  selfEditingPreview.value?.displayName
-  || props.username
+  (shouldUseSelfPreviewIdentity.value ? selfEditingPreview.value?.displayName : otherEditingPreview.value?.displayName)
+  || (!avatarTextStyle.value ? props.username : '')
   || (props.item as any)?.identity?.displayName
   || (props.item as any)?.sender_identity_name
+  || props.username
   || props.item?.sender_member_name
   || props.item?.member?.nick
   || props.item?.user?.nick
@@ -3900,6 +3928,8 @@ const handleRetrySend = () => {
         :border="false"
         :decorations="displayAvatarDecorations"
         :use-text-fallback="useTextAvatarFallback"
+        :text-fallback-style="avatarTextStyle"
+        :text-fallback-accent-color="avatarTextAccentColor"
         :fallback-text="avatarFallbackText"
         @longpress="handleAvatarLongpress"
         @click="doAvatarClick"
@@ -4021,7 +4051,9 @@ const handleRetrySend = () => {
         :class="contentClassList">
         <div v-if="hasEditAction || item?.tts" class="message-action-bar"
           :class="{ 'message-action-bar--active': canShowEditAction && isActionBarVisible, 'message-action-bar--speech': !!item?.tts, 'message-action-bar--playing': speechPlayer.state.key === `messages:${item?.id}` }">
-          <MessageSpeechButton v-if="item?.id" :message="{ id: item.id, tts: item.tts }" />
+          <MessageSpeechButton v-if="item?.id"
+            :message="{ id: item.id, tts: item.tts, editCount: item.editCount, icMode: props.tone, widgetData: item.widgetData, isRevoked: item.isRevoked, isDeleted: item.isDeleted }"
+            :can-synthesize="canShowEditAction" />
           <n-tooltip v-if="canShowEditAction" trigger="hover">
             <template #trigger>
               <n-button text size="small" class="message-action-bar__btn" @click="handleEditClick">
@@ -4264,12 +4296,14 @@ const handleRetrySend = () => {
 }
 
 @media (hover: none), (pointer: coarse) {
-  .message-action-bar--speech {
+  .message-action-bar--speech,
+  .message-action-bar:has(.message-speech-button) {
     opacity: 1;
     pointer-events: auto;
   }
 
-  .chat-item--layout-compact .message-action-bar--speech {
+  .chat-item--layout-compact .message-action-bar--speech,
+  .chat-item--layout-compact .message-action-bar:has(.message-speech-button) {
     width: auto;
     top: -1.8rem;
     bottom: auto;
@@ -5081,13 +5115,18 @@ const handleRetrySend = () => {
   top: -1.6rem;
   right: clamp(-0.25rem, 0.8vw, 0.25rem);
   display: flex;
-  gap: 0.25rem;
+  flex-flow: row nowrap;
+  align-items: center;
+  width: max-content;
+  gap: 0.125rem;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .message-action-bar__btn {
+  flex: 0 0 auto;
+  min-width: 18px;
   pointer-events: auto;
   color: rgba(15, 23, 42, 0.75);
   padding: 0;
@@ -5114,15 +5153,15 @@ const handleRetrySend = () => {
   top: 0;
   right: 0;
   bottom: 0;
-  width: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
+  width: max-content;
   justify-content: center;
   align-items: center;
   transform: none;
 }
 
 .chat-item--layout-compact .message-action-bar__btn {
-  width: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
-  min-width: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
+  width: 18px;
+  min-width: 18px;
   height: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
   min-height: var(--message-edit-slot-width, clamp(1.4rem, 3.6vw, 1.95rem));
   display: inline-flex;
@@ -5146,13 +5185,9 @@ const handleRetrySend = () => {
     border-radius: 999px;
   }
 
-  .chat-item--layout-compact .message-action-bar {
-    width: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
-  }
-
   .chat-item--layout-compact .message-action-bar__btn {
-    width: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
-    min-width: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
+    width: 1.72rem;
+    min-width: 1.72rem;
     height: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
     min-height: var(--message-edit-slot-width, clamp(1.2rem, 4.6vw, 1.65rem));
   }
@@ -5411,11 +5446,19 @@ const handleRetrySend = () => {
   padding-right: var(--message-edit-slot-width);
 }
 
+.chat--layout-compact .chat-item > .right > .content:has(.message-speech-button) {
+  padding-right: max(var(--message-edit-slot-width, 18px), calc(36px + 0.125rem));
+}
+
 @media (hover: none), (pointer: coarse) {
   .chat--layout-compact .chat-item > .right > .content.content--has-edit-action,
   .chat--layout-compact .chat-item--ooc > .right > .content.content--has-edit-action {
     --message-edit-slot-width: clamp(1.2rem, 4.6vw, 1.65rem);
     padding-right: var(--message-edit-slot-width);
+  }
+
+  .chat--layout-compact .chat-item > .right > .content:has(.message-speech-button) {
+    padding-right: max(var(--message-edit-slot-width, 1.72rem), calc(3.44rem + 0.125rem));
   }
 }
 

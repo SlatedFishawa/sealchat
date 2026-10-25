@@ -133,6 +133,17 @@ async function run() {
   }
 
   // --- capabilities ---------------------------------------------------------
+  for (const renderer of ['dom', 'konva', 'bake']) {
+    assert.equal(resolveMediaFxCapabilities(renderer).filters, true, `${renderer}: static basic filters stay available`)
+    assert.deepEqual(resolveMediaFxCapabilities(renderer, true, true, true), {
+      motion: renderer !== 'bake',
+      filters: renderer === 'dom',
+      advanced: false,
+      temporal: false,
+      animatedMedia: true,
+      livePixels: false,
+    }, `${renderer}: only DOM supports animated basic filters; GPU effects stay off`)
+  }
   assert.equal(resolveMediaFxCapabilities('konva').advanced, false, 'existing callers never gain advanced')
   assert.equal(resolveMediaFxCapabilities('dom', false).advanced, false)
   assert.equal(resolveMediaFxCapabilities('bake').advanced, false)
@@ -257,7 +268,8 @@ async function run() {
   for (const forbidden of [/requestAnimationFrame/, /setTimeout|setInterval/, /Date\.now|performance\.now|Math\.random/, /createRenderbuffer/, /three/i, /getImageData/]) {
     assert.equal(forbidden.test(gpuSource), false, `GPU adapter must not contain ${forbidden}`)
   }
-  assert.equal((gpuSource.match(/createFramebuffer\(/g) || []).length, 1, 'framebuffers are only created for the light targets')
+  // Phase 2 adds exactly one more: the live session's advanced-result target.
+  assert.equal((gpuSource.match(/createFramebuffer\(/g) || []).length, 2, 'framebuffers are only created for the light targets and the live advanced target')
   assert.equal((gpuSource.match(/getContext\(/g) || []).length, 1, 'one WebGL2 context per page')
 
   // Lazy capability starts optimistic when WebGL2 exists, then becomes unavailable
@@ -494,6 +506,11 @@ async function run() {
   assert.deepEqual(imageNode.filters(), ['blur(2px)'], 'consumers without advanced never run the GPU')
   controller.update(blurPixelate, { ...context, filters: false })
   assert.deepEqual(imageNode.filters(), [], 'animated media (filters off) never runs the GPU')
+  assert.equal(gpuCalls.length, callsBefore)
+  const animatedCaches = caches
+  controller.update(blurPixelate, { ...context, ...resolveMediaFxCapabilities('konva', true, true, true) })
+  assert.equal(caches, animatedCaches, 'animated Konva capabilities never build a static cache')
+  assert.deepEqual(imageNode.filters(), [])
   assert.equal(gpuCalls.length, callsBefore)
 
   controller.dispose()

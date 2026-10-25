@@ -52,6 +52,11 @@ func TestTheaterAutoMigrateCreatesAllTables(t *testing.T) {
 	if !conn.Migrator().HasColumn(&TheaterObjectModel{}, "aspect_ratio_locked") {
 		t.Fatal("theater_objects missing aspect_ratio_locked column")
 	}
+	for _, column := range []string{"coordinate_space", "viewport_x", "viewport_y"} {
+		if !conn.Migrator().HasColumn(&TheaterObjectModel{}, column) {
+			t.Fatalf("theater_objects missing %s column", column)
+		}
+	}
 	if !conn.Migrator().HasColumn(&TheaterPanelFolderModel{}, "preset_json") {
 		t.Fatal("theater_panel_folders missing preset_json column")
 	}
@@ -153,5 +158,33 @@ func TestTheaterLegacyFieldsCopiesUniformScale(t *testing.T) {
 	}
 	if got.ScaleX != 0.6 || got.ScaleY != 0.6 {
 		t.Fatalf("migrated scale = (%v, %v)", got.ScaleX, got.ScaleY)
+	}
+}
+
+func TestTheaterAutoMigrateDefaultsLegacyObjectsToWorldSpace(t *testing.T) {
+	conn := newTheaterModelTestDB(t)
+	for _, column := range []string{"coordinate_space", "viewport_x", "viewport_y"} {
+		if err := conn.Migrator().DropColumn(&TheaterObjectModel{}, column); err != nil {
+			t.Fatalf("drop %s to simulate a legacy table: %v", column, err)
+		}
+	}
+	legacy := TheaterObjectModel{
+		StringPKBaseModel: StringPKBaseModel{ID: "legacy-space"},
+		RoomID:            "room", Kind: "image", Name: "Legacy", X: 3, Y: 4, Width: 10, Height: 10,
+		Scale: 1, ScaleX: 1, ScaleY: 1, OrderKey: "a",
+		ContentJSON: `{}`, ActionsJSON: `[]`, MetadataJSON: `{}`, SchemaVersion: 1,
+	}
+	if err := conn.Omit("coordinate_space", "viewport_x", "viewport_y").Create(&legacy).Error; err != nil {
+		t.Fatalf("create legacy object: %v", err)
+	}
+	if err := autoMigrateTheaterModels(conn); err != nil {
+		t.Fatalf("migrate legacy table: %v", err)
+	}
+	var got TheaterObjectModel
+	if err := conn.First(&got, "id = ?", legacy.ID).Error; err != nil {
+		t.Fatalf("read migrated object: %v", err)
+	}
+	if got.CoordinateSpace != "world" || got.ViewportX != 0.5 || got.ViewportY != 0.5 || got.X != 3 || got.Y != 4 {
+		t.Fatalf("migrated object = space %q viewport (%v, %v) world (%v, %v)", got.CoordinateSpace, got.ViewportX, got.ViewportY, got.X, got.Y)
 	}
 }

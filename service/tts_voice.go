@@ -19,9 +19,18 @@ func PersonalVoiceSupported(provider utils.SpeechProviderConfig, voice model.TTS
 		voice.Region == provider.Region && voice.Workspace == provider.Workspace && voice.TargetModel == provider.Model
 }
 
+func ttsPersonalVoiceSpeechLanguages(provider utils.SpeechProviderConfig, voice model.TTSVoice) []string {
+	if voice.Kind != "clone" || !PersonalVoiceSupported(provider, voice) {
+		return nil
+	}
+	spec, _ := ttsprovider.LookupModel(provider.EffectiveProviderKind(), voice.TargetModel)
+	return append([]string(nil), spec.CloneLanguages...)
+}
+
 type TTSPersonalVoice struct {
 	model.TTSVoice
-	Supported bool `json:"supported"`
+	Supported       bool     `json:"supported"`
+	SpeechLanguages []string `json:"speechLanguages,omitempty"`
 }
 
 func TTSPersonalVoiceResponse(voice model.TTSVoice) TTSPersonalVoice {
@@ -30,6 +39,7 @@ func TTSPersonalVoiceResponse(voice model.TTSVoice) TTSPersonalVoice {
 		for _, p := range utils.NormalizeSpeechConfig(cfg.AI.Speech).Providers {
 			if p.Enabled && PersonalVoiceSupported(p, voice) {
 				item.Supported = true
+				item.SpeechLanguages = ttsPersonalVoiceSpeechLanguages(p, voice)
 				break
 			}
 		}
@@ -59,6 +69,13 @@ func TTSSaveVoice(db *gorm.DB, userID, voiceID, replaceID string, defaultSlots i
 		}
 		if voice.Lifecycle != "preview" || voice.ProviderStatus != "OK" || voice.PreviewExpiresAt == nil || !now.Before(*voice.PreviewExpiresAt) {
 			return ErrTTSConflict
+		}
+		// Promotion can race expiry/cleanup. Serialize the new saved reference
+		// with the audio claim rather than saving a preview already being deleted.
+		if voice.PreviewResourceID != "" {
+			if err := ttsLockJobAudio(tx, voice.PreviewResourceID); err != nil {
+				return err
+			}
 		}
 		if replaceID != "" {
 			r := tx.Model(&model.TTSVoice{}).Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND deleted_at IS NULL", replaceID, userID, "saved").Updates(map[string]any{"lifecycle": "delete_pending", "is_public": false, "revision": gorm.Expr("revision + 1")})
@@ -91,6 +108,28 @@ func TTSSaveVoice(db *gorm.DB, userID, voiceID, replaceID string, defaultSlots i
 		}
 		return nil
 	})
+}
+
+func ttsRetireFailedCreationVoice(db *gorm.DB, job *model.TTSJob, now time.Time) error {
+	if job == nil || job.VoiceID == "" || (job.Operation != "design" && job.Operation != "clone") {
+		return nil
+	}
+	var voice model.TTSVoice
+	err := db.Select("id", "provider_voice_id").Where("id = ? AND lifecycle = ? AND deleted_at IS NULL", job.VoiceID, "creating").First(&voice).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	updates := map[string]any{"is_public": false, "revision": gorm.Expr("revision + 1")}
+	if voice.ProviderVoiceID == "" {
+		updates["lifecycle"] = "deleted"
+		updates["deleted_at"] = now
+	} else {
+		updates["lifecycle"] = "delete_pending"
+	}
+	return db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ? AND deleted_at IS NULL", voice.ID, "creating").Updates(updates).Error
 }
 
 // Claim expiry under the same user lock as Save. Never automatically GC saved

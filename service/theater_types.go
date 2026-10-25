@@ -110,6 +110,9 @@ type TheaterObjectSnapshot struct {
 	ScaleY              float64         `json:"scaleY"`
 	Z                   float64         `json:"z"`
 	OrderKey            string          `json:"orderKey"`
+	CoordinateSpace     string          `json:"coordinateSpace,omitempty"` // omitted for world; viewportX/Y only travel with "viewport"
+	ViewportX           *float64        `json:"viewportX,omitempty"`
+	ViewportY           *float64        `json:"viewportY,omitempty"`
 	Visible             bool            `json:"visible"`
 	Locked              bool            `json:"locked"`
 	AspectRatioLocked   *bool           `json:"aspectRatioLocked,omitempty"`

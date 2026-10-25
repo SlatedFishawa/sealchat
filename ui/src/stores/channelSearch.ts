@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { api } from './_config'
 import { useChatStore } from './chat'
 import type { SChannel } from '@/types'
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar'
 
 export type ChannelSearchMatchMode = 'fuzzy' | 'exact'
 
@@ -12,6 +13,14 @@ export interface ChannelSearchFilters {
   includeOutside: boolean
   timeRange: [number | null, number | null] | null
   worldScope: boolean
+}
+
+export interface ChannelSearchIdentitySnapshot {
+  id: string
+  displayName: string
+  color: string
+  avatarAttachmentId: string
+  avatarTextStyle: '' | 'a' | 'b' | 'c'
 }
 
 export interface ChannelSearchResult {
@@ -31,6 +40,7 @@ export interface ChannelSearchResult {
   keywordFragments?: { text: string; highlighted: boolean }[]
   channelId?: string
   channelName?: string
+  identity?: ChannelSearchIdentitySnapshot
 }
 
 interface ChannelSearchStep {
@@ -73,6 +83,19 @@ const defaultFilters = (): ChannelSearchFilters => ({
   timeRange: null,
   worldScope: false,
 })
+
+const normalizeSearchIdentity = (identity: any): ChannelSearchIdentitySnapshot | undefined => {
+  if (!identity || typeof identity !== 'object') {
+    return undefined
+  }
+  return {
+    id: String(identity.id || ''),
+    displayName: String(identity.display_name ?? identity.displayName ?? ''),
+    color: String(identity.color || ''),
+    avatarAttachmentId: String(identity.avatar_attachment ?? identity.avatar_attachment_id ?? identity.avatarAttachmentId ?? ''),
+    avatarTextStyle: normalizeAvatarTextStyle(identity.avatarTextStyle ?? identity.avatar_text_style),
+  }
+}
 
 const flattenChannels = (channels?: SChannel[]): SChannel[] => {
   if (!Array.isArray(channels) || channels.length === 0) {
@@ -434,6 +457,7 @@ export const useChannelSearchStore = defineStore('channelSearch', {
             highlightRanges: item.highlight_ranges ?? item.highlightRanges,
             channelId,
             channelName: resolvedChannelName,
+            identity: normalizeSearchIdentity(item.identity),
           }))
         : []
       return {
@@ -478,6 +502,7 @@ export const useChannelSearchStore = defineStore('channelSearch', {
             highlightRanges: item.highlight_ranges ?? item.highlightRanges,
             channelId,
             channelName: resolvedChannelName,
+            identity: normalizeSearchIdentity(item.identity),
           }))
         : []
       return {

@@ -228,6 +228,9 @@ func planTheaterDesign(tx *gorm.DB, room *model.TheaterRoomModel, plan *TheaterD
 		if err == nil {
 			err = applyTheaterDesignDocumentStep(tx, &snapshot, room, plan, nativeType, payload, &result.summary)
 		}
+		if err == nil {
+			err = normalizeTheaterSnapshotCoordinateSpaces(&snapshot)
+		}
 		if err != nil {
 			return nil, theaterDesignStepError(index, kind, err)
 		}
@@ -369,6 +372,24 @@ func theaterDesignNativeStep(snapshot TheaterSharedSnapshot, room *model.Theater
 		return TheaterMutationCharacterBind, &theaterCharacterBindPayload{InputChannelID: plan.InputChannelID, SceneID: p.SceneID, Object: p.Object, IdentityID: s.IdentityID, OwnerUserID: s.OwnerUserID}, nil
 	case *TheaterDesignObjectUpdate:
 		fields := theaterMCPMap(s.Fields)
+		if s.Fields.ParentID != nil {
+			object, found := theaterDesignFindObject(snapshot, s.ObjectID)
+			if !found {
+				return "", nil, newTheaterError(TheaterErrorNotFound, "对象不存在", 404, nil)
+			}
+			beforeObjects := theaterDesignAllObjects(snapshot)
+			afterObjects := cloneTheaterObjectCoordinateMap(beforeObjects)
+			candidate := object
+			candidate.ParentID = optionalString(strings.TrimSpace(*s.Fields.ParentID))
+			afterObjects[candidate.ID] = candidate
+			if err := validateTheaterObjectReparentTransitions(
+				beforeObjects,
+				afterObjects,
+				[]theaterObjectUpdatePayload{{ObjectID: s.ObjectID, Fields: fields}},
+			); err != nil {
+				return "", nil, err
+			}
+		}
 		if bindings, ok := fields["embedEventBindings"]; ok {
 			object, found := theaterDesignFindObject(snapshot, s.ObjectID)
 			if !found {
@@ -739,6 +760,14 @@ func applyTheaterDesignDocumentStep(tx *gorm.DB, snapshot *TheaterSharedSnapshot
 				}
 			}
 		}
+		if _, parentChanged := p.Fields["parentId"]; parentChanged {
+			beforeObjects := theaterDesignAllObjects(*snapshot)
+			afterObjects := cloneTheaterObjectCoordinateMap(beforeObjects)
+			afterObjects[o.ID] = o
+			if err := validateTheaterObjectReparentTransitions(beforeObjects, afterObjects, []theaterObjectUpdatePayload{*p}); err != nil {
+				return err
+			}
+		}
 		theaterDesignPutObject(snapshot, o)
 		if _, scopeChanged := p.Fields["sceneId"]; !scopeChanged {
 			for _, object := range theaterDesignAllObjects(*snapshot) {
@@ -749,6 +778,16 @@ func applyTheaterDesignDocumentStep(tx *gorm.DB, snapshot *TheaterSharedSnapshot
 		}
 		summary.ObjectsUpdated = theaterAppendUnique(summary.ObjectsUpdated, o.ID)
 	case *theaterObjectBatchUpdatePayload:
+		hasReparent, hasCoordinateSpaceChange := false, false
+		for _, update := range p.Updates {
+			_, hasParent := update.Fields["parentId"]
+			_, hasSpace := update.Fields["coordinateSpace"]
+			hasReparent = hasReparent || hasParent
+			hasCoordinateSpaceChange = hasCoordinateSpaceChange || hasSpace
+		}
+		if hasReparent && hasCoordinateSpaceChange {
+			return theaterPayloadError("design batch 不能同时包含 reparent 与坐标空间切换；请拆分为顺序明确的步骤")
+		}
 		for _, u := range p.Updates {
 			if err := applyTheaterDesignDocumentStep(tx, snapshot, room, plan, TheaterMutationObjectUpdate, &u, summary); err != nil {
 				return err
@@ -807,7 +846,7 @@ func theaterDesignAllObjects(snapshot TheaterSharedSnapshot) map[string]TheaterO
 	return objects
 }
 func theaterDesignObjectInput(o TheaterObjectSnapshot) *theaterObjectInput {
-	return &theaterObjectInput{ID: o.ID, ParentID: o.ParentID, Kind: o.Kind, Name: o.Name, X: o.X, Y: o.Y, Width: o.Width, Height: o.Height, Rotation: o.Rotation, Scale: &o.Scale, ScaleX: &o.ScaleX, ScaleY: &o.ScaleY, Z: o.Z, OrderKey: o.OrderKey, Visible: &o.Visible, Locked: o.Locked, AspectRatioLocked: o.AspectRatioLocked, Interactive: o.Interactive, Editable: o.Editable, OwnerUserID: o.OwnerUserID, CharacterIdentityID: o.CharacterIdentityID, Content: o.Content, Actions: o.Actions, Metadata: o.Metadata}
+	return &theaterObjectInput{ID: o.ID, ParentID: o.ParentID, Kind: o.Kind, Name: o.Name, X: o.X, Y: o.Y, Width: o.Width, Height: o.Height, Rotation: o.Rotation, Scale: &o.Scale, ScaleX: &o.ScaleX, ScaleY: &o.ScaleY, Z: o.Z, OrderKey: o.OrderKey, CoordinateSpace: o.CoordinateSpace, ViewportX: o.ViewportX, ViewportY: o.ViewportY, Visible: &o.Visible, Locked: o.Locked, AspectRatioLocked: o.AspectRatioLocked, Interactive: o.Interactive, Editable: o.Editable, OwnerUserID: o.OwnerUserID, CharacterIdentityID: o.CharacterIdentityID, Content: o.Content, Actions: o.Actions, Metadata: o.Metadata}
 }
 
 func validateTheaterDesignParent(snapshot TheaterSharedSnapshot, o TheaterObjectSnapshot) error {

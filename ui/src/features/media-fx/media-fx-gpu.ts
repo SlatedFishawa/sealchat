@@ -1,5 +1,6 @@
 import {
   mediaFxAdvancedHasContent,
+  mediaFxAdvancedKeys,
   mediaFxTemporalHasContent,
   normalizeMediaFxAdvanced,
   normalizeMediaFxTemporal,
@@ -19,15 +20,25 @@ import {
 //   glow is on, a small fixed multi-pass chain runs first (see "Light pipeline"):
 //     source -> extract light (downscaled scratch A) -> blur H (A -> B) -> blur V (B -> A)
 //     -> main pass with the light variant of the shader (source + A) -> readPixels
-//   Its programs and two scratch targets are created lazily once per context and reused;
-//   the scratch storage is shrunk to 1x1 again after every static pass.
+//   Its programs and two scratch targets are created lazily once per context and reused.
+//   Static-only use shrinks scratch back to 1x1; active live sessions keep grow-only
+//   scratch warm so differently sized live visuals do not reallocate it back and forth.
 // - Live: a temporal session keeps the static final look (the baseline) as its own
 //   texture of the shared context, uploaded once per baseline. Each frame only binds
 //   that texture, updates the time uniforms and draws; the frame is then copied by the
 //   caller from the shared canvas (GPU to GPU), never read back into JS memory.
 //
-// This module owns no RAF or timers: the shared temporal clock drives live frames, and
-// live frames never run the light pipeline (bloom / glow are already in the baseline).
+// - Live media: a live session (createMediaFxLiveGpuSession) takes the staging raster of
+//   the current video frame (fit / crop / basic filter already applied) as its own
+//   texture, uploaded once per new video frame. Advanced runs once per (frame, params)
+//   into the session's own framebuffer texture with exactly the static pass (same
+//   programs, same light pipeline, no flip); a final single-pass draw then flips it onto
+//   the shared canvas with the temporal uniforms (or none). Temporal ticks between two
+//   video frames only repeat that last draw. Nothing is read back into JS memory.
+//
+// This module owns no RAF or timers: the shared temporal clock / video frame callbacks
+// drive live frames, and temporal sessions never run the light pipeline (bloom / glow are
+// already in their baseline).
 // Any failure (no WebGL2, context creation, shader compile/link, incomplete framebuffer,
 // oversized input, GL error, context loss) leaves the ImageData untouched / returns no
 // frame, so the image keeps its static look instead of disappearing. A light pipeline
@@ -140,6 +151,8 @@ uniform float uGlitch;
 uniform float uScanlineRoll;
 #ifdef MEDIA_FX_LIGHT
 uniform sampler2D uLight;
+uniform vec2 uLightSize;
+uniform vec2 uLightStorageSize;
 uniform float uLightGain;
 uniform float uGlowAlpha;
 #endif
@@ -219,8 +232,11 @@ void main() {
   float alpha = center.a;
 #ifdef MEDIA_FX_LIGHT
   {
-    // Blurred light: premultiplied emission + coverage, bilinear upscaled.
-    vec4 light = texture(uLight, (position + 0.5) / uResolution);
+    // Blurred light: premultiplied emission + coverage, bilinear upscaled. Live
+    // scratch storage may be larger than this frame's logical light raster, so sample
+    // only the rendered rectangle and never blend with stale pixels outside it.
+    vec2 lightPixel = clamp((position + 0.5) / uResolution * uLightSize, vec2(0.5), uLightSize - vec2(0.5));
+    vec4 light = texture(uLight, lightPixel / uLightStorageSize);
     // Glow halo behind (dst-over) the less opaque pixels: the hue of the nearby light at
     // full brightness, its opacity from the coverage and how bright that light is, so
     // dark content never casts a shadow-like halo.
@@ -401,6 +417,8 @@ interface MediaFxGpuLightPipeline {
   composite: WebGLProgram
   compositeUniforms: MediaFxGpuMainUniforms & {
     light: WebGLUniformLocation | null
+    lightSize: WebGLUniformLocation | null
+    lightStorageSize: WebGLUniformLocation | null
     lightGain: WebGLUniformLocation | null
     glowAlpha: WebGLUniformLocation | null
   }
@@ -424,6 +442,12 @@ interface MediaFxGpuLightPipeline {
   }
   // Ping-pong: extract -> [0], blur H [0] -> [1], blur V [1] -> [0]; [0] feeds the composite.
   targets: [MediaFxGpuLightTarget, MediaFxGpuLightTarget]
+  // Validated backing storage of both targets (0 = unknown). While live sessions exist it
+  // only grows; rasterWidth/Height is the logical rectangle rendered by the current pass.
+  targetWidth: number
+  targetHeight: number
+  rasterWidth: number
+  rasterHeight: number
 }
 
 interface MediaFxGpuProcessor {
@@ -444,6 +468,8 @@ let unavailable = false
 let warned = false
 let temporalWarned = false
 let lightWarned = false
+let liveWarned = false
+const liveSessions = new Set<object>()
 
 type MediaFxGpuAvailabilityListener = (available: boolean) => void
 const availabilityListeners = new Set<MediaFxGpuAvailabilityListener>()
@@ -503,6 +529,12 @@ const warnTemporalOnce = (error: unknown) => {
   if (temporalWarned) return
   temporalWarned = true
   console.warn('[media-fx] 动态像素效果渲染失败，保持静态效果', error ?? '')
+}
+
+const warnLiveOnce = (error: unknown) => {
+  if (liveWarned) return
+  liveWarned = true
+  console.warn('[media-fx] 动态媒体实时效果渲染失败，恢复原始媒体显示', error ?? '')
 }
 
 const markUnavailable = () => {
@@ -862,6 +894,8 @@ const acquireLightPipeline = (current: MediaFxGpuProcessor): MediaFxGpuLightPipe
       compositeUniforms: {
         ...readMainUniforms(gl, composite),
         light: gl.getUniformLocation(composite, 'uLight'),
+        lightSize: gl.getUniformLocation(composite, 'uLightSize'),
+        lightStorageSize: gl.getUniformLocation(composite, 'uLightStorageSize'),
         lightGain: gl.getUniformLocation(composite, 'uLightGain'),
         glowAlpha: gl.getUniformLocation(composite, 'uGlowAlpha'),
       },
@@ -884,6 +918,10 @@ const acquireLightPipeline = (current: MediaFxGpuProcessor): MediaFxGpuLightPipe
         sigma: gl.getUniformLocation(blur, 'uSigma'),
       },
       targets,
+      targetWidth: 0,
+      targetHeight: 0,
+      rasterWidth: 0,
+      rasterHeight: 0,
     }
     return current.light
   } catch (error) {
@@ -901,13 +939,15 @@ const acquireLightPipeline = (current: MediaFxGpuProcessor): MediaFxGpuLightPipe
 
 // Runs extract -> blur H -> blur V into targets[0]. Every pass binds its own framebuffer,
 // viewport, program, input texture (unit 0) and uniforms; unit 1 stays empty, and no
-// texture is ever read while it is the current render target.
+// texture is ever read while it is the current render target. `source` is the texture
+// holding the input pixels (the processor's static texture, or a live session's frame).
 const runLightPasses = (
   current: MediaFxGpuProcessor,
   pipeline: MediaFxGpuLightPipeline,
   light: MediaFxGpuLightParams,
   width: number,
   height: number,
+  source: WebGLTexture = current.texture,
 ) => {
   const { gl } = current
   const raster = resolveMediaFxGpuLightRaster(width, height, light.sigmaPx)
@@ -916,29 +956,37 @@ const runLightPasses = (
   gl.activeTexture(gl.TEXTURE1)
   gl.bindTexture(gl.TEXTURE_2D, null)
   gl.activeTexture(gl.TEXTURE0)
-  for (const target of pipeline.targets) {
-    gl.bindTexture(gl.TEXTURE_2D, target.texture)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, raster.width, raster.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
-  }
-  if (gl.getError() !== gl.NO_ERROR) return false
-  for (const target of pipeline.targets) {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer)
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-      // RGBA8 scratch framebuffer incompleteness is a context capability failure, not an
-      // input-size failure. Latch only the light path so slider edits do not repeat a
-      // deterministically failing multi-pass setup; the original single-pass stays live.
-      markLightUnavailable(current)
-      warnLightOnce('帧缓冲不完整')
-      return false
+  const targetWidth = Math.max(pipeline.targetWidth, raster.width)
+  const targetHeight = Math.max(pipeline.targetHeight, raster.height)
+  if (targetWidth !== pipeline.targetWidth || targetHeight !== pipeline.targetHeight) {
+    for (const target of pipeline.targets) {
+      gl.bindTexture(gl.TEXTURE_2D, target.texture)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, targetWidth, targetHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+    }
+    if (gl.getError() !== gl.NO_ERROR) return false
+    pipeline.targetWidth = targetWidth
+    pipeline.targetHeight = targetHeight
+    for (const target of pipeline.targets) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer)
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        // RGBA8 scratch framebuffer incompleteness is a context capability failure, not an
+        // input-size failure. Latch only the light path so slider edits do not repeat a
+        // deterministically failing multi-pass setup; the original single-pass stays live.
+        markLightUnavailable(current)
+        warnLightOnce('帧缓冲不完整')
+        return false
+      }
     }
   }
+  pipeline.rasterWidth = raster.width
+  pipeline.rasterHeight = raster.height
 
   // 1. Extract: source (unit 0) -> first.
   gl.bindFramebuffer(gl.FRAMEBUFFER, first.framebuffer)
   gl.viewport(0, 0, raster.width, raster.height)
   gl.useProgram(pipeline.extract)
   gl.activeTexture(gl.TEXTURE0)
-  gl.bindTexture(gl.TEXTURE_2D, current.texture)
+  gl.bindTexture(gl.TEXTURE_2D, source)
   const extract = pipeline.extractUniforms
   gl.uniform1i(extract.source, 0)
   gl.uniform2f(extract.sourceSize, width, height)
@@ -977,6 +1025,12 @@ const releaseLightTargets = (gl: WebGL2RenderingContext, pipeline: MediaFxGpuLig
     gl.bindTexture(gl.TEXTURE_2D, target.texture)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
   }
+  // 0 = unknown: the next pass re-specifies and re-validates both targets (static passes
+  // therefore always do, exactly as before live frames existed).
+  pipeline.targetWidth = 0
+  pipeline.targetHeight = 0
+  pipeline.rasterWidth = 0
+  pipeline.rasterHeight = 0
 }
 
 // Processes imageData in place. Returns false (with imageData unchanged) when the
@@ -1017,6 +1071,8 @@ export const applyMediaFxGpu = (imageData: ImageData, advanced: MediaFxAdvanced,
       const uniforms = pipeline.compositeUniforms
       writeUniforms(gl, uniforms, width, height, params, OFF_TEMPORAL_PARAMS, { flipY: false, time: 0 })
       gl.uniform1i(uniforms.light, 1)
+      gl.uniform2f(uniforms.lightSize, pipeline.rasterWidth, pipeline.rasterHeight)
+      gl.uniform2f(uniforms.lightStorageSize, pipeline.targetWidth, pipeline.targetHeight)
       gl.uniform1f(uniforms.lightGain, light.gain)
       gl.uniform1f(uniforms.glowAlpha, light.glowAlpha)
     } else {
@@ -1036,9 +1092,10 @@ export const applyMediaFxGpu = (imageData: ImageData, advanced: MediaFxAdvanced,
     else warnOnce('GPU 处理失败', error)
     return false
   } finally {
-    // Release the large textures / drawing buffer between cache rebuilds.
+    // Release static input / drawing-buffer storage between cache rebuilds. Light scratch
+    // stays warm only while a live session can reuse it.
     if (!gl.isContextLost()) {
-      if (pipeline) releaseLightTargets(gl, pipeline)
+      if (pipeline && liveSessions.size === 0) releaseLightTargets(gl, pipeline)
       gl.activeTexture(gl.TEXTURE0)
       gl.bindTexture(gl.TEXTURE_2D, texture)
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
@@ -1092,12 +1149,12 @@ export interface MediaFxTemporalGpuSession {
   dispose(): void
 }
 
-const liveSessions = new Set<object>()
-
-// Releases the shared drawing buffer once no live session is left.
+// Releases the shared drawing buffer (and the light scratch targets live media frames
+// keep between frames) once no live session is left.
 const shrinkSharedCanvas = () => {
   const current = processor
   if (liveSessions.size || !current || current.gl.isContextLost()) return
+  if (current.light && current.light.targetWidth) releaseLightTargets(current.gl, current.light)
   current.canvas.width = 1
   current.canvas.height = 1
 }
@@ -1197,6 +1254,245 @@ export const createMediaFxTemporalGpuSession = (): MediaFxTemporalGpuSession => 
       releaseTexture()
       liveSessions.delete(token)
       shrinkSharedCanvas()
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Live media sessions (video / transparent WebM playback frames)
+// ---------------------------------------------------------------------------
+
+export interface MediaFxLiveGpuInput {
+  // Staging raster of the current media frame at the live raster size: the renderer's
+  // fit / crop / surface geometry and the basic filter are already applied, straight
+  // (non-premultiplied) alpha. It is only read when `frameId` changed.
+  source: TexImageSource
+  width: number
+  height: number
+  // Device pixels per layout pixel of this raster.
+  pixelRatio: number
+  // Changes whenever `source` holds new pixels (a new video frame, a new geometry or
+  // basic filter); the same id reuses the uploaded texture and the advanced result.
+  frameId: number
+}
+
+export interface MediaFxLiveGpuSession {
+  // Draws source -> advanced -> temporal onto the shared canvas. Advanced runs once per
+  // (frame, advanced params, raster); a call with the same frame and params only repeats
+  // the final temporal draw. null when there is nothing to draw or anything failed.
+  render(
+    input: MediaFxLiveGpuInput,
+    advanced: MediaFxAdvanced | null | undefined,
+    temporal: MediaFxTemporal | null | undefined,
+    timeSeconds: number,
+  ): MediaFxTemporalGpuFrame | null
+  // Frees the textures; the session stays usable (the next render rebuilds them).
+  release(): void
+  dispose(): void
+}
+
+interface MediaFxLiveTarget {
+  texture: WebGLTexture
+  framebuffer: WebGLFramebuffer
+  width: number
+  height: number
+}
+
+const createLiveTexture = (gl: WebGL2RenderingContext) => {
+  const texture = gl.createTexture()
+  if (!texture) return null
+  gl.bindTexture(gl.TEXTURE_2D, texture)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  return texture
+}
+
+const liveAdvancedSignature = (advanced: MediaFxAdvanced) => mediaFxAdvancedKeys.map((key) => advanced[key]).join('|')
+
+export const createMediaFxLiveGpuSession = (): MediaFxLiveGpuSession => {
+  const token = {}
+  // Textures belong to one processor (context); a new context means new textures.
+  let owner: MediaFxGpuProcessor | null = null
+  let sourceTexture: WebGLTexture | null = null
+  let uploaded: { frameId: number, width: number, height: number } | null = null
+  let advancedTarget: MediaFxLiveTarget | null = null
+  let advancedKey = ''
+  let disposed = false
+
+  const deleteAdvancedTarget = () => {
+    if (advancedTarget && owner && !owner.gl.isContextLost()) {
+      owner.gl.deleteFramebuffer(advancedTarget.framebuffer)
+      owner.gl.deleteTexture(advancedTarget.texture)
+    }
+    advancedTarget = null
+    advancedKey = ''
+  }
+
+  const releaseResources = () => {
+    deleteAdvancedTarget()
+    if (sourceTexture && owner && !owner.gl.isContextLost()) owner.gl.deleteTexture(sourceTexture)
+    owner = null
+    sourceTexture = null
+    uploaded = null
+  }
+
+  const release = () => {
+    // Idle renderers call this often; only a session that holds something does work.
+    if (!owner && !liveSessions.has(token)) return
+    releaseResources()
+    liveSessions.delete(token)
+    shrinkSharedCanvas()
+  }
+
+  // The session's own RGBA8 target for the advanced result; resized with the raster.
+  const acquireAdvancedTarget = (gl: WebGL2RenderingContext, width: number, height: number) => {
+    if (!advancedTarget) {
+      const texture = createLiveTexture(gl)
+      const framebuffer = texture ? gl.createFramebuffer() : null
+      if (!texture || !framebuffer) {
+        if (texture) gl.deleteTexture(texture)
+        return null
+      }
+      advancedTarget = { texture, framebuffer, width: 0, height: 0 }
+    }
+    if (advancedTarget.width !== width || advancedTarget.height !== height) {
+      advancedKey = ''
+      gl.bindTexture(gl.TEXTURE_2D, advancedTarget.texture)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, advancedTarget.framebuffer)
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, advancedTarget.texture, 0)
+      const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      if (!complete || gl.getError() !== gl.NO_ERROR) return null
+      advancedTarget.width = width
+      advancedTarget.height = height
+    }
+    return advancedTarget
+  }
+
+  return {
+    render(input, advancedInput, temporalInput, timeSeconds) {
+      if (disposed) return null
+      const advancedOn = mediaFxAdvancedHasContent(advancedInput)
+      const temporalOn = mediaFxTemporalHasContent(temporalInput)
+      if (!advancedOn && !temporalOn) return null
+      const { width, height } = input
+      if (!(width >= 1 && height >= 1)) return null
+      const current = acquireProcessor()
+      if (!current) return null
+      const { gl, canvas } = current
+      if (width > current.maxTextureSize || height > current.maxTextureSize) return null
+      const advanced = advancedOn ? normalizeMediaFxAdvanced(advancedInput) : null
+      const options = { pixelRatio: input.pixelRatio }
+      const light = advanced ? resolveMediaFxGpuLightParams(advanced, options) : null
+      // Bloom / glow reuse the page-wide light pipeline; it is built once per context.
+      const pipeline = light?.active ? acquireLightPipeline(current) : null
+      if (light?.active && !pipeline) return null
+      try {
+        for (let index = 0; index < 8 && gl.getError() !== gl.NO_ERROR; index += 1) { /* drain */ }
+        if (owner !== current) {
+          // Textures of a lost context are gone; rebuild lazily in the new one.
+          owner = current
+          sourceTexture = null
+          advancedTarget = null
+          advancedKey = ''
+          uploaded = null
+        }
+        liveSessions.add(token)
+        sourceTexture ??= createLiveTexture(gl)
+        if (!sourceTexture) return null
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, sourceTexture)
+        if (!uploaded || uploaded.frameId !== input.frameId || uploaded.width !== width || uploaded.height !== height) {
+          // The only upload: once per new frame (and once more after a context loss).
+          uploaded = null
+          advancedKey = ''
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, input.source)
+          if (gl.getError() !== gl.NO_ERROR) return null
+          uploaded = { frameId: input.frameId, width, height }
+        }
+        let presentTexture = sourceTexture
+        if (advanced) {
+          const target = acquireAdvancedTarget(gl, width, height)
+          if (!target) return null
+          const key = [input.frameId, width, height, input.pixelRatio, liveAdvancedSignature(advanced)].join('|')
+          if (advancedKey !== key) {
+            advancedKey = ''
+            // Exactly the static advanced pass (no flip, temporal off), into our target.
+            const params = resolveMediaFxGpuParams(advanced, options)
+            if (pipeline) {
+              if (!runLightPasses(current, pipeline, light!, width, height, sourceTexture)) return null
+              gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer)
+              gl.viewport(0, 0, width, height)
+              gl.useProgram(pipeline.composite)
+              gl.activeTexture(gl.TEXTURE0)
+              gl.bindTexture(gl.TEXTURE_2D, sourceTexture)
+              gl.activeTexture(gl.TEXTURE1)
+              gl.bindTexture(gl.TEXTURE_2D, pipeline.targets[0].texture)
+              const uniforms = pipeline.compositeUniforms
+              writeUniforms(gl, uniforms, width, height, params, OFF_TEMPORAL_PARAMS, { flipY: false, time: 0 })
+              gl.uniform1i(uniforms.light, 1)
+              gl.uniform2f(uniforms.lightSize, pipeline.rasterWidth, pipeline.rasterHeight)
+              gl.uniform2f(uniforms.lightStorageSize, pipeline.targetWidth, pipeline.targetHeight)
+              gl.uniform1f(uniforms.lightGain, light!.gain)
+              gl.uniform1f(uniforms.glowAlpha, light!.glowAlpha)
+            } else {
+              gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer)
+              gl.viewport(0, 0, width, height)
+              gl.useProgram(current.program)
+              gl.activeTexture(gl.TEXTURE0)
+              gl.bindTexture(gl.TEXTURE_2D, sourceTexture)
+              writeUniforms(gl, current.uniforms, width, height, params, OFF_TEMPORAL_PARAMS, { flipY: false, time: 0 })
+            }
+            gl.drawArrays(gl.TRIANGLES, 0, 3)
+            if (gl.getError() !== gl.NO_ERROR || gl.isContextLost()) return null
+            advancedKey = key
+          }
+          presentTexture = target.texture
+        } else if (advancedTarget) {
+          // Advanced turned off: do not keep a raster-sized target for temporal-only.
+          deleteAdvancedTarget()
+        }
+        // Final draw on the shared canvas (bottom-left corner, read top-down by the caller).
+        if (canvas.width < width || canvas.height < height) {
+          canvas.width = Math.max(canvas.width, width)
+          canvas.height = Math.max(canvas.height, height)
+        }
+        if (gl.drawingBufferWidth < width || gl.drawingBufferHeight < height) return null
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+        gl.viewport(0, 0, width, height)
+        gl.useProgram(current.program)
+        gl.activeTexture(gl.TEXTURE1)
+        gl.bindTexture(gl.TEXTURE_2D, null)
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, presentTexture)
+        writeUniforms(
+          gl,
+          current.uniforms,
+          width,
+          height,
+          OFF_ADVANCED_PARAMS,
+          temporalOn ? resolveMediaFxTemporalGpuParams(temporalInput!, options) : OFF_TEMPORAL_PARAMS,
+          { flipY: true, time: temporalOn ? wrapTemporalTime(timeSeconds) : 0 },
+        )
+        gl.drawArrays(gl.TRIANGLES, 0, 3)
+        if (gl.getError() !== gl.NO_ERROR || gl.isContextLost()) return null
+        return { canvas, x: 0, y: canvas.height - height, width, height }
+      } catch (error) {
+        warnLiveOnce(error)
+        return null
+      }
+    },
+    release() {
+      if (disposed) return
+      release()
+    },
+    dispose() {
+      if (disposed) return
+      release()
+      disposed = true
     },
   }
 }

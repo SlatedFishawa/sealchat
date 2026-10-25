@@ -12,6 +12,8 @@ import (
 // WorldClueExportBlock is export-only metadata. It is deliberately excluded
 // from ExportMessage JSON so the existing export contracts remain unchanged.
 type WorldClueExportBlock struct {
+	WorldID           string
+	ClueID            string
 	Title             string
 	Kind              string
 	Public            AgentRichDocument
@@ -38,6 +40,12 @@ type worldClueExportResolver struct {
 	worldID   string
 	cache     map[string]*WorldClueExportBlock
 	userNames map[string]string
+	// publicOnly expands only published clues that world members see by default.
+	publicOnly bool
+	// includePrivateSections is used by LOG archival projection: the clue itself
+	// still obeys publicOnly, while authorized viewers may include member-private
+	// sections in the generated snapshot.
+	includePrivateSections bool
 }
 
 type worldClueEmbedTarget struct {
@@ -129,6 +137,14 @@ func (r *worldClueExportResolver) load(target worldClueEmbedTarget, includeImage
 	if err != nil || detail == nil {
 		return nil
 	}
+	if r.publicOnly {
+		// The member DTO intentionally omits DefaultAccess. Read the shared
+		// audience boundary from its source after WorldClueGet authorizes the viewer.
+		var public model.WorldClueModel
+		if model.GetDB().Select("id").Where("id = ? AND world_id = ? AND status = ? AND default_access IN ?", target.ClueID, target.WorldID, model.WorldClueStatusPublished, []string{model.WorldClueAccessView, model.WorldClueAccessEdit}).Take(&public).Error != nil {
+			return nil
+		}
+	}
 
 	content := strings.TrimSpace(detail.Content)
 	if content == "" {
@@ -140,6 +156,8 @@ func (r *worldClueExportResolver) load(target worldClueEmbedTarget, includeImage
 		iframeSourceURL = safeExportHTTPURL(detail.EmbedURL)
 	}
 	block := &WorldClueExportBlock{
+		WorldID:           target.WorldID,
+		ClueID:            target.ClueID,
 		Title:             strings.TrimSpace(detail.Title),
 		Kind:              strings.TrimSpace(detail.Kind),
 		Public:            public,
@@ -157,16 +175,20 @@ func (r *worldClueExportResolver) load(target worldClueEmbedTarget, includeImage
 		appendWorldClueImage(&block.Public, block.ImageAttachmentID, block.ImageURL)
 	}
 
-	db := model.GetDB()
-	role, roleErr := worldClueRole(db, target.WorldID, r.userID)
-	if roleErr == nil && worldClueIsAdminRole(role) {
-		r.loadWorldCluePrivateSections(block, target.WorldID, target.ClueID, includeImages)
-	} else if privateContent := r.memberPrivateContent(target, detail); privateContent != "" {
-		name := r.userDisplayName(r.userID)
-		block.Private = append(block.Private, WorldClueExportPrivateSection{
-			MemberName: name,
-			Content:    buildRichDocumentForExport(privateContent, includeImages),
-		})
+	// Private sections normally follow private-export semantics. LOG archival
+	// projection may opt into them without relaxing the public clue boundary.
+	if !r.publicOnly || r.includePrivateSections {
+		db := model.GetDB()
+		role, roleErr := worldClueRole(db, target.WorldID, r.userID)
+		if roleErr == nil && worldClueIsAdminRole(role) {
+			r.loadWorldCluePrivateSections(block, target.WorldID, target.ClueID, includeImages)
+		} else if privateContent := r.memberPrivateContent(target, detail); privateContent != "" {
+			name := r.userDisplayName(r.userID)
+			block.Private = append(block.Private, WorldClueExportPrivateSection{
+				MemberName: name,
+				Content:    buildRichDocumentForExport(privateContent, includeImages),
+			})
+		}
 	}
 
 	r.cache[key] = block
@@ -476,6 +498,99 @@ func renderWorldClueHTML(block WorldClueExportBlock, includeImages bool) string 
 	}
 	builder.WriteString(`</section>`)
 	return builder.String()
+}
+
+// worldClueDisplay is one clue's LOG display parts. Public fields stay separate
+// from optional archival member-private sections; clue-box management data is excluded.
+type worldClueDisplay struct {
+	Title string
+	Kind  string
+	// Media is the clue's main image; empty when images are excluded.
+	Media AgentRichDocument
+	Body  AgentRichDocument
+	// Empty marks a clue with neither public content nor shown media.
+	Empty bool
+	// SourceURL is the web clue's safe http(s) address, shown only as text.
+	SourceURL string
+	// ImageSourceURL is an external main image address that cannot be embedded.
+	ImageSourceURL string
+	// Private contains member-specific archival sections when the caller opted in.
+	Private []WorldClueExportPrivateSection
+}
+
+func worldClueDisplayOf(block WorldClueExportBlock, includeImages bool) worldClueDisplay {
+	d := worldClueDisplay{Title: strings.TrimSpace(block.Title), Kind: strings.TrimSpace(block.Kind)}
+	if d.Title == "" {
+		d.Title = "未命名线索"
+	}
+	if d.Kind == "" {
+		d.Kind = model.WorldClueKindText
+	}
+	body, media := splitWorldCluePublicDocument(block.Public)
+	d.Body = body
+	if includeImages {
+		d.Media = media
+	}
+	d.Empty = !richDocumentHasContent(&body) && len(d.Media.Blocks) == 0
+	if d.Kind == model.WorldClueKindIframe {
+		d.SourceURL = block.IframeSourceURL
+	}
+	if includeImages && worldClueImageAttachmentToken(block) == "" && block.ImageURL != "" {
+		d.ImageSourceURL = safeExportHTTPURL(block.ImageURL)
+	}
+	return d
+}
+
+// richDocument flattens the display parts into one public rich document.
+func (d worldClueDisplay) richDocument() AgentRichDocument {
+	heading := "[线索: " + d.Title + "]"
+	if d.Kind != model.WorldClueKindText {
+		heading = "[线索: " + d.Title + " · " + worldClueExportKindLabel(d.Kind) + "]"
+	}
+	paragraph := func(children ...AgentRichNode) AgentRichNode {
+		return AgentRichNode{Type: "paragraph", Children: children}
+	}
+	text := func(value string, marks ...AgentRichMark) AgentRichNode {
+		return AgentRichNode{Type: "text", Text: value, Marks: marks}
+	}
+	sourceLine := func(label, href string) AgentRichNode {
+		return paragraph(text(label), text(href, AgentRichMark{Type: "link", Value: href}))
+	}
+	doc := AgentRichDocument{Type: "document", Blocks: []AgentRichNode{paragraph(text(heading, AgentRichMark{Type: "bold"}))}}
+	doc.Blocks = append(doc.Blocks, d.Media.Blocks...)
+	if d.Empty {
+		doc.Blocks = append(doc.Blocks, paragraph(text("（空线索）")))
+	} else {
+		doc.Blocks = append(doc.Blocks, d.Body.Blocks...)
+	}
+	if d.SourceURL != "" {
+		doc.Blocks = append(doc.Blocks, sourceLine("网页线索/来源: ", d.SourceURL))
+	}
+	if d.ImageSourceURL != "" {
+		doc.Blocks = append(doc.Blocks, sourceLine("图片来源: ", d.ImageSourceURL))
+	}
+	return doc
+}
+
+// worldClueRichDocument is renderWorldCluePlain as rich content, for outputs that
+// render a clue as part of a message body.
+func worldClueRichDocument(block WorldClueExportBlock, includeImages bool) AgentRichDocument {
+	paragraph := func(children ...AgentRichNode) AgentRichNode {
+		return AgentRichNode{Type: "paragraph", Children: children}
+	}
+	doc := worldClueDisplayOf(block, includeImages).richDocument()
+	for _, section := range block.Private {
+		if !richDocumentHasContent(&section.Content) {
+			continue
+		}
+		name := strings.TrimSpace(section.MemberName)
+		if name == "" {
+			name = "成员"
+		}
+		doc.Blocks = append(doc.Blocks, paragraph(AgentRichNode{Type: "text", Text: "[专属信息: " + name + "]", Marks: []AgentRichMark{{Type: "bold"}}}))
+		doc.Blocks = append(doc.Blocks, section.Content.Blocks...)
+	}
+	return doc
 }
 
 func worldClueExportKindLabel(kind string) string {

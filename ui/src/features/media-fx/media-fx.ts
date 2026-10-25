@@ -234,7 +234,7 @@ const mediaFxMotionShapes: Record<Exclude<MediaFxMotionPreset, 'none'>, MediaFxM
   breathe: {
     defaultDurationMs: 4_000,
     easing: 'ease-in-out',
-    maxAmount: 0.05,
+    maxAmount: 0.065,
     frames: (amount) => [
       { x: 0, y: 0, scale: 1 },
       { x: 0, y: 0, scale: 1 + amount },
@@ -244,7 +244,7 @@ const mediaFxMotionShapes: Record<Exclude<MediaFxMotionPreset, 'none'>, MediaFxM
   float: {
     defaultDurationMs: 4_000,
     easing: 'ease-in-out',
-    maxAmount: 0.04,
+    maxAmount: 0.055,
     frames: (amount) => [
       { x: 0, y: 0, scale: 1 },
       { x: 0, y: -amount, scale: 1 },
@@ -610,32 +610,49 @@ export interface MediaFxCapabilities {
   // Advanced pixel effects (GPU). Off unless the consumer explicitly opts in.
   advanced: boolean
   // Temporal live pixel effects (GPU, shared clock). Off unless the consumer explicitly
-  // opts in; never available for animated media or bake output.
+  // opts in; never available for bake output, and for animated media only through a
+  // live-frame renderer (see livePixels).
   temporal: boolean
   // The target renders animated media (animated image / video).
   animatedMedia: boolean
+  // The media is animated AND the target renders its pixels frame by frame through the
+  // live Media FX pipeline (an HTMLVideoElement source feeding media-fx-live). Being
+  // animated alone never allows per-pixel effects: the static Konva cache / bake paths
+  // would freeze one frame.
+  livePixels: boolean
 }
 
 export type MediaFxRendererKind = 'dom' | 'konva' | 'bake'
 
-// Animated media is excluded from live filters so the Konva static cache path never
-// freezes a frame and all live surfaces share one rule. Bake never has motion.
+// DOM CSS filters preserve animated image / video playback. Other renderers keep
+// animated media out of static pixel filters so the Konva cache never freezes a frame.
+// Bake never has motion.
 // Advanced effects stay off unless the consumer opts in (Stage static images, static
 // non-tile Stage surfaces, the image editor, TheaterPresentation static image layers);
 // an unsupported renderer keeps the data untouched, it just does not render it.
 // Temporal follows the same opt-in rule, and a still bake output can never carry it.
+// `livePixels` is a separate opt-in that only a consumer with a live-frame input (a
+// playing video source) may pass: it lets animated media use advanced / temporal through
+// the live pipeline. It never changes `filters` (the Konva cache stays off for animated
+// media) and never applies to bake.
 export const resolveMediaFxCapabilities = (
   renderer: MediaFxRendererKind,
   animatedMedia = false,
   advanced = false,
   temporal = false,
-): MediaFxCapabilities => ({
-  motion: renderer !== 'bake',
-  filters: !animatedMedia,
-  advanced: advanced && !animatedMedia,
-  temporal: temporal && renderer !== 'bake' && !animatedMedia,
-  animatedMedia,
-})
+  livePixels = false,
+): MediaFxCapabilities => {
+  const live = animatedMedia && livePixels && renderer !== 'bake'
+  const pixels = !animatedMedia || live
+  return {
+    motion: renderer !== 'bake',
+    filters: renderer === 'dom' || !animatedMedia,
+    advanced: advanced && pixels,
+    temporal: temporal && renderer !== 'bake' && pixels,
+    animatedMedia,
+    livePixels: live,
+  }
+}
 
 export const prefersReducedMotion = () => (
   typeof window !== 'undefined'

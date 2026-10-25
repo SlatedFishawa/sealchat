@@ -2,6 +2,8 @@ import DOMPurify from 'dompurify';
 import Element from '@satorijs/element';
 import type { Message } from '@satorijs/protocol';
 import { resolveAttachmentUrl } from '@/composables/useAttachmentResolver';
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar';
+import { buildGeneratedAvatarDataUrl } from '@/utils/generatedAvatarImage';
 import { isBotCommandLikeContent, renderBotCommandTextAsHtml } from '@/utils/botCommand';
 import { renderQuickFormatHtmlFromEscaped } from '@/utils/plainQuickFormat';
 import { isTipTapJson, tiptapJsonToHtml } from '@/utils/tiptap-render';
@@ -99,18 +101,34 @@ const resolveSenderUserId = (message: Message): string => {
 
 const resolveAvatarSource = (message: Message): string => {
   const raw = message as any;
-  const candidates = [
+  const attachmentCandidates = [
     raw?.identity?.avatarAttachment,
     raw?.identity?.avatarAttachmentId,
     raw?.sender_identity_avatar_id,
     raw?.sender_identity_avatar,
     raw?.senderIdentityAvatarID,
     raw?.senderIdentityAvatarId,
-    raw?.member?.avatar,
-    raw?.user?.avatar,
   ];
-  const source = candidates.find((candidate) => typeof candidate === 'string' && candidate.trim());
-  return source ? (resolveAttachmentUrl(source) || source) : '';
+  const attachmentSource = attachmentCandidates.find((candidate) => typeof candidate === 'string' && candidate.trim());
+  if (attachmentSource) {
+    return resolveAttachmentUrl(attachmentSource) || attachmentSource;
+  }
+  const avatarTextStyle = normalizeAvatarTextStyle(
+    raw?.identity?.avatarTextStyle
+      || raw?.sender_identity_avatar_text_style
+      || raw?.senderIdentityAvatarTextStyle,
+  );
+  if (avatarTextStyle) {
+    return buildGeneratedAvatarDataUrl({
+      displayName: resolveSenderName(message),
+      accentColor: String(raw?.identity?.color || raw?.sender_identity_color || '').trim(),
+      style: avatarTextStyle,
+      size: 96,
+    });
+  }
+  const fallbackSource = [raw?.member?.avatar, raw?.user?.avatar]
+    .find((candidate) => typeof candidate === 'string' && candidate.trim());
+  return fallbackSource ? (resolveAttachmentUrl(fallbackSource) || fallbackSource) : '';
 };
 
 const resolveSenderColor = (message: Message): string | undefined => {

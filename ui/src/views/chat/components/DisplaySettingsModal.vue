@@ -867,6 +867,19 @@ const handleThemeSelectionModeUpdate = (mode: ThemeSelectionMode) => {
         </n-switch>
       </section>
 
+      <section v-if="activeSettingsCategory === 'appearance'" class="display-settings__section">
+        <header>
+          <div>
+            <p class="section-title">“更多”功能展示</p>
+            <p class="section-desc">控制顶部功能栏点击“更多”后的展示方式</p>
+          </div>
+        </header>
+        <n-switch v-model:value="draft.actionRibbonExpandMoreEnabled">
+          <template #checked>多行展开</template>
+          <template #unchecked>下拉菜单</template>
+        </n-switch>
+      </section>
+
       <section v-if="activeSettingsCategory === 'reading'" class="display-settings__section display-settings__section--wide">
         <header>
           <div>
@@ -1339,7 +1352,7 @@ const handleThemeSelectionModeUpdate = (mode: ThemeSelectionMode) => {
         <header>
           <div>
             <p class="section-title">场内场外自动切换</p>
-            <p class="section-desc">切换IC/OOC模式时，自动切换到预设的频道角色</p>
+            <p class="section-desc">在频道角色与场内/场外模式之间自动联动</p>
           </div>
         </header>
         <div style="display: flex; align-items: center; gap: 0.75rem;">

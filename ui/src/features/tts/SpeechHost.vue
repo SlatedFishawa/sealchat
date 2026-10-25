@@ -8,6 +8,7 @@ import { speechAPI } from './api'
 import { api } from '@/stores/_config'
 import { SpeechQueue, type SpeechEnd } from './runtime'
 import type { MessageSpeech } from './types'
+import { sanitizeQuickOverride } from './quick-control'
 
 const SpeechPanel = defineAsyncComponent(() => import('./SpeechPanel.vue'))
 const speech = useSpeechStore()
@@ -189,6 +190,9 @@ function onIntent(event: MessageEvent) {
     if (speech.quota && typeof value.autoSynthesis === 'boolean') {
       speech.quota.autoSynthesis = value.autoSynthesis
     }
+    if (value.quickStates) speech.replaceQuickStates(value.quickStates)
+    if (typeof value.quickControlVisible === 'boolean') speech.quickControlVisible = value.quickControlVisible
+    if (typeof value.roleConfigRevision === 'number') speech.roleConfigRevision = value.roleConfigRevision
     if (typeof value.playingKey === 'string' && typeof value.loading === 'boolean' && typeof value.playing === 'boolean') {
       speechPlayer.state.key = value.playingKey
       speechPlayer.state.loading = value.loading
@@ -206,16 +210,23 @@ function onIntent(event: MessageEvent) {
   if (value.action === 'open') speech.open(typeof value.channelId === 'string' ? value.channelId : '')
   if (value.action === 'state') broadcastState()
   if (value.action === 'temporary' && typeof value.channelId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value.channelId) && typeof value.enabled === 'boolean') speech.setTemporary(value.channelId, value.enabled)
+  if (value.action === 'quick-visible' && typeof value.value === 'boolean') speech.setQuickControlVisible(value.value)
+  if (value.action === 'quick' && [value.channelId, value.identityId].every(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(id)) && (value.state === null || typeof value.state === 'object' && value.state)) {
+    speech.syncQuickState(value.channelId, value.identityId, value.state === null ? null : { override: sanitizeQuickOverride(value.state.override), presetId: typeof value.state.presetId === 'string' ? value.state.presetId : undefined })
+  }
   if (value.action === 'play' && (value.kind === 'messages' || value.kind === 'resources') && typeof value.id === 'string' && value.id.length <= 100) {
     void speechPlayer.play(value.kind, value.id)
+  }
+  if (value.action === 'ensure-play' && (value.kind === 'messages' || value.kind === 'resources') && typeof value.id === 'string' && value.id.length <= 100) {
+    void speechPlayer.ensurePlay(value.kind, value.id)
   }
 }
 function broadcastState() {
   if (!mainWindow) return
-  const state = { type: 'sealchat:tts-state', userId: user.info.id, temporary: { ...speech.temporary }, enabled: speech.quota?.enabled, autoSynthesis: speech.quota?.autoSynthesis, playingKey: speechPlayer.state.key, loading: speechPlayer.state.loading, playing: speechPlayer.state.playing }
+  const state = { type: 'sealchat:tts-state', userId: user.info.id, temporary: { ...speech.temporary }, quickStates: JSON.parse(JSON.stringify(speech.quickStates)), quickControlVisible: speech.quickControlVisible, roleConfigRevision: speech.roleConfigRevision, enabled: speech.quota?.enabled, autoSynthesis: speech.quota?.autoSynthesis, playingKey: speechPlayer.state.key, loading: speechPlayer.state.loading, playing: speechPlayer.state.playing }
   for (const frame of document.querySelectorAll('iframe')) frame.contentWindow?.postMessage(state, window.location.origin)
 }
-watch(() => [JSON.stringify(speech.temporary), speech.quota?.enabled, speech.quota?.autoSynthesis, speechPlayer.state.key, speechPlayer.state.loading, speechPlayer.state.playing], broadcastState)
+watch(() => [JSON.stringify(speech.temporary), JSON.stringify(speech.quickStates), speech.quickControlVisible, speech.roleConfigRevision, speech.quota?.enabled, speech.quota?.autoSynthesis, speechPlayer.state.key, speechPlayer.state.loading, speechPlayer.state.playing], broadcastState)
 // The first page gesture satisfies autoplay policy; resume the remembered preference silently.
 function resumePreferredPlayback() {
   if (!user.info.id) return
@@ -261,9 +272,14 @@ function onChannelSwitchTo(event?: { argv?: { channelId?: string } }) {
   // channel-switch-to follows successful channel.enter, closing the subscription gap.
   void syncMessageStates(currentChannel.value || '', user.info.id)
 }
+function onTTSCapabilityUpdated() {
+  if (!user.info.id) return
+  void speech.refresh(currentChannel.value || '').catch(() => { /* Failed capabilities stay unavailable. */ })
+}
 onMounted(() => {
   chatEvent.on('message-tts-updated', onMessageTTSUpdated)
   chatEvent.on('channel-switch-to', onChannelSwitchTo)
+  chatEvent.on('tts-capability-updated', onTTSCapabilityUpdated)
   window.addEventListener('message', onIntent)
   window.addEventListener('pointerdown', resumePreferredPlayback, true)
   window.addEventListener('keydown', resumePreferredPlayback, true)
@@ -272,6 +288,7 @@ onBeforeUnmount(() => {
   metadataActive = false
   chatEvent.off('message-tts-updated', onMessageTTSUpdated)
   chatEvent.off('channel-switch-to', onChannelSwitchTo)
+  chatEvent.off('tts-capability-updated', onTTSCapabilityUpdated)
   window.removeEventListener('message', onIntent)
   window.removeEventListener('pointerdown', resumePreferredPlayback, true)
   window.removeEventListener('keydown', resumePreferredPlayback, true)

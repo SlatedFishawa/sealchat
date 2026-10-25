@@ -11,6 +11,7 @@ import { useDisplayStore } from './stores/display'
 import { startFontSurfaceAutoMarking } from './services/font/fontSurfaceAdapter'
 import { preloadPlatformFontsFromDom } from './services/font/platformFontRegistry'
 import { installRichTextMessageActionRuntime } from './utils/richTextMessageAction'
+import { installShortcutCommandRuntime } from './features/shortcut-command/runtime'
 
 const installMobileViewportGuards = () => {
   if (typeof document === 'undefined') {
@@ -43,6 +44,7 @@ app.use(router)
 
 installSealChatBridgeRuntime({ pinia, router })
 installRichTextMessageActionRuntime({ pinia })
+installShortcutCommandRuntime({ pinia })
 
 import '@imengyu/vue3-context-menu/lib/vue3-context-menu.css'
 import ContextMenu from '@imengyu/vue3-context-menu'
@@ -66,7 +68,7 @@ import { useChatStore } from './stores/chat'
 
 router.beforeEach(async (to, from, next) => {
   // 允许未登录访问的公开路由
-  const publicRoutes = ['user-signin', 'user-signup', 'password-recovery', 'world-private-hint', 'observer-entry'];
+  const publicRoutes = ['user-signin', 'user-signup', 'password-recovery', 'world-private-hint', 'observer-entry', 'log-public'];
   if (publicRoutes.includes(to.name as string)) {
     return next();
   }

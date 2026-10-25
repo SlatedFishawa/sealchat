@@ -25,6 +25,8 @@ useCursorThemeRuntime()
 let disposeMessageSoundNotifier: (() => void) | null = null
 let stopRuntimeModeWatch: WatchStopHandle | null = null
 const isInternalSurface = computed(() => route.meta.internalSurface === true)
+// 匿名 LOG 展示页与内部表面一样不挂载依赖登录/聊天连接的全局宿主。
+const hideGlobalHosts = computed(() => isInternalSurface.value || route.meta.logPublic === true)
 const worldClueHostWorldId = computed(() => route.name === 'embed' ? chat.currentWorldId : '')
 const globalFontFamily = computed(() => buildGlobalFontFamilyStack(display.settings.globalFontFamily))
 
@@ -82,9 +84,9 @@ const handleContextMenu = (e: MouseEvent) => {
 
 onMounted(() => {
   document.addEventListener('contextmenu', handleContextMenu)
-  stopRuntimeModeWatch = watch(isInternalSurface, (internalSurface) => {
+  stopRuntimeModeWatch = watch(hideGlobalHosts, (hidden) => {
     disposeMessageSoundNotifier?.()
-    disposeMessageSoundNotifier = internalSurface ? null : installMessageSoundNotifier()
+    disposeMessageSoundNotifier = hidden ? null : installMessageSoundNotifier()
   }, { immediate: true })
 })
 
@@ -104,9 +106,9 @@ onUnmounted(() => {
         <GlobalGlassBackground />
         <RouterView />
         <SpeechHost />
-        <GlobalLobbyAnnouncementHost v-if="!isInternalSurface" />
-        <QuickLoginApprovalHost v-if="!isInternalSurface" />
-        <WorldCluePresentationHost v-if="!isInternalSurface" :world-id="worldClueHostWorldId" />
+        <GlobalLobbyAnnouncementHost v-if="!hideGlobalHosts" />
+        <QuickLoginApprovalHost v-if="!hideGlobalHosts" />
+        <WorldCluePresentationHost v-if="!hideGlobalHosts" :world-id="worldClueHostWorldId" />
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
@@ -2737,7 +2739,7 @@ nav a:first-of-type {
   }
   .sc-app-shell { background: var(--sc-glass-page) !important; }
 
-  @include ordinary-glass-surface('.sc-header, .sc-sidebar, .chat-root-container > .chat:not(.chat--has-background), .chat-root-container > .edit-area, .action-ribbon, .world-lobby-root, .clue-box, .chat-search-panel, .dice-tray-floating-window, .sc-glass-settings-panel, .n-modal, .n-dialog, .n-drawer, .n-popover, .n-dropdown-menu, .n-base-select-menu') {
+  @include ordinary-glass-surface('.sc-header, .sc-sidebar, .chat-root-container > .chat:not(.chat--has-background), .chat-root-container > .edit-area, .action-ribbon, .world-lobby-root, .world-console-panel, .clue-box, .chat-search-panel, .dice-tray-floating-window, .sc-glass-settings-panel, .n-modal, .n-dialog, .n-drawer, .n-popover, .n-dropdown-menu, .n-base-select-menu') {
     background: var(--sc-glass-surface) !important;
     border-color: var(--sc-glass-border) !important;
     box-shadow: var(--sc-glass-shadow);
@@ -2823,7 +2825,7 @@ nav a:first-of-type {
   }
 
   /* Inner library wrappers share their parent's material, without extra blur layers. */
-  @include ordinary-glass-surface('.n-modal .n-card, .n-card__content, .n-card-header, .n-modal .n-card-header__main, .n-card__action, .n-dialog__content, .n-dialog__title, .n-drawer-content, .n-popover__content, .n-popover-arrow-wrapper, .n-dropdown-option, .n-base-select-option, .n-base-select-group-header, .v-binder-follower-content, .sc-sidebar .n-tabs, .sc-sidebar .n-tabs-nav, .sc-sidebar .n-tabs-wrapper, .sc-sidebar .n-tabs-rail, .sc-sidebar .n-tab-pane') {
+  @include ordinary-glass-surface('.n-modal .n-card, .n-card__content, .n-card-header, .n-modal .n-card-header__main, .n-card__action, .n-dialog__content, .n-dialog__title, .n-drawer-content, .n-popover__content, .n-popover-arrow-wrapper, .n-dropdown-option, .n-base-select-option, .n-base-select-group-header, .v-binder-follower-content, .sc-sidebar .n-tabs, .sc-sidebar .n-tabs-nav, .sc-sidebar .n-tabs-wrapper, .sc-sidebar .n-tabs-rail, .sc-sidebar .n-tab-pane, .world-console-panel .n-tabs, .world-console-panel .n-tabs-nav, .world-console-panel .n-tabs-wrapper, .world-console-panel .n-tabs-tab-wrapper') {
     background-color: transparent !important;
   }
   @include ordinary-glass-surface('.n-dropdown-option:hover, .n-dropdown-option--pending, .n-base-select-option:hover, .n-base-select-option--pending') {

@@ -43,6 +43,7 @@ type ChannelIdentityVariantInput struct {
 }
 
 type ResolvedIdentityAppearance struct {
+	AvatarTextStyle     string
 	IdentityID          string
 	VariantID           string
 	DisplayName         string
@@ -650,6 +651,7 @@ func ResolveChannelIdentityAppearance(identity *model.ChannelIdentityModel, vari
 		DisplayName:         identity.DisplayName,
 		Color:               identity.Color,
 		AvatarAttachmentID:  identity.AvatarAttachmentID,
+		AvatarTextStyle:     identity.AvatarTextStyle,
 		AvatarDecorations:   identity.AvatarDecorations,
 		TheaterPresentation: cloneTheaterPresentation(identity.TheaterPresentation),
 	}
@@ -673,6 +675,7 @@ func ResolveChannelIdentityAppearance(identity *model.ChannelIdentityModel, vari
 	}
 	if value := strings.TrimSpace(variant.AvatarAttachmentID); value != "" {
 		result.AvatarAttachmentID = value
+		result.AvatarTextStyle = ""
 	}
 	return result
 }

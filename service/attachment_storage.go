@@ -125,6 +125,42 @@ func OpenAttachmentRead(ctx context.Context, att *model.AttachmentModel) (io.Rea
 	return GetStorageManager().OpenRead(ctx, convertModelToBackend(att.StorageType), att.ObjectKey)
 }
 
+type temporaryAttachmentReader struct {
+	*os.File
+	path string
+}
+
+func (r *temporaryAttachmentReader) Close() error {
+	err := r.File.Close()
+	_ = os.Remove(r.path)
+	return err
+}
+
+// OpenAttachmentReadCompatible keeps the current storage path fast, then falls back to
+// the attachment subsystem's existing historical materialization rules. Callers remain
+// responsible for attachment authorization before invoking it.
+func OpenAttachmentReadCompatible(ctx context.Context, att *model.AttachmentModel) (io.ReadCloser, error) {
+	if att == nil {
+		return nil, errors.New("附件不存在")
+	}
+	if r, err := OpenAttachmentRead(ctx, att); err == nil {
+		return r, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path, err := MaterializeAttachmentToTempFile(att)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		_ = os.Remove(path)
+		return nil, err
+	}
+	return &temporaryAttachmentReader{File: file, path: path}, nil
+}
+
 func attachmentHistoricalUploadRoots() []string {
 	roots := make([]string, 0, 4)
 	seen := map[string]struct{}{}

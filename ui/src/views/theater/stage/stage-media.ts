@@ -10,6 +10,35 @@ export interface TheaterStageMediaScope {
 export interface TheaterStageMediaLocation {
   url: string
   managed: boolean
+  sourceKind: 'image' | 'video'
+}
+
+export interface TheaterMediaPlaybackReference {
+  variant?: string
+  mimeType?: string
+  animated?: boolean
+  resourceKind?: string
+  resourceMimeType?: string
+}
+
+export interface TheaterMediaPlaybackResolution {
+  variant: string
+  mimeType: string
+  sourceKind: 'image' | 'video'
+  legacyAnimatedImageDisplay: boolean
+}
+
+export const resolveTheaterMediaPlaybackReference = (
+  reference: TheaterMediaPlaybackReference,
+): TheaterMediaPlaybackResolution => {
+  const variant = reference.variant?.trim() || 'original'
+  const mimeType = reference.mimeType?.trim().toLowerCase() || ''
+  return {
+    variant,
+    mimeType,
+    sourceKind: mimeType.startsWith('video/') ? 'video' : 'image',
+    legacyAnimatedImageDisplay: false,
+  }
 }
 
 const managedTheaterContentPath = /\/api\/v1\/worlds\/[^/]+(?:\/channels\/[^/]+)?\/theater\/resources\/[^/]+(?:\/variants\/([^/]+))?\/content\/?$/
@@ -40,17 +69,30 @@ export const resolveTheaterStageMediaLocation = (
   imageRef: StageImageRef,
   scope: TheaterStageMediaScope,
   baseHref = typeof window !== 'undefined' ? window.location.href : 'https://sealchat.invalid/',
+  resource?: { kind?: string, mimeType?: string, playbackVariant?: string, playbackMimeType?: string },
 ): TheaterStageMediaLocation | null => {
   const normalized = imageRef.url.trim()
   if (!normalized) return null
 
+  const mimeType = imageRef.mimeType?.trim().toLowerCase()
   let candidate = normalized
   let managed = false
+  let sourceKind: TheaterStageMediaLocation['sourceKind'] = mimeType?.startsWith('video/') ? 'video' : 'image'
   try {
     const parsed = new URL(normalized, baseHref)
     const match = parsed.pathname.match(managedTheaterContentPath)
     if (match && imageRef.resourceId.trim()) {
-      candidate = `${scope.urlBase.replace(/\/$/, '')}${theaterResourceContentPath(scope, imageRef.resourceId, decodedPathSegment(match[1]))}`
+      const variant = decodedPathSegment(match[1])
+      const preferResourcePlayback = resource?.kind?.trim().toLowerCase() === 'animated_image'
+      const playback = resolveTheaterMediaPlaybackReference({
+        variant: preferResourcePlayback ? resource?.playbackVariant || variant : variant,
+        mimeType: preferResourcePlayback ? resource?.playbackMimeType || mimeType : mimeType,
+        animated: imageRef.animated,
+        resourceKind: resource?.kind,
+        resourceMimeType: resource?.mimeType,
+      })
+      candidate = `${scope.urlBase.replace(/\/$/, '')}${theaterResourceContentPath(scope, imageRef.resourceId, playback.variant === 'original' ? '' : playback.variant)}`
+      sourceKind = playback.sourceKind
       managed = true
     } else if (normalized.startsWith('/api/')) {
       candidate = `${scope.urlBase.replace(/\/$/, '')}${normalized}`
@@ -60,5 +102,49 @@ export const resolveTheaterStageMediaLocation = (
   }
 
   const url = resolveStageImageUrl(candidate, baseHref)
-  return url ? { url, managed } : null
+  return url ? { url, managed, sourceKind } : null
+}
+
+export const theaterResourceThumbnailPath = (scope: TheaterStageMediaScope, resourceId: string, size: number) => (
+  `/${theaterResourcePath(scope, resourceId)}/thumbnail?size=${Math.round(size)}`
+)
+
+// Managed resources resolve to the server still-frame thumbnail; external
+// images stay unmanaged and video-only references have no thumbnail.
+export const resolveTheaterStageThumbnailLocation = (
+  imageRef: StageImageRef | null | undefined,
+  scope: TheaterStageMediaScope,
+  size: number,
+  baseHref?: string,
+): TheaterStageMediaLocation | null => {
+  if (!imageRef) return null
+  const location = resolveTheaterStageMediaLocation(imageRef, scope, baseHref)
+  if (!location) return null
+  if (location.managed) {
+    const url = resolveStageImageUrl(`${scope.urlBase.replace(/\/$/, '')}${theaterResourceThumbnailPath(scope, imageRef.resourceId.trim(), size)}`, baseHref)
+    return url ? { url, managed: true, sourceKind: 'image' } : null
+  }
+  return location.sourceKind === 'video' ? null : location
+}
+
+export const supportedTheaterMedia = new Set(['image/jpeg', 'image/png', 'image/apng', 'image/webp', 'image/gif', 'video/webm'])
+
+// Browsers often leave file.type empty or generic, so fall back to the extension.
+export const normalizedTheaterMediaType = (file: Pick<File, 'name' | 'type'>) => {
+  const declared = file.type.trim().toLowerCase()
+  if (supportedTheaterMedia.has(declared)) return declared
+  const extension = file.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1]
+  return extension === 'jpg' || extension === 'jpeg'
+    ? 'image/jpeg'
+    : extension === 'png'
+      ? 'image/png'
+      : extension === 'apng'
+        ? 'image/apng'
+        : extension === 'webp'
+          ? 'image/webp'
+          : extension === 'gif'
+            ? 'image/gif'
+            : extension === 'webm'
+              ? 'video/webm'
+              : declared
 }

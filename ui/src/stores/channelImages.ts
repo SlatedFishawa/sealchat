@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar'
 import { api } from './_config'
 import { useChatStore } from './chat'
 import {
@@ -24,6 +25,8 @@ export interface ChannelImageItem {
     senderName: string
     senderAvatar: string
     senderIdentityIsTemporary: boolean
+    senderIdentityAvatarTextStyle?: '' | 'a' | 'b' | 'c'
+    senderIdentityColor?: string
     createdAt: number
     displayOrder: number
 }
@@ -54,6 +57,8 @@ interface ChannelImagesApiResponse {
         sender_name: string
         sender_avatar: string
         sender_identity_is_temporary: boolean
+        sender_identity_avatar_text_style?: '' | 'a' | 'b' | 'c'
+        sender_identity_color?: string
         created_at: number
         display_order: number
     }>
@@ -225,6 +230,8 @@ export const useChannelImagesStore = defineStore('channelImages', {
                     senderName: item.sender_name,
                     senderAvatar: item.sender_avatar,
                     senderIdentityIsTemporary: Boolean(item.sender_identity_is_temporary),
+                    senderIdentityAvatarTextStyle: normalizeAvatarTextStyle(item.sender_identity_avatar_text_style),
+                    senderIdentityColor: item.sender_identity_color,
                     createdAt: item.created_at,
                     displayOrder: item.display_order,
                 }))

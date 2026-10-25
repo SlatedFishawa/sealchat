@@ -107,6 +107,7 @@ func bindTheaterRoutes(router fiber.Router, base string) {
 	router.Get(base+"/resources/:resourceId/variants/:variant/content", TheaterResourceVariantContent)
 	router.Get(base+"/resources/:resourceId/content-url", TheaterResourceContentURL)
 	router.Get(base+"/resources/:resourceId/content", TheaterResourceContent)
+	router.Get(base+"/resources/:resourceId/thumbnail", TheaterResourceThumbnail)
 	router.Post(base+"/resources/:resourceId/retry", TheaterResourceRetry)
 	router.Get(base+"/resources/:resourceId", TheaterResourceGet)
 	router.Delete(base+"/resources/:resourceId", TheaterResourceDelete)

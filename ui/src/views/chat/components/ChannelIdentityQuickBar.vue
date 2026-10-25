@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar'
 import { computed } from 'vue'
 import AvatarVue from '@/components/avatar.vue'
 import { resolveAttachmentUrl } from '@/composables/useAttachmentResolver'
@@ -50,7 +51,7 @@ const resolveAvatarSrc = (identity: ChannelIdentity) => {
   if (resolved) {
     return resolved
   }
-  return identity.isTemporary ? '' : (user.info.avatar || '')
+  return identity.isTemporary || normalizeAvatarTextStyle(identity.avatarTextStyle) ? '' : (user.info.avatar || '')
 }
 
 const resolveDisplayName = (identity: ChannelIdentity) => (
@@ -80,7 +81,9 @@ const resolveDisplayName = (identity: ChannelIdentity) => (
         :size="28"
         :border="false"
         :src="resolveAvatarSrc(identity)"
-        :use-text-fallback="Boolean(identity.isTemporary)"
+        :use-text-fallback="Boolean(identity.isTemporary || normalizeAvatarTextStyle(identity.avatarTextStyle))"
+        :text-fallback-style="normalizeAvatarTextStyle(identity.avatarTextStyle)"
+        :text-fallback-accent-color="identity.avatarTextStyle ? (chat.getActiveIdentityVariant(props.channelId, identity.id)?.color || identity.color) : undefined"
         :fallback-text="resolveDisplayName(identity)"
         class="identity-quick-bar__avatar"
       />

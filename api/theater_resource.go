@@ -117,6 +117,53 @@ func theaterResourceContent(c *fiber.Ctx, variant string) error {
 	return serveTheaterResourceContent(c, requestID, content)
 }
 
+// TheaterResourceThumbnail returns a static WebP preview of a room resource.
+// GET .../theater/resources/:resourceId/thumbnail?size=150
+func TheaterResourceThumbnail(c *fiber.Ctx) error {
+	requestID := theaterRequestID(c)
+	user := getCurUser(c)
+	content, err := service.ResolveTheaterResourceThumbnailSource(c.Context(), user.ID, c.Params("worldId"), c.Params("channelId"), c.Params("resourceId"))
+	if err != nil {
+		return theaterErrorResponse(c, requestID, err)
+	}
+	return serveTheaterResourceThumbnail(c, requestID, content)
+}
+
+// serveTheaterResourceThumbnail reuses the attachment thumbnail resize cache.
+// Static sources fall back to their stored content like AttachmentThumb;
+// animated sources never do, because the preview must stay a still frame.
+func serveTheaterResourceThumbnail(c *fiber.Ctx, requestID string, content *service.TheaterResourceContent) error {
+	attachment := content.Attachment
+	animated := service.IsTheaterThumbnailSourceAnimated(content)
+	// Remote originals would redirect to object storage; resize those instead.
+	if !animated && attachment.StorageType != model.StorageS3 && attachment.Size > 0 && attachment.Size < thumbnailSizeThreshold {
+		return serveTheaterResourceContent(c, requestID, content)
+	}
+	size := thumbnailSizeFromQuery(c)
+	cacheKey := attachment.ID
+	if animated {
+		cacheKey += "_still"
+	}
+	thumbPath := getThumbCachePath(cacheKey, size)
+	if _, err := os.Stat(thumbPath); err != nil {
+		sourcePath, cleanup, err := service.OpenTheaterAttachmentLocalPath(c.Context(), attachment)
+		if err == nil {
+			err = generateThumbnail(sourcePath, thumbPath, size)
+			cleanup()
+		}
+		if err != nil {
+			if animated {
+				return theaterErrorResponse(c, requestID, &service.TheaterError{Code: service.TheaterErrorResourceThumbnailUnavailable, Message: "资源没有可用缩略图", HTTPStatus: fiber.StatusNotFound})
+			}
+			return serveTheaterResourceContent(c, requestID, content)
+		}
+	}
+	c.Set(fiber.HeaderCacheControl, "private, max-age=3600")
+	c.Set(fiber.HeaderContentType, "image/webp")
+	c.Set("X-Content-Type-Options", "nosniff")
+	return c.SendFile(thumbPath)
+}
+
 func serveTheaterResourceContent(c *fiber.Ctx, requestID string, content *service.TheaterResourceContent) error {
 	attachment := content.Attachment
 	if attachment.StorageType == model.StorageS3 {

@@ -116,6 +116,11 @@ const (
 	defaultExportHTMLPageSize            = 100
 	defaultExportHTMLPageSizeMax         = 500
 	defaultExportHTMLMaxConcurrency      = 2
+	defaultExportPDFWorkerConcurrency    = 1
+	maxExportPDFWorkerConcurrency        = 4
+	defaultExportPDFTimeoutSeconds       = 120
+	minExportPDFTimeoutSeconds           = 15
+	maxExportPDFTimeoutSeconds           = 1800
 	defaultLogUploadEndpoint             = "https://dice.weizaima.com/dice/api/log"
 	defaultLogUploadTimeoutSeconds       = 15
 	defaultLogUploadClient               = "Others"
@@ -421,6 +426,13 @@ type AIModelPricingConfig struct {
 	LegacyCachePricePer1KTokens      float64 `json:"-" yaml:"cachePricePer1KTokens,omitempty"`
 }
 
+const defaultAIQuotaLimit = 999.0
+
+func defaultAIQuotaPolicy() AIQuotaPolicyConfig {
+	daily, monthly, lifetime := defaultAIQuotaLimit, defaultAIQuotaLimit, defaultAIQuotaLimit
+	return AIQuotaPolicyConfig{DailyLimit: &daily, MonthlyLimit: &monthly, LifetimeLimit: &lifetime}
+}
+
 type AIQuotaPolicyConfig struct {
 	DailyLimit    *float64 `json:"dailyLimit,omitempty" yaml:"dailyLimit,omitempty"`
 	MonthlyLimit  *float64 `json:"monthlyLimit,omitempty" yaml:"monthlyLimit,omitempty"`
@@ -517,13 +529,27 @@ type AppConfig struct {
 }
 
 type ExportConfig struct {
-	StorageDir            string   `json:"storageDir" yaml:"storageDir"`
-	DownloadBandwidthKBps int      `json:"downloadBandwidthKBps" yaml:"downloadBandwidthKBps"`
-	DownloadBurstKB       int      `json:"downloadBurstKB" yaml:"downloadBurstKB"`
-	HTMLPageSizeDefault   int      `json:"htmlPageSizeDefault" yaml:"htmlPageSizeDefault"`
-	HTMLPageSizeMax       int      `json:"htmlPageSizeMax" yaml:"htmlPageSizeMax"`
-	HTMLMaxConcurrency    int      `json:"htmlMaxConcurrency" yaml:"htmlMaxConcurrency"`
-	DiceCommandPrefixes   []string `json:"diceCommandPrefixes" yaml:"diceCommandPrefixes"`
+	StorageDir            string          `json:"storageDir" yaml:"storageDir"`
+	DownloadBandwidthKBps int             `json:"downloadBandwidthKBps" yaml:"downloadBandwidthKBps"`
+	DownloadBurstKB       int             `json:"downloadBurstKB" yaml:"downloadBurstKB"`
+	HTMLPageSizeDefault   int             `json:"htmlPageSizeDefault" yaml:"htmlPageSizeDefault"`
+	HTMLPageSizeMax       int             `json:"htmlPageSizeMax" yaml:"htmlPageSizeMax"`
+	HTMLMaxConcurrency    int             `json:"htmlMaxConcurrency" yaml:"htmlMaxConcurrency"`
+	DiceCommandPrefixes   []string        `json:"diceCommandPrefixes" yaml:"diceCommandPrefixes"`
+	PDF                   ExportPDFConfig `json:"pdf" yaml:"pdf"`
+}
+
+// ExportPDFConfig configures the optional background LOG PDF renderer (external Chromium runtime).
+type ExportPDFConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Renderer is the stable adapter name; only "chromium-cli" exists today.
+	Renderer          string `json:"renderer" yaml:"renderer"`
+	BrowserPath       string `json:"browserPath" yaml:"browserPath"`
+	MergerPath        string `json:"mergerPath" yaml:"mergerPath"`
+	WorkerConcurrency int    `json:"workerConcurrency" yaml:"workerConcurrency"`
+	TimeoutSeconds    int    `json:"timeoutSeconds" yaml:"timeoutSeconds"`
+	// NoSandbox disables the Chromium sandbox. Security risk; only for containers that cannot run it.
+	NoSandbox bool `json:"noSandbox" yaml:"noSandbox"`
 }
 
 // SQLiteConfig 用于细化 SQLite 数据库的运行参数
@@ -628,6 +654,12 @@ func ReadConfig() *AppConfig {
 			HTMLPageSizeMax:       defaultExportHTMLPageSizeMax,
 			HTMLMaxConcurrency:    defaultExportHTMLMaxConcurrency,
 			DiceCommandPrefixes:   []string{".", "。"},
+			PDF: ExportPDFConfig{
+				Enabled:           true,
+				Renderer:          ExportPDFRendererChromiumCLI,
+				WorkerConcurrency: defaultExportPDFWorkerConcurrency,
+				TimeoutSeconds:    defaultExportPDFTimeoutSeconds,
+			},
 		},
 		Storage: StorageConfig{
 			Mode:                 StorageModeLocal,
@@ -739,7 +771,7 @@ func ReadConfig() *AppConfig {
 			Rules:   DefaultUITextReplaceRules(),
 		},
 		Certificate: defaultCertificateConfig(),
-		AI:          NormalizeAIConfig(AIConfig{}),
+		AI:          NormalizeAIConfig(AIConfig{QuotaDefault: defaultAIQuotaPolicy()}),
 		PerformanceProfiler: PerformanceProfilerConfig{
 			Enabled:                false,
 			OutputDir:              "./data/perf",
@@ -842,11 +874,48 @@ func ReadConfig() *AppConfig {
 	if err := ValidateMCPConfig(config.MCP); err != nil {
 		panic(err)
 	}
+	applyAIUsageDefaults(&config, fileConfig)
 	config.AI = NormalizeAIConfig(config.AI)
 	applyPerformanceProfilerDefaults(&config.PerformanceProfiler)
 
 	currentConfig = &config
 	return currentConfig
+}
+
+func applyAIUsageDefaults(config *AppConfig, fileConfig *koanf.Koanf) {
+	if config == nil || fileConfig == nil {
+		return
+	}
+	applyQuota := func(policy *AIQuotaPolicyConfig, prefix string) {
+		if !fileConfig.Exists(prefix + ".dailyLimit") {
+			value := defaultAIQuotaLimit
+			policy.DailyLimit = &value
+		}
+		if !fileConfig.Exists(prefix + ".monthlyLimit") {
+			value := defaultAIQuotaLimit
+			policy.MonthlyLimit = &value
+		}
+		if !fileConfig.Exists(prefix + ".lifetimeLimit") {
+			value := defaultAIQuotaLimit
+			policy.LifetimeLimit = &value
+		}
+	}
+	applyQuota(&config.AI.QuotaDefault, "ai.quotaDefault")
+	if config.AI.Speech != nil {
+		speech := config.AI.Speech
+		applyQuota(&speech.QuotaDefault, "ai.speech.quotaDefault")
+		if !fileConfig.Exists("ai.speech.defaultSlots") {
+			speech.DefaultSlots = defaultSpeechSavedVoiceSlots
+		}
+		// The old admin form persisted its untouched defaults as 0/0/0 + 0 slots.
+		// Treat only that complete legacy tuple as "not configured"; individual
+		// explicit zero values remain valid administrator choices.
+		zero := func(value *float64) bool { return value != nil && *value == 0 }
+		if speech.DefaultSlots == 0 && zero(speech.QuotaDefault.DailyLimit) && zero(speech.QuotaDefault.MonthlyLimit) && zero(speech.QuotaDefault.LifetimeLimit) {
+			speech.QuotaDefault = defaultAIQuotaPolicy()
+			speech.DefaultSlots = defaultSpeechSavedVoiceSlots
+		}
+	}
 }
 
 func NormalizeCertificateConfig(cfg CertificateConfig) CertificateConfig {
@@ -1505,6 +1574,34 @@ func applyExportDefaults(cfg *ExportConfig) {
 		cfg.DownloadBurstKB = 0
 	}
 	cfg.DiceCommandPrefixes = normalizeExportDiceCommandPrefixes(cfg.DiceCommandPrefixes)
+	ApplyExportPDFDefaults(&cfg.PDF)
+}
+
+const ExportPDFRendererChromiumCLI = "chromium-cli"
+
+// ApplyExportPDFDefaults clamps PDF renderer settings into supported ranges.
+func ApplyExportPDFDefaults(cfg *ExportPDFConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Renderer = ExportPDFRendererChromiumCLI
+	cfg.BrowserPath = strings.TrimSpace(cfg.BrowserPath)
+	cfg.MergerPath = strings.TrimSpace(cfg.MergerPath)
+	if cfg.WorkerConcurrency <= 0 {
+		cfg.WorkerConcurrency = defaultExportPDFWorkerConcurrency
+	}
+	if cfg.WorkerConcurrency > maxExportPDFWorkerConcurrency {
+		cfg.WorkerConcurrency = maxExportPDFWorkerConcurrency
+	}
+	if cfg.TimeoutSeconds <= 0 {
+		cfg.TimeoutSeconds = defaultExportPDFTimeoutSeconds
+	}
+	if cfg.TimeoutSeconds < minExportPDFTimeoutSeconds {
+		cfg.TimeoutSeconds = minExportPDFTimeoutSeconds
+	}
+	if cfg.TimeoutSeconds > maxExportPDFTimeoutSeconds {
+		cfg.TimeoutSeconds = maxExportPDFTimeoutSeconds
+	}
 }
 
 func applyLogUploadDefaults(cfg *LogUploadConfig) {
@@ -1980,6 +2077,13 @@ func WriteConfigChecked(config *AppConfig) error {
 		_ = candidateK.Set("export.htmlPageSizeDefault", config.Export.HTMLPageSizeDefault)
 		_ = candidateK.Set("export.htmlPageSizeMax", config.Export.HTMLPageSizeMax)
 		_ = candidateK.Set("export.htmlMaxConcurrency", config.Export.HTMLMaxConcurrency)
+		_ = candidateK.Set("export.pdf.enabled", config.Export.PDF.Enabled)
+		_ = candidateK.Set("export.pdf.renderer", config.Export.PDF.Renderer)
+		_ = candidateK.Set("export.pdf.browserPath", config.Export.PDF.BrowserPath)
+		_ = candidateK.Set("export.pdf.mergerPath", config.Export.PDF.MergerPath)
+		_ = candidateK.Set("export.pdf.workerConcurrency", config.Export.PDF.WorkerConcurrency)
+		_ = candidateK.Set("export.pdf.timeoutSeconds", config.Export.PDF.TimeoutSeconds)
+		_ = candidateK.Set("export.pdf.noSandbox", config.Export.PDF.NoSandbox)
 		_ = candidateK.Set("storage.mode", config.Storage.Mode)
 		_ = candidateK.Set("storage.baseUrl", config.Storage.BaseURL)
 		_ = candidateK.Set("storage.presignTTL", config.Storage.PresignTTL)
@@ -2101,6 +2205,7 @@ func WriteConfigChecked(config *AppConfig) error {
 		_ = candidateK.Set("cursorTheme.slots", config.CursorTheme.Slots)
 		_ = candidateK.Set("uiTextReplace.enabled", config.UITextReplace.Enabled)
 		_ = candidateK.Set("uiTextReplace.rules", config.UITextReplace.Rules)
+		_ = candidateK.Set("channelEmbedTools.maxCodeSizeKB", config.ChannelEmbedTools.MaxCodeSizeKB)
 
 		if err := candidateK.Unmarshal("", config); err != nil {
 			return fmt.Errorf("配置解析失败: %w", err)

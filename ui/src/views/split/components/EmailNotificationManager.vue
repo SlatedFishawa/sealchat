@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, h, ref, watch, type FunctionalComponent } from 'vue'
 import {
   NAlert,
   NButton,
@@ -141,9 +141,26 @@ interface DigestRecordItem {
 const props = withDefaults(defineProps<{
   scopeId: string
   scopeType?: 'channel' | 'world'
+  /** cards: original standalone cards; sections: flat sections for hosts that already provide a panel (manage-surface template). */
+  presentation?: 'cards' | 'sections'
 }>(), {
   scopeType: 'channel',
+  presentation: 'cards',
 })
+
+const isSections = computed(() => props.presentation === 'sections')
+
+const SettingsBlock: FunctionalComponent<{ title: string; flat: boolean; spaced?: boolean }> = (blockProps, { slots }) => (
+  blockProps.flat
+    ? h('section', { class: 'sc-manage-section' }, [
+      h('header', { class: 'sc-manage-section__head' }, [
+        h('h3', { class: 'sc-manage-section__title' }, blockProps.title),
+      ]),
+      slots.default?.(),
+    ])
+    : h(NCard, { title: blockProps.title, size: 'small', class: blockProps.spaced ? 'mb-3' : undefined }, { default: () => slots.default?.() })
+)
+SettingsBlock.props = { title: { type: String, required: true }, flat: Boolean, spaced: Boolean }
 
 const dialog = useDialog()
 const message = useMessage()
@@ -694,7 +711,7 @@ watch(passiveToken, () => {
 </script>
 
 <template>
-  <div class="email-notification-manager p-3">
+  <div class="email-notification-manager" :class="isSections ? 'email-notification-manager--sections' : 'p-3'">
     <n-alert v-if="errorText" type="error" :bordered="false" class="mb-3">
       {{ errorText }}
     </n-alert>
@@ -703,7 +720,7 @@ watch(passiveToken, () => {
       {{ saveErrorText }}
     </n-alert>
 
-    <n-card :title="`${scopeLabel}未读提醒`" size="small" class="mb-3">
+    <SettingsBlock :title="`${scopeLabel}未读提醒`" :flat="isSections" spaced>
       <n-space vertical size="large">
         <div class="email-notification-manager__row">
           <div>
@@ -842,9 +859,9 @@ watch(passiveToken, () => {
           <n-button type="primary" :loading="loading" @click="saveSettings">保存配置</n-button>
         </n-space>
       </n-space>
-    </n-card>
+    </SettingsBlock>
 
-    <n-card title="被动拉取" size="small" class="mb-3">
+    <SettingsBlock title="被动拉取" :flat="isSections" spaced>
       <n-space vertical size="small">
         <div class="text-sm">系统会自动创建摘要拉取 token，并拼成可直接访问的完整链接：</div>
         <div class="text-xs text-gray-500">
@@ -875,9 +892,9 @@ watch(passiveToken, () => {
           最新：<n-code>{{ passiveLatestUrl }}</n-code>
         </div>
       </n-space>
-    </n-card>
+    </SettingsBlock>
 
-    <n-card title="测试推送" size="small">
+    <SettingsBlock title="测试推送" :flat="isSections">
       <n-space vertical size="large">
         <div>
           <div class="text-sm mb-2">测试周期</div>
@@ -956,7 +973,7 @@ watch(passiveToken, () => {
           <div v-if="testDelivery.errorText" class="mt-1 text-xs">{{ testDelivery.errorText }}</div>
         </n-alert>
       </n-space>
-    </n-card>
+    </SettingsBlock>
   </div>
 </template>
 
@@ -980,6 +997,15 @@ watch(passiveToken, () => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+/* sections presentation: utility grays follow the global theme instead of a fixed palette */
+.email-notification-manager--sections .text-gray-500 {
+  color: var(--sc-text-secondary);
+}
+
+.email-notification-manager--sections > .n-alert {
+  margin-top: 12px;
 }
 
 @media (max-width: 640px) {

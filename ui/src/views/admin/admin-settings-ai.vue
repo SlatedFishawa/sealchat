@@ -90,7 +90,7 @@ const defaultConfig = (): AIConfig => ({
   },
   pricing: [],
   logRetentionDays: 30,
-  quotaDefault: {},
+  quotaDefault: { dailyLimit: 999, monthlyLimit: 999, lifetimeLimit: 999 },
 })
 
 const model = ref<AIConfig>(defaultConfig())

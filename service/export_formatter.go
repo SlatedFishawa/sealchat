@@ -38,6 +38,7 @@ type payloadContext struct {
 
 type ExportMessage struct {
 	ID                    string             `json:"id"`
+	ChannelID             string             `json:"-"`
 	SenderID              string             `json:"sender_id"`
 	SenderIdentityID      string             `json:"sender_identity_id,omitempty"`
 	SenderName            string             `json:"sender_name"`
@@ -130,28 +131,30 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 		includeImages = extra.IncludeImages
 		includeDiceCommand = extra.IncludeDiceCommand
 	}
-	identityResolver := newIdentityResolver(job.ChannelID)
+	display := newMessageDisplayResolver(job.ChannelID, job.UserID, messageDisplayViewer)
 	imageLayoutResolver := newExportImageLayoutResolver(job.ChannelID)
-	stickyNoteResolver := newStickyNoteExportResolver(job.ChannelID)
-	worldClueResolver := newWorldClueExportResolver(job.ChannelID, job.UserID)
+	messageChannelID := job.ChannelID
 	exportMessages := make([]ExportMessage, 0, len(messages))
 	for _, msg := range messages {
 		if msg == nil {
 			continue
+		}
+		// Jobs without a channel still resolve embedded content in each message's real channel.
+		if job.ChannelID == "" && msg.ChannelID != messageChannelID {
+			messageChannelID = msg.ChannelID
+			display = display.forChannel(messageChannelID)
+			imageLayoutResolver = newExportImageLayoutResolver(messageChannelID)
 		}
 		originalContent := msg.Content
 		exportContent := originalContent
 		var htmlContent string
 		var richContent *AgentRichDocument
 		var worldClues []WorldClueExportBlock
-		if expanded, ok := stickyNoteResolver.render(originalContent, includeImages, isDocx); ok {
+		if expanded, ok := display.expandEmbed(originalContent, includeImages, isDocx); ok {
 			exportContent = expanded.Plain
 			htmlContent = expanded.HTML
 			richContent = expanded.Rich
-		} else if expanded, ok := worldClueResolver.render(originalContent, includeImages); ok {
-			exportContent = expanded.Plain
-			htmlContent = expanded.HTML
-			worldClues = expanded.Blocks
+			worldClues = expanded.WorldClues
 		}
 		if isDocx {
 			htmlContent = ""
@@ -185,6 +188,7 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 		}
 		exportMessages = append(exportMessages, ExportMessage{
 			ID:                    msg.ID,
+			ChannelID:             msg.ChannelID,
 			SenderID:              msg.UserID,
 			SenderIdentityID:      strings.TrimSpace(msg.SenderIdentityID),
 			SenderName:            resolveSenderName(msg),
@@ -201,7 +205,7 @@ func buildExportPayload(job *model.MessageExportJobModel, channelName string, me
 			ContentHTML:           htmlContent,
 			ContentRich:           richContent,
 			WorldClues:            worldClues,
-			WhisperTargets:        extractWhisperTargets(msg, job.ChannelID, identityResolver),
+			WhisperTargets:        display.whisperTargetNames(msg),
 		})
 	}
 
@@ -250,11 +254,20 @@ type stickyNoteExportRender struct {
 	Plain string
 	HTML  string
 	Rich  *AgentRichDocument
+	Parts []stickyNoteRichPart
+}
+
+// Parts preserves each rich expansion's source without adding metadata to export HTML.
+type stickyNoteRichPart struct {
+	NoteID string
+	Doc    AgentRichDocument
 }
 
 type stickyNoteExportResolver struct {
 	channelID string
 	cache     map[string]*model.StickyNoteModel
+	// publicOnly expands only notes visible to every channel member.
+	publicOnly bool
 }
 
 type stickyNoteEmbedTarget struct {
@@ -336,6 +349,7 @@ func (r *stickyNoteExportResolver) render(content string, includeImages bool, ri
 	plainParts := make([]string, 0, len(targets))
 	htmlParts := make([]string, 0, len(targets))
 	var richParts []AgentRichDocument
+	var parts []stickyNoteRichPart
 	if richOnlyMode {
 		richParts = make([]AgentRichDocument, 0, len(targets))
 	}
@@ -344,7 +358,7 @@ func (r *stickyNoteExportResolver) render(content string, includeImages bool, ri
 			return stickyNoteExportRender{}, false
 		}
 		note := r.load(target.NoteID)
-		if note == nil || strings.TrimSpace(note.ChannelID) != r.channelID {
+		if note == nil || strings.TrimSpace(note.ChannelID) != r.channelID || (r.publicOnly && !CanViewStickyNote(note, "")) {
 			return stickyNoteExportRender{}, false
 		}
 		adapter := resolveStickyNoteExportAdapter(note.NoteType)
@@ -373,7 +387,9 @@ func (r *stickyNoteExportResolver) render(content string, includeImages bool, ri
 					richSource = "[便签: " + title + "]\n" + raw
 				}
 			}
-			richParts = append(richParts, buildRichDocumentForExport(richSource, includeImages))
+			doc := buildRichDocumentForExport(richSource, includeImages)
+			richParts = append(richParts, doc)
+			parts = append(parts, stickyNoteRichPart{NoteID: note.ID, Doc: doc})
 		}
 	}
 	var mergedRich *AgentRichDocument
@@ -385,6 +401,7 @@ func (r *stickyNoteExportResolver) render(content string, includeImages bool, ri
 		Plain: strings.Join(plainParts, "\n\n"),
 		HTML:  strings.Join(htmlParts, ""),
 		Rich:  mergedRich,
+		Parts: parts,
 	}, true
 }
 
@@ -1059,7 +1076,7 @@ func resolveSenderAvatar(msg *model.MessageModel) string {
 	if id := strings.TrimSpace(msg.SenderIdentityAvatarID); id != "" {
 		return "id:" + id
 	}
-	if msg.SenderIdentityIsTemporary {
+	if msg.SenderIdentityIsTemporary || msg.SenderIdentityAvatarTextStyle != "" {
 		return ""
 	}
 	if msg.User != nil {

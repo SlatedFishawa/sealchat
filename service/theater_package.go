@@ -21,13 +21,33 @@ import (
 )
 
 const (
-	theaterPackageVersion          = 4
+	theaterPackageVersion          = 5
+	theaterPackageWorldVersion     = 4
 	theaterPackageMinimumVersion   = 1
 	theaterPackageMaxArchiveBytes  = int64(2 << 30)
 	theaterPackageMaxExpandedBytes = int64(4 << 30)
 	theaterPackageMaxFiles         = 10_000
 	theaterPackageRetention        = 7 * 24 * time.Hour
 )
+
+// Coordinate-space fields extend the strict document decoder, independently of
+// TheaterSchemaVersion. World snapshots omit them and remain readable by v4 servers.
+func theaterPackageSnapshotVersion(snapshot TheaterSharedSnapshot) int {
+	for _, object := range theaterDesignAllObjects(snapshot) {
+		if object.CoordinateSpace != "" || object.ViewportX != nil || object.ViewportY != nil {
+			return theaterPackageVersion
+		}
+	}
+	return theaterPackageWorldVersion
+}
+
+func validateTheaterPackageDocumentVersion(version int, snapshot TheaterSharedSnapshot) error {
+	if version < theaterPackageMinimumVersion || version > theaterPackageVersion ||
+		(version < 5 && theaterPackageSnapshotVersion(snapshot) == 5) {
+		return newTheaterError(TheaterErrorSchemaUnsupported, "舞台文档坐标字段需要 packageVersion 5", 409, nil)
+	}
+	return nil
+}
 
 const (
 	TheaterPackageKindTheater = "theater"

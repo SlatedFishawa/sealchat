@@ -35,6 +35,7 @@ export interface CharacterSheetWindow {
   hasLocalEditsInLock: boolean;
   hasSavedAfterEditEnd: boolean;
   pendingRemoteAttrs?: Record<string, any>;
+  syncError?: string;
 }
 
 type CharacterSheetSyncState = 'normal' | 'editing_locked' | 'resume_pending';
@@ -905,8 +906,9 @@ export const useCharacterSheetStore = defineStore('characterSheet', () => {
       try {
         const latest = windows.value[windowId];
         if (!latest) return;
-        const ok = await cardStore.updateCard(latest.channelId, latest.cardName, latest.attrs);
+        const ok = await cardStore.updateCardStrict(latest.channelId, latest.cardName, latest.attrs);
         if (ok) {
+          latest.syncError = '';
           latest.hasSavedAfterEditEnd = true;
           if (latest.syncState === 'resume_pending') {
             latest.hasLocalEditsInLock = false;
@@ -916,6 +918,10 @@ export const useCharacterSheetStore = defineStore('characterSheet', () => {
           schedulePersistWindows();
         }
       } catch (e) {
+        const latest = windows.value[windowId];
+        if (latest) {
+          latest.syncError = `保存失败：${e instanceof Error && e.message ? e.message : '人物卡属性更新失败'}`;
+        }
         console.warn('Failed to sync character sheet attrs', e);
       }
     }, ATTRS_SYNC_THROTTLE);
@@ -1174,6 +1180,7 @@ export const useCharacterSheetStore = defineStore('characterSheet', () => {
       if (win.readOnly) return;
       normalizeSyncState(win);
       win.attrs = attrs;
+      win.syncError = '';
       if (win.syncState !== 'normal') {
         win.hasLocalEditsInLock = true;
         win.hasSavedAfterEditEnd = false;

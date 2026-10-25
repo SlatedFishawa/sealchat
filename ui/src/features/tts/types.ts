@@ -5,6 +5,25 @@ export interface MessageSpeech {
   format?: string
   messageRevision: number
 }
+export interface SpeechStorageAmount { files: number; bytes: number }
+export type SpeechCleanupCategory = 'invalidatedMessages' | 'deletedMessages' | 'expiredPreviews'
+export type SpeechCleanupSelection = Record<SpeechCleanupCategory, boolean>
+export interface SpeechStorageScope extends SpeechStorageAmount {
+  id: string
+  name: string
+  messages: number
+  channels?: number
+}
+export interface SpeechStorageSummary {
+  total: SpeechStorageAmount
+  local: SpeechStorageAmount
+  s3: SpeechStorageAmount
+  reclaimable: Record<SpeechCleanupCategory | 'total', SpeechStorageAmount>
+  channel: SpeechStorageScope
+  world: SpeechStorageScope
+}
+export type SpeechCleanupResult = SpeechStorageAmount
+export interface SpeechPurgeResult extends SpeechStorageAmount { messages: number }
 export interface VoiceContext {
   providerKind: string
   providerId: string
@@ -44,6 +63,7 @@ export interface SpeechVoice {
   lifecycle: string
   providerStatus: string
   supported?: boolean
+  speechLanguages?: string[]
   revision: number
   previewExpiresAt?: string
   previewResourceId?: string
@@ -87,6 +107,7 @@ export interface SpeechRequest {
   cloneLanguageHint?: string
   speechLanguage?: string
   clonePreprocess?: boolean
+  adoptAsVoicePreview?: boolean
 }
 export interface SpeechJob {
   id: string
@@ -126,6 +147,19 @@ export interface RoleSpeechConfig {
   pitch: number
   volume: number
   revision: number
+}
+export interface TTSQuickOverride {
+  rate?: number
+  pitch?: number
+  volume?: number
+  instruction?: string
+}
+export interface RoleSpeechQuickState {
+  disabled: boolean
+  voiceName: string
+  providerKind: string
+  modelId: string
+  parameters: TTSQuickOverride
 }
 export interface SpeechProvider {
   id: string; providerKind: string; enabled: boolean; credentialScope: string; region: string; workspace: string

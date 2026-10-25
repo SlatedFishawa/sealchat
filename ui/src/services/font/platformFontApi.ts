@@ -18,6 +18,12 @@ export const buildPlatformFontManifestUrl = (fontId: string): string =>
 export const buildPlatformFontSubsetUrl = (fontId: string, name: string): string =>
   `${urlBase}/api/v1/platform-fonts/${encodeURIComponent(fontId)}/subset/${name.split('/').map(encodeURIComponent).join('/')}`
 
+const fetchPublicPlatformFontJson = async <T>(url: string): Promise<T> => {
+  const resp = await fetch(url, { credentials: 'omit' })
+  if (!resp.ok) throw new Error(`平台字体请求失败（HTTP ${resp.status}）`)
+  return await resp.json() as T
+}
+
 export const listPlatformFonts = async (): Promise<PlatformFontAsset[]> => {
   const resp = await api.get('/api/v1/platform-fonts')
   return ((resp.data as PlatformFontListResponse)?.items || []) as PlatformFontAsset[]
@@ -28,10 +34,16 @@ export const getPlatformFontMeta = async (fontId: string): Promise<PlatformFontA
   return resp.data as PlatformFontAsset
 }
 
+export const getPublicPlatformFontMeta = (fontId: string): Promise<PlatformFontAsset> =>
+  fetchPublicPlatformFontJson(`${urlBase}/api/v1/platform-fonts/${encodeURIComponent(fontId)}/meta`)
+
 export const getPlatformFontManifest = async (fontId: string): Promise<PlatformFontSubsetManifest> => {
   const resp = await api.get(`/api/v1/platform-fonts/${encodeURIComponent(fontId)}/subset-manifest`)
   return resp.data as PlatformFontSubsetManifest
 }
+
+export const getPublicPlatformFontManifest = (fontId: string): Promise<PlatformFontSubsetManifest> =>
+  fetchPublicPlatformFontJson(buildPlatformFontManifestUrl(fontId))
 
 export const listAdminPlatformFonts = async (params?: {
   query?: string

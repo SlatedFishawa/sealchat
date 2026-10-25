@@ -11,13 +11,13 @@ const compile = source => ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
 const stageDir = path.join(__dirname, '../src/views/theater/stage')
-const order = {}
-new Function('exports', compile(fs.readFileSync(path.join(stageDir, 'stage-layer-order.ts'), 'utf8')))(order)
-const hierarchy = {}
-new Function('exports', 'require', compile(fs.readFileSync(path.join(stageDir, 'stage-layering.ts'), 'utf8')))(hierarchy, () => order)
+require.extensions['.ts'] = (module, filename) => module._compile(compile(fs.readFileSync(filename, 'utf8')), filename)
+const order = require(path.join(stageDir, 'stage-layer-order.ts'))
+const hierarchy = require(path.join(stageDir, 'stage-layering.ts'))
+const { stageViewportBandCamera } = require(path.join(stageDir, 'stage-coordinate-space.ts'))
 const { planStageObjectRenderBands: plan, stageObjectHasDomVisualDescendant: hasDom } = order
-const object = (id, z, type = 'image', parentId = null) => ({
-  id, type, parentId, visible: true,
+const object = (id, z, type = 'image', parentId = null, coordinateSpace = 'world') => ({
+  id, type, parentId, visible: true, coordinateSpace, viewportX: 0.5, viewportY: 0.5,
   transform: { z, order: z, x: 3, y: 4, scaleX: 1.5, scaleY: 0.75, rotation: 25 },
 })
 const objectsOf = (...objects) => Object.fromEntries(objects.map(value => [value.id, value]))
@@ -55,6 +55,56 @@ for (let length = 1; length <= 8; length++) {
       for (let canvasIndex = 0; canvasIndex < length; canvasIndex++) {
         assert.equal(bandFor.get(String(canvasIndex)).canvasZIndex < domZ, canvasIndex <= index, 'same canvas/DOM ordering as before')
       }
+    }
+  }
+}
+
+// Coordinate-space boundaries: band 0 stays world; a space change starts a band; DOM boundaries keep working.
+const spaced = (id, z, space, type = 'image') => object(id, z, type, null, space)
+const spaces = result => result.bands.map(band => band.space)
+assert.deepEqual(spaces(plan({})), ['world'])
+{
+  const result = plan(objectsOf(spaced('A', 1, 'viewport'), spaced('B', 2, 'world'), spaced('C', 3, 'viewport')))
+  assert.deepEqual(ids(result.bands), [[], ['A'], ['B'], ['C']], 'leading viewport root opens a band after the empty world band 0')
+  assert.deepEqual(spaces(result), ['world', 'viewport', 'world', 'viewport'])
+  assert.deepEqual(result.bands.map(band => band.canvasZIndex), [100, 100, 102, 104])
+}
+{
+  const result = plan(objectsOf(spaced('A', 1, 'world'), spaced('B', 2, 'viewport'), spaced('C', 3, 'viewport', 'text'), spaced('D', 4, 'viewport'), spaced('E', 5, 'world')))
+  assert.deepEqual(ids(result.bands), [['A'], ['B', 'C'], ['D'], ['E']], 'DOM boundary inside a viewport run keeps its space')
+  assert.deepEqual(spaces(result), ['world', 'viewport', 'viewport', 'world'])
+}
+{
+  const result = plan(objectsOf(spaced('A', 1, 'world', 'text'), spaced('B', 2, 'viewport')))
+  assert.deepEqual(ids(result.bands), [['A'], ['B']], 'band opened by a DOM boundary takes the next root space')
+  assert.deepEqual(spaces(result), ['world', 'viewport'])
+}
+{
+  const effect = spaced('fx', 1, 'viewport', 'effect')
+  assert.deepEqual(spaces(plan(objectsOf(effect))), ['world'], 'effects never become screen-fixed')
+}
+// Exhaust space x DOM combinations: same canvas/DOM stacking contract, every band has one space.
+for (let length = 1; length <= 6; length++) {
+  for (let mask = 0; mask < 4 ** length; mask++) {
+    const roots = Array.from({ length }, (_, index) => {
+      const bits = (mask >> (index * 2)) & 3
+      return spaced(String(index), index, bits & 1 ? 'viewport' : 'world', bits & 2 ? 'text' : 'image')
+    })
+    const result = plan(objectsOf(...roots.slice().reverse()))
+    assert.equal(result.bands[0].space, 'world')
+    const bandFor = new Map(result.bands.flatMap(band => band.roots.map(root => [root.id, band])))
+    for (let index = 0; index < length; index++) {
+      assert.equal(bandFor.get(String(index)).space, roots[index].coordinateSpace, 'root rendered in its own space')
+      assert.equal(result.rootStackingOrder[index], 101 + index * 2)
+      if (roots[index].type !== 'text') continue
+      const domZ = result.rootStackingOrder[index]
+      for (let canvasIndex = 0; canvasIndex < length; canvasIndex++) {
+        assert.equal(bandFor.get(String(canvasIndex)).canvasZIndex < domZ, canvasIndex <= index, 'space bands keep canvas/DOM order')
+      }
+    }
+    for (let index = 1; index < length; index++) {
+      const previous = bandFor.get(String(index - 1)), current = bandFor.get(String(index))
+      assert.ok(current.canvasZIndex >= previous.canvasZIndex, 'bands follow root order')
     }
   }
 }
@@ -103,8 +153,9 @@ async function run() {
   const names = [...initNames, 'extraObjectRenderBands', 'rootStackingOrder', 'TOP_VISUAL_LAYER_Z',
     'drawWorldLayers', 'drawTopVisualLayer', 'syncMediaAnimation', 'syncObjectRenderBands', 'applyCamera',
     'getMainStageLayerCount', 'resolveObjectActionTarget', 'stageObjectIdFromTarget', 'syncGridLayer']
-  const runtime = new Function('Konva', 'planStageObjectRenderBands', 'syncStageObjectHierarchy', compile(`
+  const runtime = new Function('Konva', 'planStageObjectRenderBands', 'syncStageObjectHierarchy', 'stageViewportBandCamera', compile(`
     const ref = value => ({ value })
+    const viewportSize = { value: { width: 960, height: 1080 } }
     const containerRef = { value: {} }
     const props = { store: { state: { camera: { x: 10, y: -20, zoom: 2 }, liveState: { gridOnTop: false } } } }
     const objectNodes = new Map()
@@ -143,7 +194,7 @@ async function run() {
         syncObjectRenderBands(next)
       },
     }
-  `))(Konva, plan, hierarchy.syncStageObjectHierarchy)
+  `))(Konva, plan, hierarchy.syncStageObjectHierarchy, stageViewportBandCamera)
   const canvasRoots = Object.fromEntries(Array.from({ length: 18 }, (_, index) => {
     const root = object(`image-${index}`, index)
     return [root.id, root]
@@ -241,6 +292,27 @@ async function run() {
   assert.equal(runtime.stage.getLayers().at(-1), runtime.interactionLayer)
   assert.ok(runtime.objectNodes.get('A').getAbsoluteZIndex() < runtime.objectNodes.get('B').getAbsoluteZIndex())
   assert.ok(runtime.objectNodes.get('B').getAbsoluteZIndex() < runtime.objectNodes.get('C').getAbsoluteZIndex())
+  // Viewport bands: identity scene camera (viewport frame + design scale only), world bands follow the camera.
+  runtime.sync(objectsOf(object('W1', 1), object('V1', 2, 'image', null, 'viewport'), object('W2', 3)))
+  assert.deepEqual(runtime.extraObjectRenderBands.map(band => band.space), ['viewport', 'world'])
+  const [viewportBand, worldBand] = runtime.extraObjectRenderBands
+  assert.equal(runtime.objectNodes.get('V1').getParent(), viewportBand.root)
+  assert.deepEqual(viewportBand.camera.position(), { x: 0, y: 0 })
+  assert.deepEqual(viewportBand.camera.scale(), { x: 0.5, y: 0.5 }, 'min(960/1920, 1080/1080)')
+  runtime.props.store.state.camera = { x: 77, y: -12, zoom: 1.75 }
+  runtime.applyCamera()
+  assert.deepEqual(viewportBand.camera.position(), { x: 0, y: 0 }, 'camera pan does not move viewport band')
+  assert.deepEqual(viewportBand.camera.scale(), { x: 0.5, y: 0.5 }, 'camera zoom does not scale viewport band')
+  assert.deepEqual(worldBand.camera.position(), runtime.worldCameraGroup.position())
+  assert.deepEqual(worldBand.camera.scale(), runtime.worldCameraGroup.scale())
+  assert.ok(runtime.objectNodes.get('W1').getAbsoluteZIndex() < runtime.objectNodes.get('V1').getAbsoluteZIndex())
+  assert.ok(runtime.objectNodes.get('V1').getAbsoluteZIndex() < runtime.objectNodes.get('W2').getAbsoluteZIndex(), 'z/order preserved across spaces')
+  // Same Layer reused when the band switches space.
+  runtime.sync(objectsOf(object('W1', 1), object('V1', 2), object('W2', 3, 'image', null, 'viewport')))
+  assert.equal(runtime.extraObjectRenderBands.length, 1)
+  assert.equal(runtime.extraObjectRenderBands[0].layer, viewportBand.layer)
+  assert.equal(runtime.extraObjectRenderBands[0].space, 'viewport')
+  assert.deepEqual(runtime.extraObjectRenderBands[0].camera.scale(), { x: 0.5, y: 0.5 })
   const liveLayers = runtime.stage.getLayers().slice()
   // Main Stage owns dynamic layers at unmount; allow live node disposal here.
   Konva.Layer.prototype.destroy = function () { destroyed.push(this); return originalDestroy.call(this) }

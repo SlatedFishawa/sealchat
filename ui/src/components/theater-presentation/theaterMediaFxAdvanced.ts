@@ -50,7 +50,8 @@ export const theaterMediaFxAdvancedEligible = (
   gpuAvailable: boolean,
   temporalLive = false,
 ) => {
-  if (!spec) return false
+  // Animated media never uses this static raster path (see media-fx-live instead).
+  if (!spec || media?.kind !== 'static_image') return false
   const capabilities = resolveTheaterMediaFxCapabilities(media, gpuAvailable)
   const normalized = normalizeMediaFxSpec(spec)
   return (capabilities.advanced && mediaFxAdvancedHasContent(normalized.advanced))

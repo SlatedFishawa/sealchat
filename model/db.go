@@ -145,9 +145,18 @@ func DBInit(cfg *utils.AppConfig) {
 	db.AutoMigrate(&GuildModel{})
 	db.AutoMigrate(&WorldGlassPresetModel{}, &WorldGlassStateModel{}, &WorldGlassTriggerModel{})
 	db.AutoMigrate(&MessageModel{})
+	if err := db.AutoMigrate(&LogProjectModel{}, &LogRouteAliasModel{}, &LogMessageExclusionModel{}); err != nil {
+		panic(fmt.Sprintf("初始化 LOG 工程数据表失败: %v", err))
+	}
+	if err := db.AutoMigrate(&LogStylePackageModel{}, &LogStyleVersionModel{}, &LogStyleAssetModel{}, &LogProjectStyleBindingModel{}, &LogJobModel{}, &LogReleaseModel{}, &LogReleaseNodeModel{}, &LogReleaseAssetModel{}, &LogAssetReferenceModel{}, &MessageMutationPreviewModel{}, &MessageMutationItemModel{}, &MessageMutationResultModel{}, &MessageOperationModel{}); err != nil {
+		panic(fmt.Sprintf("初始化 LOG 工作流数据表失败: %v", err))
+	}
 	db.AutoMigrate(&MessageAttachmentModel{}, &ChannelMessageAttachmentBackfillState{})
 	db.AutoMigrate(&MessageVisibleCharCountBackfillState{})
 	db.AutoMigrate(&MessageWhisperRecipientModel{})
+	if err := MigrateLogSourceVersions(db); err != nil {
+		panic(fmt.Sprintf("初始化 LOG 消息版本失败: %v", err))
+	}
 	db.AutoMigrate(&MessageDiceRollModel{})
 	db.AutoMigrate(&MessageEditHistoryModel{})
 	db.AutoMigrate(&MessageArchiveLogModel{})
@@ -230,6 +239,7 @@ func DBInit(cfg *utils.AppConfig) {
 	db.AutoMigrate(&StickyNoteModel{}, &StickyNoteUserStateModel{}, &StickyNoteFolderModel{})
 	db.AutoMigrate(&WorldClueModel{}, &WorldClueAccessModel{}, &WorldClueRosterMemberModel{}, &WorldClueFolderModel{}, &WorldClueUserStateModel{}, &WorldClueEditLockModel{})
 	db.AutoMigrate(&WorldClueBoardModel{})
+	db.AutoMigrate(&ShortcutRuleModel{})
 	db.AutoMigrate(&EmailNotificationSettingsModel{}, &EmailNotificationLogModel{})
 	db.AutoMigrate(&EmailVerificationCodeModel{})
 	db.AutoMigrate(&CaptchaCapChallengeModel{}, &CaptchaCapTokenModel{})

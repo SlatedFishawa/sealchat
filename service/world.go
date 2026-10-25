@@ -39,6 +39,7 @@ var (
 	ErrWorldDefaultDiceBotEmpty   = errors.New("world default dice bot required")
 	ErrWorldDefaultDiceBotInvalid = errors.New("world default dice bot invalid")
 	ErrWorldStickyNoteAppearance  = errors.New("world sticky note appearance invalid")
+	ErrWorldCoverInvalid          = errors.New("世界封面无效")
 )
 
 var ErrWorldMessageSortBasisInvalid = errors.New("世界消息排序配置无效，仅支持 typing_start / send_time")
@@ -78,6 +79,7 @@ type WorldUpdateParams struct {
 	AllowAdminEditMessages                *bool
 	AllowManageOtherUserChannelIdentities *bool
 	AllowMemberEditKeywords               *bool
+	AllowMemberAccessLogLayout            *bool `json:"allowMemberAccessLogLayout"`
 	StrictWhisperPrivacy                  *bool
 	ChannelDefaultDiceMode                *string
 	ChannelDefaultBotID                   *string
@@ -86,6 +88,7 @@ type WorldUpdateParams struct {
 	CharacterCardBadgeTemplate            *string
 	CursorTheme                           *utils.CursorThemeConfig
 	StickyNoteDefaultAppearance           *protocol.StickyNoteAppearance
+	CoverAttachmentID                     *string `json:"coverAttachmentId"`
 }
 
 type WorldChannelDefaultDiceConfig struct {
@@ -726,6 +729,9 @@ func WorldUpdate(worldID, actorID string, params WorldUpdateParams) (*model.Worl
 	if params.AllowMemberEditKeywords != nil {
 		updates["allow_member_edit_keywords"] = *params.AllowMemberEditKeywords
 	}
+	if params.AllowMemberAccessLogLayout != nil {
+		updates["allow_member_access_log_layout"] = *params.AllowMemberAccessLogLayout
+	}
 	if params.StrictWhisperPrivacy != nil {
 		updates["strict_whisper_privacy"] = *params.StrictWhisperPrivacy
 	}
@@ -794,9 +800,33 @@ func WorldUpdate(worldID, actorID string, params WorldUpdateParams) (*model.Worl
 		}
 		updates["sticky_note_default_appearance_json"] = string(raw)
 	}
+	confirmCoverID := ""
+	if params.CoverAttachmentID != nil {
+		coverRef, attachmentID, err := normalizeWorldCoverAttachment(worldID, actorID, world.CoverAttachmentID, *params.CoverAttachmentID)
+		if err != nil {
+			return nil, err
+		}
+		if coverRef != world.CoverAttachmentID {
+			updates["cover_attachment_id"] = coverRef
+			confirmCoverID = attachmentID
+		}
+	}
 	if len(updates) > 0 {
 		updates["updated_at"] = time.Now()
-		if err := model.GetDB().Model(world).Updates(updates).Error; err != nil {
+		if confirmCoverID != "" {
+			// Keep the world reference and attachment confirmation atomic. Replaced/cleared
+			// cover uploads are intentionally retained as durable attachments.
+			if err := model.GetDB().Transaction(func(tx *gorm.DB) error {
+				if err := tx.Model(world).Updates(updates).Error; err != nil {
+					return err
+				}
+				return tx.Model(&model.AttachmentModel{}).
+					Where("id = ?", confirmCoverID).
+					Update("is_temp", false).Error
+			}); err != nil {
+				return nil, err
+			}
+		} else if err := model.GetDB().Model(world).Updates(updates).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -804,6 +834,38 @@ func WorldUpdate(worldID, actorID string, params WorldUpdateParams) (*model.Worl
 		return nil, err
 	}
 	return world, nil
+}
+
+const worldCoverAttachmentRootType = "world_cover"
+
+// normalizeWorldCoverAttachment 校验封面附件并返回持久化引用（id:xxx）与附件 ID。
+// 保持当前值不变时跳过校验；新封面必须是当前操作者为该世界上传的位图图片。
+func normalizeWorldCoverAttachment(worldID, actorID, current, raw string) (string, string, error) {
+	attachmentID := strings.TrimPrefix(strings.TrimSpace(raw), "id:")
+	if attachmentID == "" {
+		return "", "", nil
+	}
+	ref := "id:" + attachmentID
+	if ref == current {
+		return ref, "", nil
+	}
+	attachment, err := ResolveAttachment(attachmentID)
+	if err != nil {
+		return "", "", err
+	}
+	if attachment == nil || attachment.ID != attachmentID {
+		return "", "", fmt.Errorf("%w: 封面附件不存在", ErrWorldCoverInvalid)
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(attachment.MimeType))
+	switch mimeType {
+	case "image/png", "image/jpeg", "image/webp", "image/gif", "image/avif":
+	default:
+		return "", "", fmt.Errorf("%w: 封面图片格式不受支持", ErrWorldCoverInvalid)
+	}
+	if attachment.UserID != actorID || attachment.RootIDType != worldCoverAttachmentRootType || attachment.RootID != worldID {
+		return "", "", fmt.Errorf("%w: 封面附件不属于当前世界", ErrWorldCoverInvalid)
+	}
+	return ref, attachment.ID, nil
 }
 
 func WorldDelete(worldID, actorID string) error {

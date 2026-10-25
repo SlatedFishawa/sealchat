@@ -61,6 +61,41 @@ func BindTTSPublicRoutes(v1 fiber.Router) {
 }
 func BindTTSRoutes(auth fiber.Router) {
 	r := auth.Group("/tts")
+	r.Get("/storage", func(c *fiber.Ctx) error {
+		result, err := service.TTSStorage(getCurUser(c).ID, c.Query("channelId"))
+		if err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(result)
+	})
+	r.Post("/storage/cleanup", func(c *fiber.Ctx) error {
+		var body service.TTSCleanupSelection
+		if err := ttsStorageBody(c, &body); err != nil {
+			return ttsError(c, err)
+		}
+		if strings.TrimSpace(body.ChannelID) == "" || !body.InvalidatedMessages && !body.DeletedMessages && !body.ExpiredPreviews {
+			return ttsError(c, service.TTSValidationError("需要 channelId 和至少一种清理分类"))
+		}
+		result, err := service.TTSCleanupStorage(c.UserContext(), getCurUser(c).ID, body)
+		if err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(result)
+	})
+	r.Post("/storage/purge", func(c *fiber.Ctx) error {
+		var body service.TTSStoragePurgeRequest
+		if err := ttsStorageBody(c, &body); err != nil {
+			return ttsError(c, err)
+		}
+		if strings.TrimSpace(body.ChannelID) == "" || body.Scope != "channel" && body.Scope != "world" {
+			return ttsError(c, service.TTSValidationError("需要 channelId，scope 只支持 channel/world"))
+		}
+		result, err := service.TTSPurgeStorage(c.UserContext(), getCurUser(c).ID, body)
+		if err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(result)
+	})
 	r.Get("/me", func(c *fiber.Ctx) error {
 		q, err := service.TTSQuotaForChannel(getCurUser(c).ID, c.Query("channelId"))
 		if err != nil {
@@ -83,6 +118,7 @@ func BindTTSRoutes(auth fiber.Router) {
 		if err := service.ActivateTTSWorld(getCurUser(c).ID, c.Params("worldId"), body.Code); err != nil {
 			return ttsError(c, err)
 		}
+		broadcastTTSCapabilityUpdated(c.Params("worldId"))
 		return c.JSON(fiber.Map{"ok": true})
 	})
 	r.Patch("/settings", func(c *fiber.Ctx) error {
@@ -130,6 +166,18 @@ func BindTTSRoutes(auth fiber.Router) {
 		}
 		return c.JSON(fiber.Map{"ok": true})
 	})
+	r.Post("/voices/:id/refresh", func(c *fiber.Ctx) error {
+		if err := service.TTSRefreshVoice(c.UserContext(), getCurUser(c).ID, c.Params("id")); err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(fiber.Map{"ok": true})
+	})
+	r.Post("/voices/:id/force-delete", func(c *fiber.Ctx) error {
+		if err := service.TTSForceDeleteVoice(c.UserContext(), getCurUser(c).ID, c.Params("id")); err != nil {
+			return ttsError(c, err)
+		}
+		return c.JSON(fiber.Map{"ok": true})
+	})
 	r.Delete("/voices/:id", func(c *fiber.Ctx) error {
 		if err := service.TTSDeleteVoice(getCurUser(c).ID, c.Params("id")); err != nil {
 			return ttsError(c, err)
@@ -173,6 +221,13 @@ func BindTTSRoutes(auth fiber.Router) {
 		return c.JSON(ttsJobResponse(&j))
 	})
 	r.Get("/roles/:id", func(c *fiber.Ctx) error {
+		if c.Query("resolved") == "true" {
+			v, err := service.TTSResolveRoleQuickState(getCurUser(c).ID, c.Params("id"))
+			if err != nil {
+				return ttsError(c, err)
+			}
+			return c.JSON(v)
+		}
 		v, err := service.TTSRoleConfig(getCurUser(c).ID, c.Params("id"))
 		if err != nil {
 			return ttsError(c, err)
@@ -195,6 +250,17 @@ func BindTTSRoutes(auth fiber.Router) {
 			return ttsError(c, err)
 		}
 		return c.JSON(fiber.Map{"tts": m.ValidTTS()})
+	})
+	r.Post("/messages/:id/synthesize", func(c *fiber.Ctx) error {
+		// This charged operation has no client-controlled synthesis parameters.
+		if body := strings.TrimSpace(string(c.Body())); body != "" && body != "{}" {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+		state, err := service.TTSSynthesizeMessage(getCurUser(c).ID, c.Params("id"))
+		if err != nil {
+			return ttsError(c, err)
+		}
+		return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"tts": state})
 	})
 	r.Post("/messages/:id/ticket", func(c *fiber.Ctx) error {
 		m, err := ttsReadMessage(getCurUser(c).ID, c.Params("id"))
@@ -242,6 +308,27 @@ func BindTTSRoutes(auth fiber.Router) {
 	service.TTSSetMessageStateCallback(ttsBroadcastMessageState)
 }
 
+func ttsStorageBody(c *fiber.Ctx, body any) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(c.Body(), &fields); err != nil || fields == nil {
+		return service.TTSValidationError("请求必须是 JSON 对象")
+	}
+	for _, value := range fields {
+		if strings.TrimSpace(string(value)) == "null" {
+			return service.TTSValidationError("请求字段不能为 null")
+		}
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(c.Body())))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(body); err != nil {
+		return service.TTSValidationError("无效的存储清理请求")
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return service.TTSValidationError("请求必须是单个 JSON 对象")
+	}
+	return nil
+}
+
 func ttsBroadcastMessageState(messageID string) {
 	var message model.MessageModel
 	if model.GetDB().Where("id = ? AND is_deleted = ? AND deleted_at IS NULL", messageID, false).First(&message).Error != nil {
@@ -261,6 +348,18 @@ func ttsBroadcastMessageState(messageID string) {
 		ctx.BroadcastEventInChannelToUsers(message.ChannelID, append(recipients, message.UserID), event)
 	} else {
 		ctx.BroadcastEventInChannel(message.ChannelID, event)
+	}
+}
+
+func broadcastTTSCapabilityUpdated(worldID string) {
+	event := &protocol.Event{Type: protocol.EventTTSCapabilityUpdated}
+	if strings.TrimSpace(worldID) != "" {
+		broadcastEventToWorld(worldID, event)
+		return
+	}
+	ctx := &ChatContext{UserId2ConnInfo: getUserConnInfoMap()}
+	if ctx.UserId2ConnInfo != nil {
+		ctx.BroadcastEvent(event)
 	}
 }
 
@@ -298,6 +397,7 @@ func BindTTSAdminRoutes(authAdmin fiber.Router) {
 		if err := service.TTSPatchWorldPolicy(c.Params("worldId"), patch, present); err != nil {
 			return ttsError(c, err)
 		}
+		broadcastTTSCapabilityUpdated(c.Params("worldId"))
 		return ttsAdminWorldDetail(c)
 	})
 	admin.Get("/config", func(c *fiber.Ctx) error {
@@ -773,6 +873,7 @@ func ttsAdminConfig(c *fiber.Ctx) error {
 	appConfig = merged
 	SyncConfigToDB(appConfig, "api")
 	go service.TTSPrimeMPSCatalogs()
+	broadcastTTSCapabilityUpdated("")
 	return c.JSON(fiber.Map{"config": sanitizeConfigForAdmin(appConfig).AI.Speech})
 }
 

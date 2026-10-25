@@ -1,6 +1,8 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch, type ComputedRef, type Ref } from 'vue';
 import { throttle } from 'lodash-es';
 import type { AvatarDecoration } from '@/types';
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar';
+import type { GeneratedAvatarStyle } from '@/utils/generatedAvatarImage';
 import { chatEvent, useChatStore } from '@/stores/chat';
 import { useUserStore } from '@/stores/user';
 import { useDisplayStore } from '@/stores/display';
@@ -29,6 +31,7 @@ export interface TypingPreviewOptions {
 }
 
 export interface TypingPreviewItem {
+  avatarTextStyle?: '' | GeneratedAvatarStyle;
   userId: string;
   displayName: string;
   avatar?: string;
@@ -44,6 +47,7 @@ export interface TypingPreviewItem {
 }
 
 export interface EditingPreviewInfo {
+  avatarTextStyle?: '' | GeneratedAvatarStyle;
   userId: string;
   displayName: string;
   color?: string;
@@ -119,6 +123,21 @@ if (localStorage.getItem(legacyTypingPreviewKey) !== null) {
 }
 const typingPreviewActive = ref(false);
 const typingPreviewList = ref<TypingPreviewItem[]>([]);
+const typingPreviewSilentGraceMs = 2000;
+const pendingTypingPreviewRemovals = new Map<string, ReturnType<typeof setTimeout>>();
+const typingPreviewRemovalKey = (userId: string, mode: 'typing' | 'editing') => `${userId}-${mode}`;
+const cancelTypingPreviewRemoval = (userId: string, mode: 'typing' | 'editing') => {
+  const key = typingPreviewRemovalKey(userId, mode);
+  const timer = pendingTypingPreviewRemovals.get(key);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    pendingTypingPreviewRemovals.delete(key);
+  }
+};
+const cancelAllTypingPreviewRemovals = () => {
+  pendingTypingPreviewRemovals.forEach((timer) => clearTimeout(timer));
+  pendingTypingPreviewRemovals.clear();
+};
 let typingPreviewOrderSeq = Date.now();
 const previewOrderMin = 1e-6;
 const selfPreviewOrderKey = ref<number>(Number.MAX_SAFE_INTEGER);
@@ -502,6 +521,7 @@ const activeIdentityAppearancePreviewSignature = computed(() => {
     appearance?.displayName || '',
     appearance?.color || '',
     appearance?.avatarAttachmentId || '',
+    appearance?.avatarTextStyle || '',
     JSON.stringify(appearance?.avatarDecorations || []),
     appearance?.isTemporary ? '1' : '0',
   ].join('__');
@@ -742,6 +762,7 @@ const resolveSelfPreviewAvatar = () => {
   if (appearance?.avatarAttachmentId) {
     return resolveAttachmentUrl(appearance.avatarAttachmentId);
   }
+  if (normalizeAvatarTextStyle(appearance?.avatarTextStyle)) return '';
   return chat.curMember?.avatar || user.info?.avatar || '';
 };
 const removeSelfTypingPreview = () => {
@@ -787,6 +808,7 @@ const syncSelfTypingPreview = () => {
     tone,
     messageId: undefined,
     isTemporary: Boolean(activeIdentityAppearanceForPreview.value?.isTemporary),
+    avatarTextStyle: normalizeAvatarTextStyle(activeIdentityAppearanceForPreview.value?.avatarTextStyle),
     orderKey: 0,
   };
   upsertTypingPreview(payload);
@@ -836,7 +858,21 @@ const removeTypingPreview = (userId?: string, mode: 'typing' | 'editing' = 'typi
 	typingPreviewList.value = typingPreviewList.value.filter((item) => !(item.userId === userId && item.mode === mode));
 };
 
+const scheduleTypingPreviewRemoval = (userId: string, mode: 'typing' | 'editing') => {
+  cancelTypingPreviewRemoval(userId, mode);
+  const key = typingPreviewRemovalKey(userId, mode);
+  const timer = setTimeout(() => {
+    if (pendingTypingPreviewRemovals.get(key) !== timer) {
+      return;
+    }
+    pendingTypingPreviewRemovals.delete(key);
+    removeTypingPreview(userId, mode);
+  }, typingPreviewSilentGraceMs);
+  pendingTypingPreviewRemovals.set(key, timer);
+};
+
 const resetTypingPreview = () => {
+	cancelAllTypingPreviewRemovals();
 	typingPreviewList.value = [];
 	typingPreviewOrderSeq = Date.now();
 	resetSelfPreviewOrder();
@@ -1107,15 +1143,17 @@ const typingToggleClass = computed(() => ({
       }
     })();
     if (typingState === 'silent') {
-      removeTypingPreview(typingUserId, mode);
+      scheduleTypingPreviewRemoval(typingUserId, mode);
       return;
     }
+    cancelTypingPreviewRemoval(typingUserId, mode);
     const displayName =
       (identity?.displayName && identity.displayName.trim()) ||
       e.member?.nick ||
       e.user?.nick ||
       '未知成员';
-    const avatar = identityAvatar || e.member?.avatar || e.user?.avatar || '';
+    const avatarTextStyle = normalizeAvatarTextStyle(identity?.avatarTextStyle);
+    const avatar = identityAvatar || (avatarTextStyle ? '' : (e.member?.avatar || e.user?.avatar || ''));
     upsertTypingPreview({
       userId: typingUserId,
       displayName,
@@ -1127,6 +1165,7 @@ const typingToggleClass = computed(() => ({
       mode,
       messageId: e.typing?.messageId,
       isTemporary: Boolean(identity?.isTemporary),
+      avatarTextStyle,
       tone: resolveTypingTone(e.typing),
       orderKey: typeof e.typing?.orderKey === 'number' ? e.typing.orderKey : Number.NaN,
     });

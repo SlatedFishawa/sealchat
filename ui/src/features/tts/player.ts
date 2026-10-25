@@ -172,4 +172,13 @@ async function play(kind: 'messages' | 'resources', id: string, automatic = fals
   }
 }
 
-export const speechPlayer = { state, play, stop, unlock, setAutomatic, resumePreferred, startPCM, pcmPacket, endPCM }
+async function ensurePlay(kind: 'messages' | 'resources', id: string) {
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'sealchat:tts-intent', action: 'ensure-play', kind, id, userId: useUserStore().info.id }, window.location.origin)
+    return
+  }
+  if (state.key === `${kind}:${id}`) return
+  await play(kind, id)
+}
+
+export const speechPlayer = { state, play, ensurePlay, stop, unlock, setAutomatic, resumePreferred, startPCM, pcmPacket, endPCM }

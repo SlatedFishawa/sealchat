@@ -1,6 +1,7 @@
 import { api } from '@/stores/_config'
 import type { AdminAIUsageLogListResult } from '@/types'
 import { SpeechRequestKeys } from './runtime'
+import type { RoleSpeechQuickState, SpeechCleanupResult, SpeechCleanupSelection, SpeechPurgeResult, SpeechStorageSummary } from './types'
 import type { AdminSpeechWorld, AdminSpeechWorldList, SpeechWorldPatch, MessageSpeech, ResolvedSpeechModel, ResolvedSpeechProvider, RoleSpeechConfig, SpeechConfig, SpeechJob, SpeechPolicy, SpeechProviderResolveRequest, SpeechQuota, SpeechRequest, SpeechVoice, SystemPreviewJob, UnknownSpeechUsage, VoiceCreationProvider, VoiceDirectory, VoiceDirectoryQuery } from './types'
 
 const root = 'api/v1/tts'
@@ -8,6 +9,9 @@ const id = encodeURIComponent
 const submissionKeys = new SpeechRequestKeys()
 export function clearSpeechSubmissionKeys() { submissionKeys.clear() }
 export const speechAPI = {
+  async storage(channelId: string) { return (await api.get<SpeechStorageSummary>(`${root}/storage`, { params: { channelId } })).data },
+  async cleanupStorage(channelId: string, selection: SpeechCleanupSelection) { return (await api.post<SpeechCleanupResult>(`${root}/storage/cleanup`, { channelId, ...selection })).data },
+  async purgeStorage(channelId: string, scope: 'channel' | 'world') { return (await api.post<SpeechPurgeResult>(`${root}/storage/purge`, { channelId, scope })).data },
   async queue(channelId: string) { return (await api.get<{ items: { id: string; messageId: string; status: string }[]; canControl: boolean }>(`${root}/channels/${id(channelId)}/queue`)).data },
   async control(channelId: string, action: 'skip' | 'stop' | 'clear') { await api.post(`${root}/channels/${id(channelId)}/control`, { action }) },
   async logs(params: Record<string, string | number | undefined>) { return api.get<AdminAIUsageLogListResult>('api/v1/admin/ai/usage-logs', { params: { ...params, quotaKind: 'speech' } }) },
@@ -52,10 +56,16 @@ export const speechAPI = {
   async systemPreview(jobId: string) { return (await api.get<SystemPreviewJob>(`${root}/system-previews/${id(jobId)}`)).data },
   async save(voiceId: string, replaceId = '') { await api.post(`${root}/voices/${id(voiceId)}/save`, { replaceId }) },
   async update(voice: SpeechVoice) { await api.patch(`${root}/voices/${id(voice.id)}`, voice) },
+  async refreshVoice(voiceId: string) { await api.post(`${root}/voices/${id(voiceId)}/refresh`) },
+  async forceDeleteVoice(voiceId: string) { await api.post(`${root}/voices/${id(voiceId)}/force-delete`) },
   async remove(voiceId: string) { await api.delete(`${root}/voices/${id(voiceId)}`) },
   async role(identityId: string) { return (await api.get<RoleSpeechConfig>(`${root}/roles/${id(identityId)}`)).data },
+  async roleQuickState(identityId: string) { return (await api.get<RoleSpeechQuickState>(`${root}/roles/${id(identityId)}`, { params: { resolved: true } })).data },
   async saveRole(identityId: string, value: RoleSpeechConfig) { await api.put(`${root}/roles/${id(identityId)}`, value) },
   async message(messageId: string) { return (await api.get<{ tts: MessageSpeech | null }>(`${root}/messages/${id(messageId)}`)).data.tts },
+  // The server derives a durable request key from the message and its revision.
+  // Retrying an uncertain response never creates another charged attempt.
+  async synthesizeMessage(messageId: string) { return (await api.post<{ tts: MessageSpeech | null }>(`${root}/messages/${id(messageId)}/synthesize`)).data.tts },
   async ticket(kind: 'messages' | 'resources', resourceId: string) {
     return (await api.post<{ url: string }>(`${root}/${kind}/${id(resourceId)}/ticket`)).data.url
   },

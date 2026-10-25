@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { resolveStageImageUrl, type StageObjectTransform } from '../shared/stage-types'
+import type { StageImageRef, StageObjectTransform } from '../shared/stage-types'
 import { resolveTheaterReducedMotion } from '../shared/theater-reduced-motion'
-import { resolveMediaFxCapabilities } from '@/features/media-fx/media-fx'
+import { mediaFxFilterToCss, normalizeMediaFxSpec, resolveMediaFxCapabilities } from '@/features/media-fx/media-fx'
 import { vMediaFx, type MediaFxDirectiveValue } from '@/features/media-fx/media-fx-dom'
 import { cloneStageData } from '../stage/stage-editing'
 import type { TheaterEffectPlayback } from './theater-effect-runtime'
+import TheaterEffectMediaVideo from './TheaterEffectMediaVideo.vue'
 import TheaterEffectWebFrame from './TheaterEffectWebFrame.vue'
 import {
   THEATER_EFFECT_DESIGN_HEIGHT,
@@ -19,6 +20,7 @@ const props = defineProps<{
   selectedObject?: TheaterEffectPlayback['object'] | null
   editing: boolean
   editingTarget: 'frame' | 'media'
+  resolveMedia: (image: StageImageRef) => { url: string, sourceKind: 'image' | 'video' } | null
 }>()
 
 const emit = defineEmits<{
@@ -59,34 +61,45 @@ const objectStyle = (playback: TheaterEffectPlayback) => {
 
 const mediaStyle = (playback: TheaterEffectPlayback) => {
   const transform = playback.config.builtin.mediaTransform
+  const filter = mediaIsAnimated(playback)
+    ? mediaFxFilterToCss(normalizeMediaFxSpec(playback.object.metadata?.mediaFx).filter)
+    : ''
   return {
     '--effect-media-x': `${transform.x}px`,
     '--effect-media-y': `${transform.y}px`,
     '--effect-media-rotation': `${transform.rotation}deg`,
     '--effect-media-scale-x': transform.mirror ? -transform.scale : transform.scale,
     '--effect-media-scale-y': transform.scale,
+    ...(filter ? { filter } : {}),
   }
 }
 
-const mediaUrl = (playback: TheaterEffectPlayback) => {
+const mediaLocation = (playback: TheaterEffectPlayback) => {
   const image = playback.config.media || playback.object.image
-  return image ? resolveStageImageUrl(image.url) : null
+  return image ? props.resolveMedia(image) : null
 }
 
-const mediaIsVideo = (playback: TheaterEffectPlayback) => (
-  (playback.config.media || playback.object.image)?.mimeType?.startsWith('video/') === true
-)
+const mediaUrl = (playback: TheaterEffectPlayback) => mediaLocation(playback)?.url || null
+
+const mediaIsVideo = (playback: TheaterEffectPlayback) => mediaLocation(playback)?.sourceKind === 'video'
+
+const mediaIsAnimated = (playback: TheaterEffectPlayback) => {
+  const media = playback.config.media || playback.object.image
+  const mimeType = media?.mimeType?.trim().toLowerCase() || ''
+  return media?.animated === true || mimeType === 'image/apng' || mimeType === 'image/gif' || mimeType.startsWith('video/')
+}
 
 const mediaLoopCount = (playback: TheaterEffectPlayback) => playback.config.mediaLoopCount ?? null
 
 // Media FX wraps the asset in its own element, so WAAPI motion never touches the
 // asset's mediaTransform or the effect frame transform.
 const mediaFxBinding = (playback: TheaterEffectPlayback): MediaFxDirectiveValue => {
-  const media = playback.config.media || playback.object.image
-  const capabilities = resolveMediaFxCapabilities('dom', media?.animated === true || mediaIsVideo(playback))
+  const capabilities = resolveMediaFxCapabilities('dom', mediaIsAnimated(playback))
   return {
     spec: playback.object.metadata?.mediaFx,
-    filters: capabilities.filters,
+    // Dynamic assets receive Basic Filters on the img/video itself. Keeping the filter
+    // off this motion wrapper avoids compositor snapshotting that can freeze animation.
+    filters: capabilities.filters && !mediaIsAnimated(playback),
     reducedMotion: resolveTheaterReducedMotion().effectiveReducedMotion,
   }
 }
@@ -225,7 +238,17 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
           @pointercancel="endGesture"
         >
           <div v-if="mediaUrl(playback)" v-media-fx="mediaFxBinding(playback)" class="theater-effect-media-fx">
-            <video v-if="mediaIsVideo(playback)" class="theater-effect-media-only__asset" :style="mediaStyle(playback)" :src="mediaUrl(playback)!" autoplay :loop="mediaLoopCount(playback) === null" muted playsinline @ended="handleVideoEnded($event, playback)" />
+            <TheaterEffectMediaVideo
+              v-if="mediaIsVideo(playback)"
+              :src="mediaUrl(playback)!"
+              :loop="mediaLoopCount(playback) === null"
+              :media-style="mediaStyle(playback)"
+              :media-fx="playback.object.metadata?.mediaFx"
+              :animated="mediaIsAnimated(playback)"
+              :display-scale="scale"
+              :reduced-motion="resolveTheaterReducedMotion().effectiveReducedMotion"
+              @ended="handleVideoEnded($event, playback)"
+            />
             <img v-else class="theater-effect-media-only__asset" :style="mediaStyle(playback)" :src="mediaUrl(playback)!" alt="" draggable="false">
           </div>
           <span v-else-if="editing && playback.effectId === selectedObject?.id">未设置媒体</span>

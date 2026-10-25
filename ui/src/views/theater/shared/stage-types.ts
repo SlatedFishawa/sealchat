@@ -453,6 +453,20 @@ export interface StageImageRef {
   loopCount?: number
 }
 
+export const stageSurfaceTransitionTypes = ['none', 'fade', 'slide', 'dissolve', 'zoom', 'blur'] as const
+export type StageSurfaceTransitionType = typeof stageSurfaceTransitionTypes[number]
+export interface StageSurfaceVariant {
+  id: string
+  name: string
+  image: StageImageRef | null
+}
+export interface StageSurfaceVariants {
+  slots: StageSurfaceVariant[]
+  // null explicitly hides the surface without discarding configured images.
+  activeId: string | null
+  transition: { type: StageSurfaceTransitionType, durationMs: number }
+}
+
 export const stageImageAnnotationStyles = ['card', 'bubble', 'tag', 'floating', 'footer'] as const
 export type StageImageAnnotationStyle = typeof stageImageAnnotationStyles[number]
 export const stageImageAnnotationPlacements = ['auto', 'top', 'right', 'bottom', 'left'] as const
@@ -832,12 +846,40 @@ export interface StageObjectTransform {
   order: number
 }
 
+// Coordinate frame of an object tree. 'world' follows the scene camera; 'viewport' (screen-fixed)
+// pins the top-level root to a normalized viewport point. Independent of the scene/scene-fixed lifecycle.
+export type StageObjectCoordinateSpace = 'world' | 'viewport'
+
+// Screen-fixed objects size against one design reference; viewportScale = min(width / W, height / H).
+export const STAGE_VIEWPORT_DESIGN_WIDTH = 1920
+export const STAGE_VIEWPORT_DESIGN_HEIGHT = 1080
+export const STAGE_VIEWPORT_POSITION_DEFAULT = 0.5
+export const STAGE_VIEWPORT_POSITION_MIN = -1
+export const STAGE_VIEWPORT_POSITION_MAX = 2
+
+// Effects already render on their own 1920x1080 design canvas and never become screen-fixed objects.
+export const normalizeStageObjectCoordinateSpace = (
+  value: unknown,
+  type?: StageObjectType,
+): StageObjectCoordinateSpace => value === 'viewport' && type !== 'effect' ? 'viewport' : 'world'
+
+export const normalizeStageViewportPosition = (value: unknown) => (
+  typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(STAGE_VIEWPORT_POSITION_MAX, Math.max(STAGE_VIEWPORT_POSITION_MIN, value))
+    : STAGE_VIEWPORT_POSITION_DEFAULT
+)
+
 export interface StageObject {
   id: string
   parentId: string | null
   type: StageObjectType
   name: string
   transform: StageObjectTransform
+  // Only the top-level root's coordinateSpace/viewportX/viewportY take effect; descendants keep local
+  // transforms and mirror the root's coordinateSpace. viewportX/Y are the root center over viewport size.
+  coordinateSpace: StageObjectCoordinateSpace
+  viewportX: number
+  viewportY: number
   visible: boolean
   locked: boolean
   aspectRatioLocked: boolean
@@ -858,6 +900,7 @@ export interface StageObject {
 export interface StageLiveState {
   background: StageImageRef | null
   foreground: StageImageRef | null
+  surfaceVariants?: Partial<Record<StageSurfaceTarget, StageSurfaceVariants>>
   surfaceEmbeds: Record<StageSurfaceTarget, StageSurfaceEmbed | null>
   surfaceStyles: Record<StageSurfaceTarget, StageSurfaceStyle>
   backgroundColor: string

@@ -256,6 +256,7 @@ func WorldDetail(c *fiber.Ctx) error {
 		"allowAdminEditMessages":                world.AllowAdminEditMessages,
 		"allowManageOtherUserChannelIdentities": world.AllowManageOtherUserChannelIdentities,
 		"allowMemberEditKeywords":               world.AllowMemberEditKeywords,
+		"allowMemberAccessLogLayout":            world.AllowMemberAccessLogLayout,
 		"strictWhisperPrivacy":                  world.StrictWhisperPrivacy,
 		"ownerNickname":                         ownerNickname,
 		"editNoticeAcked":                       editNoticeAcked,
@@ -300,8 +301,9 @@ func WorldPublicObserverResolveHandler(c *fiber.Ctx) error {
 		"worldId":   world.ID,
 		"channelId": channelID,
 		"world": fiber.Map{
-			"id":   world.ID,
-			"name": world.Name,
+			"id":                world.ID,
+			"name":              world.Name,
+			"coverAttachmentId": world.CoverAttachmentID,
 		},
 	})
 }
@@ -401,6 +403,8 @@ func WorldUpdateHandler(c *fiber.Ctx) error {
 		case errors.Is(err, service.ErrWorldDefaultDiceBotInvalid):
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"message": "默认 BOT 不存在或不是机器人"})
 		case errors.Is(err, service.ErrWorldCursorThemeInvalid):
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"message": err.Error()})
+		case errors.Is(err, service.ErrWorldCoverInvalid):
 			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"message": err.Error()})
 		default:
 			return c.Status(http.StatusInternalServerError).JSON(fiber.Map{"message": "更新世界失败"})

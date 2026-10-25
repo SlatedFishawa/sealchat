@@ -108,6 +108,7 @@ const emit = defineEmits<{
   (event: 'upload-button-click', source?: 'rich-editor' | SmartLinkUploadSource): void
   (event: 'composition-start'): void
   (event: 'composition-end'): void
+  (event: 'selection-change'): void
 }>();
 
 const message = useMessage();
@@ -150,6 +151,8 @@ const platformFontSelectMenuProps = computed(() => ({
 }));
 const savedEditorSelectionRange = ref<{ start: number; end: number } | null>(null);
 const performanceTriggerRef = ref<HTMLElement | null>(null);
+const performancePopoverPlacement = ref<'top' | 'bottom' | 'left-start' | 'left-end' | 'right-start' | 'right-end'>('bottom');
+const performancePopoverMaxHeight = ref('calc(100dvh - 2rem)');
 const MOBILE_BREAKPOINT = 768;
 const RICH_CONTENT_PARSE_OPTIONS = { preserveWhitespace: 'full' as const };
 const SILENT_SET_CONTENT_OPTIONS = { emitUpdate: false, parseOptions: RICH_CONTENT_PARSE_OPTIONS };
@@ -1272,11 +1275,47 @@ const syncPerformanceControlsFromSelection = () => {
   }
 };
 
+const updatePerformancePopoverBounds = () => {
+  const trigger = performanceTriggerRef.value;
+  if (!trigger || isMobile.value) return;
+
+  const { top, bottom } = trigger.getBoundingClientRect();
+  // 为 Popover 自带的内边距、箭头及视口边缘预留空间。
+  const reserved = 40;
+  const above = Math.max(0, Math.floor(top - reserved));
+  const below = Math.max(0, Math.floor(window.innerHeight - bottom - reserved));
+
+  if (props.performancePopoverPlacement === 'bottom') {
+    const openAbove = above > below;
+    performancePopoverPlacement.value = openAbove ? 'top' : 'bottom';
+    performancePopoverMaxHeight.value = `${openAbove ? above : below}px`;
+  } else {
+    const upward = Math.max(0, Math.floor(bottom - reserved));
+    const downward = Math.max(0, Math.floor(window.innerHeight - top - reserved));
+    const alignEnd = upward > downward;
+    performancePopoverPlacement.value = props.performancePopoverPlacement === 'left-start'
+      ? (alignEnd ? 'left-end' : 'left-start')
+      : (alignEnd ? 'right-end' : 'right-start');
+    performancePopoverMaxHeight.value = `${alignEnd ? upward : downward}px`;
+  }
+};
+
+watch([performancePopoverShow, isMobile], ([visible, mobile], _, onCleanup) => {
+  if (!visible || mobile) return;
+  window.addEventListener('resize', updatePerformancePopoverBounds);
+  window.addEventListener('scroll', updatePerformancePopoverBounds, true);
+  onCleanup(() => {
+    window.removeEventListener('resize', updatePerformancePopoverBounds);
+    window.removeEventListener('scroll', updatePerformancePopoverBounds, true);
+  });
+});
+
 const openPerformancePopover = () => {
   closeToolbarPopovers();
   rememberEditorSelection();
   syncPerformanceControlsFromSelection();
   markOverlayInteraction();
+  updatePerformancePopoverBounds();
   performancePopoverShow.value = true;
 };
 
@@ -1984,6 +2023,7 @@ const initEditor = async () => {
         editor.value = ed as Editor;
         rememberEditorSelection();
         bumpEditorStateVersion();
+        emit('selection-change');
       },
       onFocus: () => {
         isFocused.value = true;
@@ -3511,7 +3551,7 @@ defineExpose({
           <n-popover
             v-else
             trigger="manual"
-            :placement="props.performancePopoverPlacement"
+            :placement="performancePopoverPlacement"
             :show="performancePopoverShow"
             :content-class="performancePopoverClass"
           >
@@ -3529,7 +3569,7 @@ defineExpose({
                 </n-button>
               </span>
             </template>
-            <div class="tiptap-performance-panel" @pointerdown.stop="markOverlayInteraction">
+            <div class="tiptap-performance-panel" :style="{ maxHeight: performancePopoverMaxHeight }" @pointerdown.stop="markOverlayInteraction">
               <div class="tiptap-performance-panel__topbar">
                 <div class="tiptap-performance-panel__title">文字演出</div>
                 <button type="button" class="tiptap-performance-panel__close" @click="closePerformancePopover">×</button>
@@ -4936,9 +4976,12 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
-  min-width: 20rem;
-  max-width: min(24rem, calc(100vw - 2rem));
+  box-sizing: border-box;
+  min-width: min(20rem, calc(100vw - 3rem));
+  max-width: min(24rem, calc(100vw - 3rem));
   padding: 0.75rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .tiptap-performance-panel__topbar {
@@ -4955,14 +4998,21 @@ defineExpose({
 }
 
 .tiptap-performance-panel__previews {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex-shrink: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.45rem;
+  gap: 0.35rem;
+  padding: 0.25rem 0;
+  margin: -0.25rem 0;
+  background: var(--n-color, var(--sc-bg-elevated, #fff));
 }
 
 .tiptap-performance-panel__preview-card {
   min-width: 0;
-  padding: 0.45rem 0.5rem;
+  padding: 0.3rem 0.4rem;
   border: 1px solid var(--sc-border-mute, #e5e7eb);
   border-radius: 0.55rem;
   background: color-mix(in srgb, var(--sc-bg-surface, #fff) 92%, transparent);

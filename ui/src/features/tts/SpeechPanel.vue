@@ -9,6 +9,7 @@ import { useChatStore } from '@/stores/chat'
 import { useUserStore } from '@/stores/user'
 import type { SpeechJob, SpeechVoice, VoiceCreationProvider, VoiceDirectory } from './types'
 import SpeechQuotaSummary from './SpeechQuotaSummary.vue'
+import SpeechStorageCleanup from './SpeechStorageCleanup.vue'
 import VoicePicker from './VoicePicker.vue'
 import { providerDisplayName, requestVoiceFields, voiceKindLabel, type VoiceSelection } from './voice-catalog'
 
@@ -27,12 +28,13 @@ async function loadQueue() {
   const value = await speechAPI.queue(channelId)
   if (alive && revision === queueRevision && currentChannel.value === channelId) queue.value = value
 }
-type PanelTab = 'catalog' | 'create' | 'mine' | 'settings'
+type PanelTab = 'catalog' | 'create' | 'mine' | 'settings' | 'cleanup'
 const tabs: ReadonlyArray<{ value: PanelTab; label: string }> = [
   { value: 'catalog', label: '音色目录' },
   { value: 'create', label: '创建音色' },
   { value: 'mine', label: '我的音色' },
   { value: 'settings', label: '朗读设置' },
+  { value: 'cleanup', label: '存储清理' },
 ]
 const lifecycleLabels: Readonly<Record<string, string>> = { creating: '创建中', preview: '预览', saved: '已保存', delete_pending: '删除中' }
 const tab = ref<PanelTab>('catalog')
@@ -216,6 +218,7 @@ async function submit(kind: 'audition' | 'design' | 'clone') {
     requestKey: speechRuntimeId(), channelId, text: text.value, name: name.value, description: description.value,
     sourceResourceId,
     ...(kind === 'clone' ? { cloneLanguageHint: cloneLanguageHint.value, clonePreprocess: clonePreprocess.value } : {}),
+    ...(kind === 'audition' && selection.value.type === 'personal' ? { adoptAsVoicePreview: true } : {}),
     ...(target ? { providerId: target.providerId, modelId: target.modelId } : requestVoiceFields(selection.value)),
   })
   if (!alive || userId !== user.info.id) return
@@ -224,6 +227,14 @@ async function submit(kind: 'audition' | 'design' | 'clone') {
 }
 async function save(voice: SpeechVoice) { await speechAPI.save(voice.id, replaceId.value); replaceId.value = ''; await reloadVoices(); await speech.refresh(currentChannel.value || '') }
 async function remove(voice: SpeechVoice) { await speechAPI.remove(voice.id); await reloadVoices(); await speech.refresh(currentChannel.value || '') }
+async function refreshVoice(voice: SpeechVoice) { await speechAPI.refreshVoice(voice.id); await reloadVoices(); await speech.refresh(currentChannel.value || '') }
+async function forceDeleteVoice(voice: SpeechVoice) {
+  const confirmed = window.confirm('这会立即从 SealChat 强制移除此音色。若供应商仍在处理，云端音色可能残留并继续占用供应商额度；已经生成的消息音频不受影响。确定强制删除吗？')
+  if (!confirmed) return
+  await speechAPI.forceDeleteVoice(voice.id)
+  await reloadVoices()
+  await speech.refresh(currentChannel.value || '')
+}
 async function update(voice: SpeechVoice) { if (voice.parameters) JSON.parse(voice.parameters); await speechAPI.update(voice); await reloadVoices() }
 onMounted(() => void run(async () => { await speech.refresh(currentChannel.value || ''); await load(); await loadCreationProviders() }))
 onBeforeUnmount(() => { alive = false; serial++; replaceSerial++; clearTimeout(timer) })
@@ -348,6 +359,10 @@ onBeforeUnmount(() => { alive = false; serial++; replaceSerial++; clearTimeout(t
             </template>
             <p v-else-if="selectedVoice.lifecycle === 'creating'" class="sp-hint">音色创建中，完成后会生成限时预览，届时可在此试听并保存。</p>
             <p v-else-if="selectedVoice.lifecycle === 'delete_pending'" class="sp-hint">音色删除中，完成后会从列表移除。</p>
+            <div v-if="selectedVoice.lifecycle === 'creating' || selectedVoice.lifecycle === 'delete_pending'" class="sp-voice__actions">
+              <NButton size="small" :loading="busy" @click="run(() => refreshVoice(selectedVoice!))">{{ selectedVoice.lifecycle === 'delete_pending' ? '立即重试删除' : '立即刷新状态' }}</NButton>
+              <NButton v-if="selectedVoice.lifecycle === 'delete_pending'" size="small" type="error" secondary :loading="busy" @click="run(() => forceDeleteVoice(selectedVoice!))">强制删除</NButton>
+            </div>
           </article>
         </div>
       </div>
@@ -356,6 +371,7 @@ onBeforeUnmount(() => { alive = false; serial++; replaceSerial++; clearTimeout(t
         <div class="sp-settings">
           <label class="sp-check">自动合成 <NSwitch :value="speech.quota?.autoSynthesis ?? false" :loading="busy" @update:value="value => run(async () => { await speechAPI.settings(value); await speech.refresh(currentChannel || '') })" /></label>
           <label class="sp-check">当前浏览器自动播放 <NSwitch :value="speechPlayer.state.preferred" @update:value="value => run(() => speechPlayer.setAutomatic(value))" /></label>
+          <label class="sp-check">显示 TTS 快捷悬浮球 <NSwitch :value="speech.quickControlVisible" @update:value="speech.setQuickControlVisible" /></label>
           <span v-if="speechPlayer.state.preferred && !speechPlayer.state.automatic" class="autoplay-pending">等待页面交互后自动启用</span>
           <span>已保存音色 {{ speech.quota?.saved ?? 0 }} / {{ speech.quota?.slots ?? 0 }}</span>
         </div>
@@ -370,6 +386,8 @@ onBeforeUnmount(() => { alive = false; serial++; replaceSerial++; clearTimeout(t
           </template>
         </div>
       </div>
+
+      <SpeechStorageCleanup v-if="tab === 'cleanup'" :channel-id="currentChannel || ''" />
 
       <footer v-if="job" class="sp-foot">
         <span>任务：{{ job.status }} {{ job.errorCode }}</span>

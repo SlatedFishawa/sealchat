@@ -375,7 +375,12 @@ async function run() {
   for (const forbidden of [/createRenderbuffer/, /uTexture2/, /requestAnimationFrame/, /getImageData/, /Math\.random/]) {
     assert.equal(forbidden.test(gpuSource), false, `GPU adapter must not contain ${forbidden}`)
   }
-  const liveSection = gpuSource.slice(gpuSource.indexOf('export const createMediaFxTemporalGpuSession'))
+  // The temporal session only: live media sessions (phase 2) follow it and upload per video frame.
+  const liveSection = gpuSource.slice(
+    gpuSource.indexOf('export const createMediaFxTemporalGpuSession'),
+    gpuSource.indexOf('// Live media sessions'),
+  )
+  assert.ok(liveSection.length > 0)
   assert.equal(/readPixels/.test(liveSection), false, 'the live session never reads pixels back')
   assert.equal((liveSection.match(/texImage2D/g) || []).length, 1, 'the live session has a single, guarded upload')
   // Live frames never run the bloom / glow light pipeline: it is already in the baseline.

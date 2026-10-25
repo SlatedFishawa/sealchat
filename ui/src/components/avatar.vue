@@ -4,7 +4,8 @@ import { computed, ref, watch } from 'vue';
 import { onLongPress } from '@vueuse/core'
 import { resolveAttachmentUrl } from '@/composables/useAttachmentResolver';
 import { useDisplayStore } from '@/stores/display';
-import { buildGeneratedAvatarDataUrl } from '@/utils/generatedAvatarImage';
+import { buildGeneratedAvatarDataUrl, type GeneratedAvatarStyle } from '@/utils/generatedAvatarImage';
+import { normalizeAvatarTextStyle } from '@/utils/channelIdentityAvatar';
 
 const props = withDefaults(defineProps<{
   src?: string;
@@ -12,6 +13,8 @@ const props = withDefaults(defineProps<{
   border?: boolean;
   fallbackText?: string;
   useTextFallback?: boolean;
+  textFallbackStyle?: GeneratedAvatarStyle | '';
+  textFallbackAccentColor?: string;
 }>(), {
   src: '',
   size: 0,
@@ -46,6 +49,8 @@ const generatedFallbackSrc = computed(() => {
   }
   return buildGeneratedAvatarDataUrl({
     displayName: props.fallbackText,
+    accentColor: props.textFallbackAccentColor,
+    style: normalizeAvatarTextStyle(props.textFallbackStyle) || undefined,
     size: props.size > 0 ? Math.max(props.size * 2, 96) : 128,
     themeSeed: {
       palette: themePalette,

@@ -2923,17 +2923,6 @@ defineExpose({ openCardById });
               <n-button
                 secondary
                 size="tiny"
-                title="编辑"
-                :disabled="characterApiDisabled || (cardSwitchingId.length > 0 && cardSwitchingId !== card.id)"
-                :loading="cardSwitchingId === card.id"
-                @click="openEditPanel(card)"
-              >
-                <template #icon><n-icon :component="Edit" /></template>
-                编辑
-              </n-button>
-              <n-button
-                secondary
-                size="tiny"
                 title="绑定身份"
                 :disabled="characterApiDisabled || cardSwitchingId.length > 0"
                 @click="openBindModal(card)"
@@ -2956,6 +2945,17 @@ defineExpose({ openCardById });
                 </template>
                 删除前将从所有群解绑此人物卡，确定删除？
               </n-popconfirm>
+              <n-button
+                secondary
+                size="tiny"
+                title="模板"
+                :disabled="characterApiDisabled || (cardSwitchingId.length > 0 && cardSwitchingId !== card.id)"
+                :loading="cardSwitchingId === card.id"
+                @click="openEditPanel(card)"
+              >
+                <template #icon><n-icon :component="Edit" /></template>
+                模板
+              </n-button>
             </div>
           </div>
         </n-card>

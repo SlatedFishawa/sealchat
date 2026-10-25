@@ -47,6 +47,10 @@ func theaterLayoutObjects(snapshot TheaterSharedSnapshot, ids []string) ([]Theat
 		if object.Kind == "effect" {
 			return nil, theaterPayloadError("effect 使用独立设计坐标，不能参加普通 layout")
 		}
+		// A screen-fixed root is positioned by viewportX/Y; its world x/y is not rendered.
+		if derefString(object.ParentID) == "" && object.CoordinateSpace == TheaterObjectCoordinateSpaceViewport {
+			return nil, theaterPayloadError("屏幕固定对象使用视口坐标，不能参加普通 layout")
+		}
 		if err := theaterDesignObjectUnlocked(snapshot, object); err != nil {
 			return nil, err
 		}

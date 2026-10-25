@@ -1,0 +1,227 @@
+/*
+ * Management surface template — settings/management modals and embedded settings panels.
+ * First users: 世界设置 (WorldManager), 成员管理 (WorldMemberManager), 世界未读提醒 (EmailNotificationManager sections variant).
+ *
+ * All classes are opt-in and only consume global semantic tokens (--sc-*), so day/night palettes,
+ * custom themes, glass background (n-card / n-modal are already in App.vue's glass list) and the
+ * global font apply automatically. Width still comes from `sc-fluid-modal` (+ --wide / --xwide).
+ *
+ * Modal usage (classes land on the teleported n-card itself, see doc/ui/fluid-modal-template.md):
+ *   <n-modal preset="card" title="…" class="sc-fluid-modal sc-manage-modal">
+ *     <div class="sc-manage-modal__body"> sections… </div>
+ *     <template #footer><div class="sc-manage-actions">…</div></template>
+ *   </n-modal>
+ *
+ * Content building blocks (also usable outside modals):
+ *   .sc-manage-section > .sc-manage-section__head > .sc-manage-section__title / __desc
+ *   .sc-manage-field > .sc-manage-field__label + control + .sc-manage-hint
+ *   .sc-manage-row > .sc-manage-row__text (__label / __hint) + .sc-manage-row__control
+ *   .sc-manage-toolbar, .sc-manage-grid
+ */
+
+/* ---------- Modal shell ---------- */
+
+body .n-card.sc-manage-modal {
+  --sc-manage-pad-x: 24px;
+  border-radius: 12px;
+}
+
+body .n-card.sc-manage-modal > .n-card-header {
+  padding: 18px var(--sc-manage-pad-x) 14px;
+  border-bottom: 1px solid var(--sc-border-mute);
+}
+
+body .n-card.sc-manage-modal > .n-card-header .n-card-header__main {
+  color: var(--sc-text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+body .n-card.sc-manage-modal > .n-card__content {
+  min-height: 0;
+  padding: 0;
+}
+
+body .n-card.sc-manage-modal > .n-card__footer {
+  padding: 12px var(--sc-manage-pad-x);
+  border-top: 1px solid var(--sc-border-mute);
+}
+
+.sc-manage-modal__body {
+  max-height: min(70vh, 760px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--sc-manage-pad-x, 24px) 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sc-scrollbar-thumb) transparent;
+}
+
+.sc-manage-modal__body::-webkit-scrollbar {
+  width: var(--sc-scrollbar-size, 6px);
+}
+
+.sc-manage-modal__body::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background-color: var(--sc-scrollbar-thumb);
+}
+
+.sc-manage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Low-frequency / destructive action kept apart from the confirm buttons. */
+.sc-manage-actions__start {
+  margin-right: auto;
+}
+
+/* ---------- Sections ---------- */
+
+.sc-manage-section {
+  min-width: 0;
+  padding: 18px 0;
+}
+
+.sc-manage-section + .sc-manage-section {
+  border-top: 1px solid var(--sc-border-mute);
+}
+
+.sc-manage-section__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 14px;
+}
+
+.sc-manage-section__title {
+  margin: 0;
+  color: var(--sc-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.sc-manage-section__desc,
+.sc-manage-hint {
+  margin: 0;
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---------- Stacked field ---------- */
+
+.sc-manage-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sc-manage-field + .sc-manage-field {
+  margin-top: 16px;
+}
+
+.sc-manage-field__label {
+  color: var(--sc-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sc-manage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.sc-manage-grid > .sc-manage-field + .sc-manage-field {
+  margin-top: 0;
+}
+
+.sc-manage-grid + .sc-manage-field,
+.sc-manage-field + .sc-manage-grid {
+  margin-top: 16px;
+}
+
+/* ---------- Setting row: text left, control right ---------- */
+
+.sc-manage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 10px 0;
+}
+
+.sc-manage-row + .sc-manage-row {
+  border-top: 1px solid var(--sc-border-mute);
+}
+
+.sc-manage-row__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sc-manage-row__label {
+  color: var(--sc-text-primary);
+  font-size: 13px;
+}
+
+.sc-manage-row__hint {
+  margin-top: 2px;
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sc-manage-row__control {
+  flex: none;
+}
+
+/* ---------- Toolbar (search / filters) ---------- */
+
+.sc-manage-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0;
+}
+
+.sc-manage-toolbar > .n-input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.sc-manage-toolbar__meta {
+  margin-left: auto;
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  body .n-card.sc-manage-modal {
+    --sc-manage-pad-x: 16px;
+  }
+
+  .sc-manage-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sc-manage-actions {
+    justify-content: stretch;
+  }
+
+  .sc-manage-actions > .n-button {
+    flex: 1 1 auto;
+  }
+
+  .sc-manage-actions__start {
+    margin-right: 0;
+  }
+}

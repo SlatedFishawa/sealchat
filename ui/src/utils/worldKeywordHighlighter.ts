@@ -25,7 +25,7 @@ interface HighlightRangeGroup {
   candidates: MatchedKeywordCandidate[]
 }
 
-function clearExistingHighlights(root: HTMLElement) {
+export function clearExistingHighlights(root: HTMLElement) {
   const highlights = root.querySelectorAll(`span.${HIGHLIGHT_CLASS}`)
   highlights.forEach((node) => {
     const parent = node.parentNode

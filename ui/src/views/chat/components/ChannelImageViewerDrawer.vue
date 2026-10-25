@@ -346,7 +346,9 @@ const getThumbUrl = (item: { thumbUrl?: string; attachmentId: string }) => {
                   :src="item.senderAvatar"
                   :size="20"
                   :border="false"
-                  :use-text-fallback="item.senderIdentityIsTemporary"
+                  :use-text-fallback="item.senderIdentityIsTemporary || Boolean(item.senderIdentityAvatarTextStyle)"
+                  :text-fallback-style="item.senderIdentityAvatarTextStyle"
+                  :text-fallback-accent-color="item.senderIdentityAvatarTextStyle ? item.senderIdentityColor : undefined"
                   :fallback-text="item.senderName"
                 />
                 <span class="sender-name">{{ item.senderName || '未知' }}</span>

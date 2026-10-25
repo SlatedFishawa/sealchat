@@ -1,12 +1,14 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 
 	"sealchat/model"
+	"sealchat/service"
 )
 
 type channelIdentityModeConfigPayload struct {
@@ -67,46 +69,24 @@ func ChannelIdentityModeConfigUpsert(c *fiber.Ctx) error {
 
 	icRoleID := normalizeOptionalID(body.ICRoleID)
 	oocRoleID := normalizeOptionalID(body.OOCRoleID)
-	if icRoleID != "" {
-		if _, err := model.ChannelIdentityValidateOwnership(icRoleID, ctx.TargetUserID, channelID); err != nil {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"message": "场内角色不存在或不属于当前用户"})
-		}
-	}
-	if oocRoleID != "" {
-		if _, err := model.ChannelIdentityValidateOwnership(oocRoleID, ctx.TargetUserID, channelID); err != nil {
-			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"message": "场外角色不存在或不属于当前用户"})
-		}
-	}
-
-	if icRoleID == "" && oocRoleID == "" {
-		if err := model.ChannelIdentityModeConfigDelete(ctx.TargetUserID, channelID); err != nil {
-			return wrapError(c, err, "保存场内场外角色映射失败")
-		}
-		broadcastChannelIdentityRefresh(channelIdentityRefreshPayload{
-			ChannelID:      channelID,
-			TargetUserID:   ctx.TargetUserID,
-			OperatorUserID: ctx.OperatorUserID,
-			Reason:         "identity-mode-config-delete",
-		})
-		return c.JSON(fiber.Map{
-			"channelId": channelID,
-			"exists":    false,
-			"config": fiber.Map{
-				"icRoleId":  nil,
-				"oocRoleId": nil,
-			},
-		})
-	}
-
-	record, err := model.ChannelIdentityModeConfigUpsert(ctx.TargetUserID, channelID, icRoleID, oocRoleID)
+	record, err := service.ChannelIdentityModeConfigSet(ctx.TargetUserID, channelID, icRoleID, oocRoleID)
 	if err != nil {
+		if errors.Is(err, service.ErrChannelIdentityModeConfigSameRole) ||
+			errors.Is(err, service.ErrChannelIdentityModeConfigICRoleInvalid) ||
+			errors.Is(err, service.ErrChannelIdentityModeConfigOOCRoleInvalid) {
+			return c.Status(http.StatusBadRequest).JSON(fiber.Map{"message": err.Error()})
+		}
 		return wrapError(c, err, "保存场内场外角色映射失败")
+	}
+	reason := "identity-mode-config-upsert"
+	if record == nil {
+		reason = "identity-mode-config-delete"
 	}
 	broadcastChannelIdentityRefresh(channelIdentityRefreshPayload{
 		ChannelID:      channelID,
 		TargetUserID:   ctx.TargetUserID,
 		OperatorUserID: ctx.OperatorUserID,
-		Reason:         "identity-mode-config-upsert",
+		Reason:         reason,
 	})
 	return c.JSON(fiber.Map{
 		"channelId": channelID,

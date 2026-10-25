@@ -2,7 +2,9 @@ import {
   THEATER_BRIDGE_PROTOCOL,
   THEATER_BRIDGE_MAX_MESSAGE_BYTES,
   parseTheaterBridgeMessage,
+  projectTheaterBridgeMessage,
   type TheaterBridgeMessage,
+  type TheaterBridgeVersion,
 } from './theater-bridge-protocol'
 
 export interface BridgeTransport {
@@ -76,6 +78,7 @@ interface PostMessageTransportOptions {
 
 export class PostMessageTransport implements BridgeTransport {
   private connected = false
+  private version: TheaterBridgeVersion = '1.0'
   private handlers = new Set<MessageHandler>()
   private rateWindowStartedAt = 0
   private rateWindowCount = 0
@@ -83,6 +86,10 @@ export class PostMessageTransport implements BridgeTransport {
 
   constructor(private readonly options: PostMessageTransportOptions) {
     this.maxMessagesPerSecond = options.maxMessagesPerSecond || 120
+  }
+
+  setVersion(version: TheaterBridgeVersion) {
+    this.version = version
   }
 
   async connect() {
@@ -102,8 +109,10 @@ export class PostMessageTransport implements BridgeTransport {
     if (!this.connected) throw new Error('PostMessageTransport is not connected')
     const target = this.options.targetWindow()
     if (!target) throw new Error('PostMessageTransport target window is unavailable')
-    assertMessageSize(message)
-    target.postMessage(message, this.options.targetOrigin)
+    // Includes raw host-routed stage results, whose in-memory parser adds defaults again.
+    const wireMessage = projectTheaterBridgeMessage(message, this.version)
+    assertMessageSize(wireMessage)
+    target.postMessage(wireMessage, this.options.targetOrigin)
   }
 
   subscribe(handler: MessageHandler) {

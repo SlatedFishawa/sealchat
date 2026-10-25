@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores/chat';
 import { useMessage } from 'naive-ui';
 import { copyTextWithResult } from '@/utils/clipboard';
 import dayjs from 'dayjs';
+import { getInviteStatusInfo, pickLatestInviteByRole, remainingUses } from './worldInviteStatus';
 
 const props = defineProps<{ worldId: string }>();
 const chat = useChatStore();
@@ -16,14 +17,7 @@ const loadInvites = async () => {
   loading.value = true;
   try {
     const resp = await chat.loadWorldSections(props.worldId, ['invites']);
-    const list = Array.isArray(resp.invites) ? resp.invites : [];
-    const map: Record<string, any> = {};
-    for (const item of list) {
-      const role = item.role || 'member';
-      if (!map[role]) {
-        map[role] = item;
-      }
-    }
+    const map = pickLatestInviteByRole(resp.invites);
     inviteMap.value = map;
     checkInviteHealth(map);
   } catch (e) {
@@ -45,25 +39,6 @@ const roleTitleMap = inviteCards.reduce((acc, cur) => {
   acc[cur.role] = cur.title;
   return acc;
 }, {} as Record<string, string>);
-
-const remainingUses = (invite?: any) => {
-  if (!invite || !invite.maxUse) return Infinity;
-  const used = Number(invite.usedCount) || 0;
-  return Math.max(invite.maxUse - used, 0);
-};
-
-const isInviteExpired = (invite?: any) => {
-  if (!invite?.expireAt) return false;
-  const expireAt = dayjs(invite.expireAt);
-  if (!expireAt.isValid()) return false;
-  return expireAt.isBefore(dayjs());
-};
-
-const isInviteExhausted = (invite?: any) => {
-  if (!invite) return false;
-  if (!invite.maxUse) return false;
-  return remainingUses(invite) <= 0;
-};
 
 const formatExpireText = (invite?: any) => {
   if (!invite?.expireAt) return '永久有效';
@@ -88,36 +63,6 @@ const formatRemainingUseText = (invite?: any) => {
     return '已用尽';
   }
   return `剩余 ${remaining} 次`;
-};
-
-const getInviteStatusInfo = (invite?: any) => {
-  if (!invite) {
-    return { state: 'missing' as const, text: '未创建', tagType: 'default' as const };
-  }
-  if (isInviteExpired(invite)) {
-    return { state: 'invalid' as const, text: '已过期', tagType: 'error' as const };
-  }
-  if (isInviteExhausted(invite)) {
-    return { state: 'invalid' as const, text: '次数已用尽', tagType: 'error' as const };
-  }
-  const expireAt = invite?.expireAt ? dayjs(invite.expireAt) : null;
-  if (expireAt?.isValid()) {
-    const diffMinutes = expireAt.diff(dayjs(), 'minute');
-    if (diffMinutes <= 60) {
-      return { state: 'warning' as const, text: '1 小时内过期', tagType: 'warning' as const };
-    }
-    if (diffMinutes <= 24 * 60) {
-      const hours = Math.ceil(diffMinutes / 60);
-      return { state: 'warning' as const, text: `约 ${hours} 小时后过期`, tagType: 'warning' as const };
-    }
-  }
-  if (invite?.maxUse > 0) {
-    const remaining = remainingUses(invite);
-    if (remaining <= 2) {
-      return { state: 'warning' as const, text: `仅剩 ${remaining} 次`, tagType: 'warning' as const };
-    }
-  }
-  return { state: 'ok' as const, text: '可用', tagType: 'success' as const };
 };
 
 const checkInviteHealth = (map: Record<string, any>) => {

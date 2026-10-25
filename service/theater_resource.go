@@ -432,6 +432,60 @@ func ResolveTheaterResourceContentForObserver(ctx context.Context, observerWorld
 	return resolveTheaterResourceContent(ctx, "observer", observerWorldID, channelID, resourceID, variantName)
 }
 
+const TheaterErrorResourceThumbnailUnavailable = "RESOURCE_THUMBNAIL_UNAVAILABLE"
+
+// ResolveTheaterResourceThumbnailSource keeps the regular view permission and
+// picks the stored image that a thumbnail may be derived from.
+func ResolveTheaterResourceThumbnailSource(ctx context.Context, actorID, worldID, channelID, resourceID string) (*TheaterResourceContent, error) {
+	if _, _, err := requireTheaterPermission(actorID, worldID, channelID, TheaterPermissionView); err != nil {
+		return nil, err
+	}
+	return resolveTheaterResourceThumbnailSource(ctx, actorID, worldID, channelID, resourceID)
+}
+
+// Prefers the processed thumbnail variant so video bodies are never read; image
+// resources fall back to their original attachment. Video-encoded sources
+// without a thumbnail variant have no still frame available.
+func resolveTheaterResourceThumbnailSource(ctx context.Context, actorID, worldID, channelID, resourceID string) (*TheaterResourceContent, error) {
+	content, err := resolveTheaterResourceContent(ctx, actorID, worldID, channelID, resourceID, "")
+	if err != nil {
+		return nil, err
+	}
+	var variant model.TheaterResourceVariantModel
+	if err := model.GetDB().Where("resource_id = ? AND name = ? AND status = ?", content.Resource.ID, VisualMediaOutputThumbnail, "ready").Limit(1).Find(&variant).Error; err != nil {
+		return nil, err
+	}
+	if variant.ID != "" {
+		var attachment model.AttachmentModel
+		if err := model.GetDB().Where("id = ?", variant.AttachmentID).First(&attachment).Error; err != nil {
+			return nil, err
+		}
+		return &TheaterResourceContent{Resource: content.Resource, Variant: &variant, Attachment: &attachment}, nil
+	}
+	if content.Resource.Kind == "video" || strings.HasPrefix(content.Attachment.MimeType, "video/") {
+		return nil, newTheaterError(TheaterErrorResourceThumbnailUnavailable, "资源没有可用缩略图", 404, nil)
+	}
+	return content, nil
+}
+
+// IsTheaterThumbnailSourceAnimated reports whether serving the source directly
+// could play an animation, so callers must extract a still frame instead.
+func IsTheaterThumbnailSourceAnimated(content *TheaterResourceContent) bool {
+	if content == nil || content.Attachment == nil {
+		return false
+	}
+	if content.Variant != nil {
+		return false
+	}
+	return content.Attachment.IsAnimated || content.Resource != nil && content.Resource.Kind == "animated_image"
+}
+
+// OpenTheaterAttachmentLocalPath exposes a readable local copy of a stored
+// attachment, downloading remote objects to a temporary file when needed.
+func OpenTheaterAttachmentLocalPath(ctx context.Context, attachment *model.AttachmentModel) (string, func(), error) {
+	return resolveTheaterAttachmentPath(ctx, attachment)
+}
+
 func resolveTheaterResourceContent(ctx context.Context, actorID, worldID, channelID, resourceID, variantName string) (*TheaterResourceContent, error) {
 	room, err := model.TheaterRoomCreateIfMissing(worldID, channelID, actorID)
 	if err != nil {

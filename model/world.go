@@ -33,6 +33,7 @@ type WorldModel struct {
 	Name                                  string     `json:"name" gorm:"size:100;not null"`
 	Description                           string     `json:"description" gorm:"size:500"`
 	Avatar                                string     `json:"avatar" gorm:"size:255"`
+	CoverAttachmentID                     string     `json:"coverAttachmentId" gorm:"size:100"`                          // 世界封面图片附件引用（id:xxx），空值表示无封面
 	Visibility                            string     `json:"visibility" gorm:"size:24;default:public;index"`             // public/private/unlisted
 	ObserverSlug                          *string    `json:"-" gorm:"size:64;uniqueIndex"`                               // 专属 OB 旁观 slug，空值使用 NULL 以避免唯一索引冲突
 	ObserverEnabled                       bool       `json:"-" gorm:"default:false"`                                     // 专属 OB 旁观链接启用状态
@@ -47,6 +48,7 @@ type WorldModel struct {
 	AllowAdminEditMessages                bool       `json:"allowAdminEditMessages" gorm:"default:false"`                // 允许管理员编辑成员发言
 	AllowManageOtherUserChannelIdentities bool       `json:"allowManageOtherUserChannelIdentities" gorm:"default:false"` // 允许管理其他用户频道角色
 	AllowMemberEditKeywords               bool       `json:"allowMemberEditKeywords" gorm:"default:false"`               // 允许成员编辑世界术语
+	AllowMemberAccessLogLayout            bool       `json:"allowMemberAccessLogLayout" gorm:"not null;default:false"`   // 允许普通成员进入 LOG 排版
 	StrictWhisperPrivacy                  bool       `json:"strictWhisperPrivacy" gorm:"default:true"`                   // 悄悄话严格保密：开启后管理员不可旁路查看
 	AudioLibraryMode                      string     `json:"audioLibraryMode" gorm:"size:16;default:database"`           // database/s3，按世界配置
 	AudioLibraryPrefix                    string     `json:"audioLibraryPrefix" gorm:"size:512"`                         // 世界音频 S3 prefix

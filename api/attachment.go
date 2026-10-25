@@ -203,7 +203,7 @@ func AttachmentGet(c *fiber.Ctx) (responseErr error) {
 }
 
 func serveAttachmentProxy(c *fiber.Ctx, att *model.AttachmentModel) error {
-	reader, err := service.OpenAttachmentRead(c.Context(), att)
+	reader, err := service.OpenAttachmentReadCompatible(c.Context(), att)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "附件文件不存在"})
 	}

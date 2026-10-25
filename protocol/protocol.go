@@ -114,6 +114,7 @@ type ChannelIdentity struct {
 	DisplayName              string               `json:"displayName"`
 	Color                    string               `json:"color"`
 	AvatarAttachmentID       string               `json:"avatarAttachmentId"`
+	AvatarTextStyle          string               `json:"avatarTextStyle,omitempty"`
 	AvatarDecoration         *AvatarDecoration    `json:"avatarDecoration,omitempty"`
 	AvatarDecorations        AvatarDecorationList `json:"avatarDecorations,omitempty"`
 	TheaterPresentation      *TheaterPresentation `json:"theaterPresentation,omitempty"`
@@ -164,6 +165,7 @@ const (
 )
 
 type Message struct {
+	Version          int64              `json:"version,omitempty"`
 	TTS              *MessageTTS        `json:"tts,omitempty"`
 	ID               string             `json:"id"`
 	MessageID        string             // Deprecated
@@ -213,6 +215,7 @@ type MessageTTS struct {
 }
 
 type MessageIdentity struct {
+	AvatarTextStyle     string               `json:"avatarTextStyle,omitempty"`
 	SharedIdentityID    string               `json:"sharedIdentityId,omitempty"`
 	ID                  string               `json:"id"`
 	VariantID           string               `json:"variantId,omitempty"`
@@ -442,6 +445,7 @@ const (
 	EventMessageDeleted                 EventName = "message-deleted"
 	EventMessageUpdated                 EventName = "message-updated"
 	EventMessageTTSUpdated              EventName = "message-tts-updated"
+	EventTTSCapabilityUpdated           EventName = "tts-capability-updated"
 	EventMessageArchived                EventName = "message-archived"
 	EventMessageUnarchived              EventName = "message-unarchived"
 	EventMessagePinned                  EventName = "message-pinned"

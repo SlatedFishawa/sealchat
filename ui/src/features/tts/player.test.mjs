@@ -156,6 +156,19 @@ test('stopping an automatic item by click does not pause automatic listening', a
   assert.equal(speechPlayer.state.automatic, true)
 })
 
+test('ensurePlay never toggles off an already playing message', async () => {
+  await reset()
+  const { results, onEnd } = recorder()
+  await speechPlayer.play('messages', 'a', true, onEnd)
+  const source = sources.at(-1)
+  await speechPlayer.ensurePlay('messages', 'a')
+  assert.equal(speechPlayer.state.key, 'messages:a')
+  assert.equal(speechPlayer.state.playing, true)
+  assert.equal(source.onended != null, true)
+  assert.deepEqual(results, [])
+  speechPlayer.stop()
+})
+
 test('realtime playback distinguishes speaker completion from desync', async () => {
   await reset()
   const played = recorder()

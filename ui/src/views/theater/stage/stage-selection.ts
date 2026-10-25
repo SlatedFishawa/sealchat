@@ -1,4 +1,5 @@
-import type { StageObject, StageObjectScope } from '../shared/stage-types'
+import type { StageObject, StageObjectCoordinateSpace, StageObjectScope } from '../shared/stage-types'
+import { stageObjectEffectiveCoordinateSpace } from './stage-coordinate-space'
 
 export interface StageSelectionGroup {
   memberIds: string[]
@@ -7,6 +8,10 @@ export interface StageSelectionGroup {
   members: StageObject[]
   roots: StageObject[]
   scopes: StageObjectScope[]
+  // Effective spaces of the selected trees. Geometry shared by several roots (batch drag,
+  // batch Transformer, coordinated deltas) is defined only while this has a single entry.
+  coordinateSpaces: StageObjectCoordinateSpace[]
+  mixedCoordinateSpaces: boolean
   lockedIds: string[]
 }
 
@@ -41,6 +46,8 @@ export const createStageSelectionGroup = (
     ? primaryId
     : memberIds[memberIds.length - 1] || null
 
+  const coordinateSpaces = [...new Set(roots.map((object) => stageObjectEffectiveCoordinateSpace(object, objects)))]
+
   return {
     memberIds,
     rootIds,
@@ -48,6 +55,8 @@ export const createStageSelectionGroup = (
     members,
     roots,
     scopes: [...new Set(memberIds.map(scopeForObject))],
+    coordinateSpaces,
+    mixedCoordinateSpaces: coordinateSpaces.length > 1,
     lockedIds: members.filter((object) => object.locked).map((object) => object.id),
   }
 }

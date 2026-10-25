@@ -542,6 +542,7 @@ func Init(config *utils.AppConfig, uiStatic fs.FS) error {
 	// the browser's explicit iframe request.
 	v1.Get("/channel-embed-tools/builtin/:key/assets/*", ChannelIFormBuiltinAsset)
 
+	bindLogProjectRoutes(v1)
 	v1Auth := v1.Group("")
 	v1Auth.Use(SignCheckMiddleware)
 	bindPersonalAPIKeyRoutes(v1Auth)
@@ -794,6 +795,8 @@ func Init(config *utils.AppConfig, uiStatic fs.FS) error {
 	v1Auth.Post("/channel-role-perms-batch", ChannelRolePermBatchGet)
 	v1Auth.Post("/role-perms-apply", RolePermApply)
 
+	BindShortcutRuleRoutes(v1Auth)
+
 	worldGroup := v1Auth.Group("/worlds")
 	BindWorldClueRoutes(worldGroup)
 	BindWorldClueBoardRoutes(worldGroup)
@@ -959,6 +962,9 @@ func Init(config *utils.AppConfig, uiStatic fs.FS) error {
 	v1AuthAdmin.Get("/admin/ai-quotas/:userId", AdminAIQuotaGet)
 	v1AuthAdmin.Put("/admin/ai-quotas/:userId", AdminAIQuotaUpsert)
 	v1AuthAdmin.Delete("/admin/ai-quotas/:userId", AdminAIQuotaDelete)
+	v1AuthAdmin.Get("/admin/export-pdf", AdminExportPDFGet)
+	v1AuthAdmin.Put("/admin/export-pdf", AdminExportPDFUpdate)
+	v1AuthAdmin.Post("/admin/export-pdf/probe", AdminExportPDFProbe)
 	v1AuthAdmin.Get("/admin/certificates/config", AdminCertificateConfigGet)
 	v1AuthAdmin.Put("/admin/certificates/config", AdminCertificateConfigUpdate)
 	v1AuthAdmin.Get("/admin/certificates/status", AdminCertificateStatus)
@@ -1056,6 +1062,11 @@ func Init(config *utils.AppConfig, uiStatic fs.FS) error {
 		newConfig, err := mergeConfigPatchForWrite(appConfig, ctx.Body())
 		if err != nil {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": err.Error()})
+		}
+		// External PDF tool paths are owned by PUT /admin/export-pdf; the general
+		// config form receives them sanitized and must not overwrite them.
+		if appConfig != nil {
+			newConfig.Export.PDF = appConfig.Export.PDF
 		}
 		if err := utils.ValidateSpeechConfig(newConfig.AI.Speech); err != nil {
 			return ctx.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": err.Error()})

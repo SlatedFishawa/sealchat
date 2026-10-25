@@ -1681,7 +1681,13 @@ func websocketWorks(app *fiber.App, webUrl string, outboundQueueSize int) {
 						apiWrap(ctx, msg, apiMessageForwardBatch)
 						solved = true
 					case "message.update":
-						apiWrap(ctx, msg, apiMessageUpdate)
+						apiWrap(ctx, msg, apiMessageUpdateVersioned)
+						solved = true
+					case "message.appearance.preview":
+						apiWrap(ctx, msg, apiMessageAppearancePreview)
+						solved = true
+					case "message.appearance.apply":
+						apiWrap(ctx, msg, apiMessageAppearanceApply)
 						solved = true
 					case "widget.interact":
 						apiWrap(ctx, msg, apiWidgetInteract)

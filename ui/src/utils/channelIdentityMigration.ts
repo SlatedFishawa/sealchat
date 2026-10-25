@@ -57,6 +57,7 @@ export interface IdentityExportVariantItem {
 }
 
 export interface IdentityExportItem {
+  avatarTextStyle?: '' | 'a' | 'b' | 'c';
   sourceId: string;
   displayName: string;
   color: string;
@@ -169,6 +170,13 @@ export const normalizeIdentityExportFileForImport = (
   }
 
   for (const item of normalized.items) {
+    if (item.avatarTextStyle === undefined) item.avatarTextStyle = ''
+    if (!['', 'a', 'b', 'c'].includes(item.avatarTextStyle)) {
+      throw new Error('导入文件包含无效文字头像样式')
+    }
+    if (item.avatarTextStyle && (item.avatarAssetKey || item.avatar)) {
+      throw new Error('导入文件不能同时包含文字头像和头像素材')
+    }
     if (!item.avatarAssetKey && item.avatar?.attachmentId) {
       item.avatarAssetKey = resolveLegacyAssetKey(item.avatar.attachmentId) || undefined
     }

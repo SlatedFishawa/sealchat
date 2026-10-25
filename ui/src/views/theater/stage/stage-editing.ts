@@ -1,5 +1,15 @@
 import { toRaw } from 'vue'
-import { setStageObjectEmbedEventBindings, stageObjectEmbedEventBindings, type StageAction, type StageObject, type StageObjectScope } from '../shared/stage-types'
+import {
+  STAGE_VIEWPORT_DESIGN_HEIGHT,
+  STAGE_VIEWPORT_DESIGN_WIDTH,
+  WORLD_UNIT_PX,
+  normalizeStageViewportPosition,
+  setStageObjectEmbedEventBindings,
+  stageObjectEmbedEventBindings,
+  type StageAction,
+  type StageObject,
+  type StageObjectScope,
+} from '../shared/stage-types'
 
 export interface StageClipboardBundle {
   version: 2
@@ -267,8 +277,16 @@ export const instantiateClipboardBundle = (
     copyStageObjectActions(object, makeId, idMap)
     if (rootIds.has(source.id)) {
       object.name = `${object.name} 副本`
-      object.transform.x += offset
-      object.transform.y += offset
+      // A detached screen-fixed child has no viewport position of its own; like a detached world
+      // child, its local transform is reinterpreted in world space.
+      if (!object.parentId && source.parentId && object.coordinateSpace === 'viewport') object.coordinateSpace = 'world'
+      if (!object.parentId && object.coordinateSpace === 'viewport') {
+        object.viewportX = normalizeStageViewportPosition(object.viewportX + offset * WORLD_UNIT_PX / STAGE_VIEWPORT_DESIGN_WIDTH)
+        object.viewportY = normalizeStageViewportPosition(object.viewportY + offset * WORLD_UNIT_PX / STAGE_VIEWPORT_DESIGN_HEIGHT)
+      } else {
+        object.transform.x += offset
+        object.transform.y += offset
+      }
     }
     return { scope, object }
   })

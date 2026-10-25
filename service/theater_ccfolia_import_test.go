@@ -103,7 +103,7 @@ func TestCCFOLIAEffectsNativeAnimationWithoutEncoder(t *testing.T) {
 	}
 }
 
-func TestCCFOLIAEffectSharedImageKeepsStageVariant(t *testing.T) {
+func TestCCFOLIAEffectSharedImageUsesOriginalAnimatedMedia(t *testing.T) {
 	root, ref := ccfoliaEffectFixture(t, true)
 	backup, err := loadCCFOLIABackup(root)
 	if err != nil {
@@ -125,9 +125,9 @@ func TestCCFOLIAEffectSharedImageKeepsStageVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, object := range conversion.Snapshot.PersistentObjects {
-		isVideo := strings.Contains(string(object.Content), "video/webm") && strings.Contains(string(object.Content), "/variants/display/content")
-		if object.Kind == "image" && !isVideo || object.Kind == "effect" && isVideo {
-			t.Fatalf("incorrect shared media selection: kind=%s content=%s", object.Kind, object.Content)
+		content := string(object.Content)
+		if strings.Contains(content, "video/webm") || strings.Contains(content, "/variants/display/content") || !strings.Contains(content, "image/apng") {
+			t.Fatalf("shared animated media must use original image: kind=%s content=%s", object.Kind, object.Content)
 		}
 	}
 }

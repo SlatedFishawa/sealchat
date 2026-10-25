@@ -36,7 +36,7 @@ func TestQueryChannelImagesUsesStructuredAssociations(t *testing.T) {
 	otherID := "other"
 	for _, user := range []model.UserModel{
 		{StringPKBaseModel: model.StringPKBaseModel{ID: viewerID}, Username: "viewer", Password: "x", Salt: "x", Nickname: "Viewer"},
-		{StringPKBaseModel: model.StringPKBaseModel{ID: otherID}, Username: "other", Password: "x", Salt: "x", Nickname: "Other"},
+		{StringPKBaseModel: model.StringPKBaseModel{ID: otherID}, Username: "other", Password: "x", Salt: "x", Nickname: "Other", Avatar: "account-avatar"},
 	} {
 		if err := db.Create(&user).Error; err != nil {
 			t.Fatalf("create user: %v", err)
@@ -72,6 +72,11 @@ func TestQueryChannelImagesUsesStructuredAssociations(t *testing.T) {
 	createMessage("revoked", "channel-a", `<img src="id:f" />`, 600, false, true, false, "")
 	createMessage("hidden-whisper", "channel-a", `<img src="id:g" />`, 700, false, false, true, "someone-else")
 	createMessage("visible-whisper", "channel-a", `<img src="id:h" />`, 800, false, false, true, viewerID)
+	if err := db.Model(&model.MessageModel{}).Where("id = ?", "m1").Updates(map[string]any{
+		"sender_identity_avatar_text_style": "c", "sender_identity_color": "#123456", "sender_identity_name": "Text Actor",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	deletedAttachment := model.AttachmentModel{
 		StringPKBaseModel: model.StringPKBaseModel{ID: "d"},
@@ -101,6 +106,14 @@ func TestQueryChannelImagesUsesStructuredAssociations(t *testing.T) {
 	for i, want := range wantIDs {
 		if resp.Items[i].AttachmentID != want {
 			t.Fatalf("item %d attachment = %q, want %q", i, resp.Items[i].AttachmentID, want)
+		}
+		if want == "a" {
+			item := resp.Items[i]
+			if item.SenderAvatar != "" || item.SenderName != "Text Actor" || item.SenderIdentityAvatarTextStyle != "c" || item.SenderIdentityColor != "#123456" {
+				t.Fatalf("text avatar image sender fell back to account: %#v", item)
+			}
+		} else if resp.Items[i].SenderAvatar != "account-avatar" {
+			t.Fatalf("legacy avatar fallback changed: %#v", resp.Items[i])
 		}
 	}
 

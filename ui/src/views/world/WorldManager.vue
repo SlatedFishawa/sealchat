@@ -16,9 +16,11 @@ import { resolveActionErrorMessage } from '@/utils/errorMessage';
 import CursorThemeEditorModal from '@/components/cursor/CursorThemeEditorModal.vue';
 import { normalizeCursorTheme } from '@/services/cursor/cursorRuntime';
 import { resolveMessageSortBasis } from '@/utils/messageSortBasis';
+import { uploadImageAttachment } from '@/views/chat/composables/useAttachmentUploader';
+import { resolveAttachmentUrl } from '@/composables/useAttachmentResolver';
 
 const props = defineProps<{ worldId: string, visible: boolean }>();
-const emit = defineEmits(['update:visible']);
+const emit = defineEmits(['update:visible', 'deleted']);
 const chat = useChatStore();
 const utils = useUtilsStore();
 const message = useMessage();
@@ -28,6 +30,10 @@ const loading = ref(false);
 const botOptionsLoading = ref(false);
 const botList = ref<any[]>([]);
 const cursorThemeVisible = ref(false);
+const coverUploading = ref(false);
+const coverInputRef = ref<HTMLInputElement | null>(null);
+const WORLD_COVER_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
+const coverPreviewUrl = computed(() => resolveAttachmentUrl(form.value.coverAttachmentId || ''));
 
 const botSelectOptions = computed(() => botList.value.map((item) => ({
   label: item.nick || item.username || item.name || 'Bot',
@@ -35,6 +41,12 @@ const botSelectOptions = computed(() => botList.value.map((item) => ({
 })));
 
 const close = () => emit('update:visible', false);
+
+const visibilityOptions = [
+  { label: '公开', value: 'public' },
+  { label: '私有', value: 'private' },
+  { label: '不公开访问链接', value: 'unlisted' },
+];
 
 const loadBotOptions = async () => {
   botOptionsLoading.value = true;
@@ -61,6 +73,7 @@ watch(() => [props.worldId, props.visible] as const, async ([id, visible]) => {
       visibility: detail.world?.visibility,
       messageSortBasis: resolveMessageSortBasis([detail.world?.messageSortBasis], utils.config?.messageSortBasis),
       allowAdminEditMessages: detail.world?.allowAdminEditMessages ?? false,
+      allowMemberAccessLogLayout: (detail.world as any)?.allowMemberAccessLogLayout ?? false,
       allowManageOtherUserChannelIdentities: detail.world?.allowManageOtherUserChannelIdentities ?? false,
       allowMemberEditKeywords: detail.world?.allowMemberEditKeywords ?? false,
       strictWhisperPrivacy: detail.world?.strictWhisperPrivacy ?? true,
@@ -70,6 +83,7 @@ watch(() => [props.worldId, props.visible] as const, async ([id, visible]) => {
       channelDefaultEventBotIds: Array.isArray((detail.world as any)?.channelDefaultEventBotIds) ? (detail.world as any).channelDefaultEventBotIds : [],
       characterCardBadgeTemplate: detail.world?.characterCardBadgeTemplate ?? '',
       cursorTheme: normalizeCursorTheme(detail.world?.cursorTheme, 'world'),
+      coverAttachmentId: detail.world?.coverAttachmentId || '',
     };
   } catch (e: any) {
     message.error(e?.response?.data?.message || '加载世界信息失败');
@@ -107,6 +121,7 @@ const remove = async () => {
     await chat.worldDelete(props.worldId);
     message.success('世界已删除');
     close();
+    emit('deleted');
   } catch (e: any) {
     message.error(e?.response?.data?.message || '删除失败');
   } finally {
@@ -125,6 +140,38 @@ const confirmRemove = () => {
   });
 };
 
+const pickCover = () => {
+  coverInputRef.value?.click();
+};
+
+// Uploaded as a temp attachment; the server validates and confirms it when the form is saved.
+const handleCoverSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  if (!WORLD_COVER_MIME_TYPES.has(file.type.toLowerCase())) {
+    message.error('请选择 PNG / JPEG / WebP / GIF / AVIF 图片');
+    return;
+  }
+  const worldId = props.worldId;
+  coverUploading.value = true;
+  try {
+    const result = await uploadImageAttachment(file, {
+      channelId: null,
+      rootId: worldId,
+      rootIdType: 'world_cover',
+    });
+    if (worldId === props.worldId) {
+      form.value.coverAttachmentId = result.attachmentId;
+    }
+  } catch (e: any) {
+    message.error(e?.message || '封面上传失败');
+  } finally {
+    coverUploading.value = false;
+  }
+};
+
 const updateDescription = (value: string) => {
   form.value.description = truncateTextByDisplayWidth(value, WORLD_DESCRIPTION_MAX_WIDTH_UNITS);
 };
@@ -136,86 +183,171 @@ const getDescriptionCountLabel = (value?: string) => {
 </script>
 
 <template>
-  <n-modal :show="props.visible" preset="dialog" title="世界管理" @update:show="close">
-    <div class="manager-body-scroll">
-      <n-form label-width="72">
-        <n-form-item label="名称">
-          <n-input v-model:value="form.name" />
-        </n-form-item>
-        <n-form-item label="简介">
+  <n-modal
+    :show="props.visible"
+    preset="card"
+    title="世界设置"
+    class="sc-fluid-modal sc-manage-modal"
+    :bordered="false"
+    @update:show="close"
+  >
+    <div class="sc-manage-modal__body">
+      <section class="sc-manage-section">
+        <header class="sc-manage-section__head">
+          <h3 class="sc-manage-section__title">基本信息</h3>
+          <p class="sc-manage-section__desc">展示在世界大厅与世界详情页中的信息。</p>
+        </header>
+        <div class="sc-manage-grid">
+          <label class="sc-manage-field">
+            <span class="sc-manage-field__label">名称</span>
+            <n-input v-model:value="form.name" placeholder="世界名称" />
+          </label>
+          <div class="sc-manage-field">
+            <span class="sc-manage-field__label">可见性</span>
+            <n-select v-model:value="form.visibility" :options="visibilityOptions" />
+          </div>
+        </div>
+        <div class="sc-manage-field">
+          <span class="sc-manage-field__label">简介</span>
           <div class="world-manager__description-field">
             <n-input
               type="textarea"
               :value="form.description"
+              :autosize="{ minRows: 3, maxRows: 8 }"
+              placeholder="一句话介绍这个世界"
               @update:value="updateDescription"
             />
             <div class="world-manager__counter">{{ getDescriptionCountLabel(form.description) }}</div>
           </div>
-        </n-form-item>
-        <n-form-item label="可见性">
-          <n-select v-model:value="form.visibility" :options="[
-            { label: '公开', value: 'public' },
-            { label: '私有', value: 'private' },
-            { label: '不公开访问链接', value: 'unlisted' },
-          ]" />
-        </n-form-item>
-        <n-form-item label="管理权限">
-          <div class="manager-permission-group">
-            <div class="manager-permission-row">
-              <n-switch v-model:value="form.messageSortBasis" checked-value="typing_start" unchecked-value="send_time" />
-              <span class="manager-permission-text">按开始输入时间排序新消息</span>
-            </div>
-            <div class="manager-permission-row">
-              <n-switch v-model:value="form.allowAdminEditMessages" />
-              <span class="manager-permission-text">允许管理员编辑其他成员发言</span>
-            </div>
-            <div class="manager-permission-row">
-              <n-switch v-model:value="form.allowMemberEditKeywords" />
-              <span class="manager-permission-text">允许成员编辑世界术语</span>
-            </div>
-            <div class="manager-permission-row">
-              <n-switch v-model:value="form.allowManageOtherUserChannelIdentities" />
-              <span class="manager-permission-text">允许管理其他用户频道角色</span>
-            </div>
-            <div class="manager-permission-row">
-              <n-switch v-model:value="form.strictWhisperPrivacy" />
-              <span class="manager-permission-text">不允许管理员查看所有的悄悄话</span>
-            </div>
-            <WorldDiceDefaultsFields
-              v-model:mode="form.channelDefaultDiceMode"
-              v-model:bot-ids="form.channelDefaultBotIds"
-              v-model:bot-id="form.channelDefaultBotId"
-              v-model:event-bot-ids="form.channelDefaultEventBotIds"
-              :bot-select-options="botSelectOptions"
-              :bot-options-loading="botOptionsLoading"
-              title="新频道默认掷骰方式"
-              hint="仅影响后续新建频道，不修改现有频道。"
-            />
+        </div>
+        <div class="sc-manage-field">
+          <span class="sc-manage-field__label">封面</span>
+          <div v-if="coverPreviewUrl" class="world-manager__cover-preview">
+            <img :src="coverPreviewUrl" alt="" />
           </div>
-        </n-form-item>
-        <n-form-item label="徽章模板">
-          <n-input
-            v-model:value="form.characterCardBadgeTemplate"
-            placeholder="留空则使用个人模板"
+          <div class="world-manager__cover-actions">
+            <n-button size="small" secondary :loading="coverUploading" @click="pickCover">
+              {{ form.coverAttachmentId ? '更换封面' : '上传封面' }}
+            </n-button>
+            <n-button
+              v-if="form.coverAttachmentId"
+              size="small"
+              quaternary
+              :disabled="coverUploading"
+              @click="form.coverAttachmentId = ''"
+            >
+              移除
+            </n-button>
+            <span class="sc-manage-hint">建议使用横向图片（约 4:1），保存后生效。</span>
+          </div>
+          <input
+            ref="coverInputRef"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+            hidden
+            @change="handleCoverSelected"
           />
-          <span style="margin-left: 8px; color: var(--sc-text-secondary); font-size: 13px;">
-            示例：{{ DEFAULT_CARD_TEMPLATE }}；支持 {对象.子项.属性}
-          </span>
-        </n-form-item>
-        <n-form-item label="鼠标样式">
-          <div class="manager-cursor-row">
-            <n-button secondary @click="cursorThemeVisible = true">管理鼠标样式</n-button>
-            <span>世界配置按类型覆盖平台；可选择继承或浏览器默认。</span>
+        </div>
+      </section>
+
+      <section class="sc-manage-section">
+        <header class="sc-manage-section__head">
+          <h3 class="sc-manage-section__title">消息与权限</h3>
+        </header>
+        <div class="sc-manage-row">
+          <div class="sc-manage-row__text">
+            <div class="sc-manage-row__label">按开始输入时间排序新消息</div>
+            <div class="sc-manage-row__hint">关闭后按发送时间排序，只影响之后的新消息。</div>
           </div>
-        </n-form-item>
-      </n-form>
+          <n-switch
+            v-model:value="form.messageSortBasis"
+            class="sc-manage-row__control"
+            checked-value="typing_start"
+            unchecked-value="send_time"
+          />
+        </div>
+        <div class="sc-manage-row">
+          <div class="sc-manage-row__text">
+            <div class="sc-manage-row__label">允许管理员编辑其他成员发言</div>
+          </div>
+          <n-switch v-model:value="form.allowAdminEditMessages" class="sc-manage-row__control" />
+        </div>
+        <div class="sc-manage-row">
+          <div class="sc-manage-row__text">
+            <div class="sc-manage-row__label">允许世界成员进入 LOG 排版器</div>
+            <div class="sc-manage-row__hint">成员可通过设计链接参与排版并编辑自己的消息；不会授予编辑他人消息、调整来源或发布的权限。</div>
+          </div>
+          <n-switch v-model:value="form.allowMemberAccessLogLayout" class="sc-manage-row__control" />
+        </div>
+        <div class="sc-manage-row">
+          <div class="sc-manage-row__text">
+            <div class="sc-manage-row__label">允许成员编辑世界术语</div>
+          </div>
+          <n-switch v-model:value="form.allowMemberEditKeywords" class="sc-manage-row__control" />
+        </div>
+        <div class="sc-manage-row">
+          <div class="sc-manage-row__text">
+            <div class="sc-manage-row__label">允许管理其他用户频道角色</div>
+          </div>
+          <n-switch v-model:value="form.allowManageOtherUserChannelIdentities" class="sc-manage-row__control" />
+        </div>
+        <div class="sc-manage-row">
+          <div class="sc-manage-row__text">
+            <div class="sc-manage-row__label">不允许管理员查看所有的悄悄话</div>
+          </div>
+          <n-switch v-model:value="form.strictWhisperPrivacy" class="sc-manage-row__control" />
+        </div>
+      </section>
+
+      <section class="sc-manage-section">
+        <header class="sc-manage-section__head">
+          <h3 class="sc-manage-section__title">新频道默认掷骰方式</h3>
+          <p class="sc-manage-section__desc">仅影响后续新建频道，不修改现有频道。</p>
+        </header>
+        <WorldDiceDefaultsFields
+          v-model:mode="form.channelDefaultDiceMode"
+          v-model:bot-ids="form.channelDefaultBotIds"
+          v-model:bot-id="form.channelDefaultBotId"
+          v-model:event-bot-ids="form.channelDefaultEventBotIds"
+          :bot-select-options="botSelectOptions"
+          :bot-options-loading="botOptionsLoading"
+        />
+      </section>
+
+      <section class="sc-manage-section">
+        <header class="sc-manage-section__head">
+          <h3 class="sc-manage-section__title">外观</h3>
+        </header>
+        <div class="sc-manage-field">
+          <span class="sc-manage-field__label">徽章模板</span>
+          <n-input v-model:value="form.characterCardBadgeTemplate" placeholder="留空则使用个人模板" />
+          <p class="sc-manage-hint">示例：{{ DEFAULT_CARD_TEMPLATE }}；支持 {对象.子项.属性}</p>
+        </div>
+        <div class="sc-manage-row">
+          <div class="sc-manage-row__text">
+            <div class="sc-manage-row__label">鼠标样式</div>
+            <div class="sc-manage-row__hint">世界配置按类型覆盖平台；可选择继承或浏览器默认。</div>
+          </div>
+          <n-button size="small" secondary class="sc-manage-row__control" @click="cursorThemeVisible = true">
+            管理鼠标样式
+          </n-button>
+        </div>
+      </section>
     </div>
-    <template #action>
-      <n-space>
-        <n-button quaternary @click="close">取消</n-button>
-        <n-button type="error" @click="confirmRemove" :loading="loading">删除世界</n-button>
-        <n-button type="primary" @click="save" :loading="loading">保存</n-button>
-      </n-space>
+    <template #footer>
+      <div class="sc-manage-actions">
+        <n-button
+          class="sc-manage-actions__start"
+          type="error"
+          quaternary
+          :loading="loading"
+          @click="confirmRemove"
+        >
+          删除世界
+        </n-button>
+        <n-button @click="close">取消</n-button>
+        <n-button type="primary" :loading="loading" :disabled="coverUploading" @click="save">保存</n-button>
+      </div>
     </template>
   </n-modal>
   <CursorThemeEditorModal
@@ -227,60 +359,44 @@ const getDescriptionCountLabel = (value?: string) => {
 </template>
 
 <style scoped>
-.manager-body-scroll {
-  max-height: 70vh;
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.manager-permission-group {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.manager-cursor-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  color: var(--sc-text-secondary);
-  font-size: 13px;
-}
-
 .world-manager__description-field {
   position: relative;
   width: 100%;
 }
 
-.world-manager__description-field :deep(.n-input) {
-  width: 100%;
-}
-
 .world-manager__description-field :deep(textarea) {
-  padding-right: 4.75rem;
   padding-bottom: 1.75rem;
 }
 
 .world-manager__counter {
   position: absolute;
   right: 12px;
-  bottom: 10px;
+  bottom: 8px;
   font-size: 12px;
   line-height: 1.4;
   color: var(--sc-text-secondary);
   pointer-events: none;
 }
 
-.manager-permission-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.world-manager__cover-preview {
+  width: 100%;
+  aspect-ratio: 4 / 1;
+  overflow: hidden;
+  border: 1px solid var(--sc-border-mute);
+  border-radius: 8px;
 }
 
-.manager-permission-text {
-  color: var(--sc-text-secondary);
-  font-size: 13px;
+.world-manager__cover-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.world-manager__cover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 </style>

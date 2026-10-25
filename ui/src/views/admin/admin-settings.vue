@@ -4,6 +4,7 @@ import AdminSettingsAI from './admin-settings-ai.vue'
 import AdminSpeechSettings from '@/features/tts/AdminSpeechSettings.vue'
 import AdminSettingsBot from './admin-settings-bot.vue'
 import AdminSettingsCertificate from './admin-settings-certificate.vue'
+import AdminSettingsExportPdf from './admin-settings-export-pdf.vue'
 import AdminSettingsAudio from './admin-settings-audio.vue'
 import AdminAIQuotaModal from './components/AdminAIQuotaModal.vue'
 import AdminAIUsageManagementDrawer from './components/AdminAIUsageManagementDrawer.vue'
@@ -18,7 +19,7 @@ import AdminMCPSettings from './AdminMCPSettings.vue'
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-type AdminTab = 'basic' | 'update' | 'backup-storage' | 'bot' | 'user' | 'external-glossary' | 'audio' | 'theme-style' | 'ai' | 'ai-speech' | 'certificate' | 'channel-embed-tools' | 'character-card-templates' | 'mcp'
+type AdminTab = 'basic' | 'update' | 'backup-storage' | 'bot' | 'user' | 'external-glossary' | 'audio' | 'theme-style' | 'ai' | 'ai-speech' | 'certificate' | 'export-pdf' | 'channel-embed-tools' | 'character-card-templates' | 'mcp'
 
 type AdminSettingsTabExpose = {
   save: () => Promise<void>
@@ -37,6 +38,7 @@ const speechSettingsRef = ref<AdminSettingsTabExpose | null>(null);
 const storageOptimizationSettingsRef = ref<AdminSettingsTabExpose | null>(null);
 const themeStyleSettingsRef = ref<AdminSettingsTabExpose | null>(null);
 const certificateSettingsRef = ref<AdminSettingsTabExpose | null>(null);
+const exportPdfSettingsRef = ref<AdminSettingsTabExpose | null>(null);
 const mcpSettingsRef = ref<AdminSettingsTabExpose | null>(null);
 const audioDrawerVisible = ref(false);
 const aiOpsDrawerVisible = ref(false);
@@ -62,6 +64,9 @@ const currentSettingsRef = computed<AdminSettingsTabExpose | null>(() => {
   }
   if (activeTab.value === 'certificate') {
     return certificateSettingsRef.value;
+  }
+  if (activeTab.value === 'export-pdf') {
+    return exportPdfSettingsRef.value;
   }
   return null;
 });
@@ -169,6 +174,9 @@ const saveCurrentTab = async () => {
       </n-tab-pane>
       <n-tab-pane name="certificate" tab="IP证书管理">
         <admin-settings-certificate ref="certificateSettingsRef" />
+      </n-tab-pane>
+      <n-tab-pane name="export-pdf" tab="PDF 导出">
+        <AdminSettingsExportPdf ref="exportPdfSettingsRef" />
       </n-tab-pane>
     </n-tabs>
 

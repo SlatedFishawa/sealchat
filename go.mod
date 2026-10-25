@@ -24,8 +24,11 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/orisano/wyhash v1.1.0
 	github.com/samber/lo v1.38.1
+	github.com/sashabaranov/go-openai v1.41.2
 	github.com/sealdice/dicescript v0.0.0-20240927083134-65269b7d051c
 	github.com/spf13/afero v1.11.0
+	github.com/tdewolff/parse/v2 v2.8.3
+	github.com/valyala/fasthttp v1.52.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.48.0
 	golang.org/x/image v0.34.0
@@ -74,14 +77,12 @@ require (
 	github.com/rivo/uniseg v0.4.4 // indirect
 	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/rs/xid v1.5.0 // indirect
-	github.com/sashabaranov/go-openai v1.41.2 // indirect
 	github.com/savsgio/gotils v0.0.0-20240303185622-093b76447511 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.52.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect

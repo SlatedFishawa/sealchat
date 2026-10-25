@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>SealChat LOG PDF</title>
+  <style id="log-page-rule"></style>
+  <style id="log-package"></style>
+  <style id="log-pdf-print">
+    /* 已排好的页面全部移入 #log-pdf-pages；运行时的工作容器与末页分页符不能再产生空白页。 */
+    @media print {
+      #log-root { display: none !important; }
+      #log-pdf-pages > .log-pages:last-child > .log-page:last-child { break-after: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <div id="log-pdf-pages"></div>
+  <main id="log-root" role="document" aria-label="LOG PDF"></main>
+  <script type="module" src="/src/log-pdf/main.ts"></script>
+</body>
+</html>

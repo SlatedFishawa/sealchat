@@ -2,6 +2,7 @@
 import { computed, ref, watch, useAttrs, onMounted, onBeforeUnmount, nextTick, reactive } from 'vue'
 import type { CSSProperties } from 'vue'
 import Avatar from '@/components/avatar.vue'
+import type { GeneratedAvatarStyle } from '@/utils/generatedAvatarImage'
 import {
   resolveAttachmentUrl,
   fetchAttachmentMetaById,
@@ -22,6 +23,8 @@ const props = withDefaults(defineProps<{
   border?: boolean
   fallbackText?: string
   useTextFallback?: boolean
+  textFallbackStyle?: GeneratedAvatarStyle | ''
+  textFallbackAccentColor?: string
   decoration?: AvatarDecoration | null
   decorations?: AvatarDecoration[] | null
   decorationEnabled?: boolean
@@ -368,6 +371,8 @@ watch([resolvedLayers, shouldPlayVideo], () => {
       :border="border"
       :fallback-text="fallbackText"
       :use-text-fallback="useTextFallback"
+      :text-fallback-style="textFallbackStyle"
+      :text-fallback-accent-color="textFallbackAccentColor"
     />
 
     <template v-for="layer in foregroundLayers" :key="`fg-${layer.id}`">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, type ComponentPublicInstance, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, type ComponentPublicInstance, watch } from 'vue'
 import { NIcon, useMessage } from 'naive-ui'
 import { calculateVisibleActionCount } from './chatActionRibbonLayout'
 import {
@@ -22,12 +22,14 @@ import {
 	Dice as Dice3DIcon,
   Bulb as ClueBoxIcon,
   LayoutBoard as ClueBoardIcon,
+  Bolt as ShortcutCommandIcon,
 } from '@vicons/tabler'
 import { DocumentTextOutline } from '@vicons/ionicons5'
 import { MailOutline } from '@vicons/ionicons5'
 import ObserverFilterModal from '../../components/ObserverFilterModal.vue'
 import { useSpeechStore } from '@/features/tts/store'
 import TTSWorldActivationDialog from '@/features/tts/TTSWorldActivationDialog.vue'
+import { useDisplayStore } from '@/stores/display'
 
 interface FilterState {
   icFilter: 'all' | 'ic' | 'ooc'
@@ -54,6 +56,7 @@ interface Props {
   galleryActive?: boolean
   displayActive?: boolean
   glassBackgroundActive?: boolean
+  shortcutCommandActive?: boolean
   favoriteActive?: boolean
   channelImagesActive?: boolean
   battleSummaryEnabled?: boolean
@@ -95,6 +98,7 @@ interface Emits {
   (e: 'open-gallery'): void
   (e: 'open-display-settings'): void
   (e: 'open-glass-background'): void
+  (e: 'open-shortcut-command'): void
   (e: 'open-favorites'): void
   (e: 'open-channel-images'): void
   (e: 'open-battle-summary'): void
@@ -117,6 +121,7 @@ interface Emits {
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 const speech = useSpeechStore()
+const display = useDisplayStore()
 const message = useMessage()
 
 // Ref for measuring container width
@@ -149,6 +154,10 @@ const splitChooserExpanded = ref(false)
 const dualSplitActionRef = ref<HTMLElement | null>(null)
 const theaterChooserExpanded = ref(false)
 const theaterActionRef = ref<HTMLElement | null>(null)
+const moreExpanded = ref(false)
+const moreMenuVisible = ref(false)
+const moreModeExpandedKey = ref<string | null>(null)
+const useExpandedMore = computed(() => display.settings.actionRibbonExpandMoreEnabled !== false)
 
 const setDualSplitActionRef = (element: Element | ComponentPublicInstance | null) => {
   dualSplitActionRef.value = element instanceof HTMLElement ? element : null
@@ -241,6 +250,7 @@ const allActionButtons = computed<ActionButton[]>(() => {
   }
   
   buttons.push({ key: 'glass-background', label: '玻璃背景', icon: Palette, emitEvent: 'open-glass-background', activeKey: 'glassBackgroundActive' })
+  buttons.push({ key: 'shortcut-command', label: '快捷命令', icon: ShortcutCommandIcon, emitEvent: 'open-shortcut-command', activeKey: 'shortcutCommandActive' })
   return buttons
 })
 
@@ -254,6 +264,12 @@ const overflowButtons = computed(() => {
   return allActionButtons.value.slice(visibleCount.value)
 })
 
+const renderedButtons = computed(() => (
+  useExpandedMore.value && moreExpanded.value
+    ? allActionButtons.value
+    : visibleButtons.value
+))
+
 // Check if any overflow action is active
 const hasActiveOverflowAction = computed(() => {
   return overflowButtons.value.some(
@@ -263,43 +279,6 @@ const hasActiveOverflowAction = computed(() => {
 
 const hasOverflowButtons = computed(() => {
   return overflowButtons.value.length > 0
-})
-
-// Dropdown menu options for overflow buttons
-const moreMenuOptions = computed(() => {
-  return overflowButtons.value.map((btn) => {
-    if (btn.template === 'theater-dual') {
-      const disabled = btn.disabled?.() === true
-      return {
-        key: btn.key,
-        label: btn.label,
-        icon: () => h(NIcon, null, { default: () => h(btn.icon) }),
-        children: [
-          { key: THEATER_MORE_STANDARD_KEY, label: '标准模式', disabled },
-          { key: THEATER_MORE_PIP_KEY, label: '画中画模式', disabled },
-        ],
-      }
-    }
-    if (btn.template === 'split-dual') {
-      const disabled = btn.disabled?.() === true
-      return {
-        key: btn.key,
-        label: btn.label,
-        icon: () => h(NIcon, null, { default: () => h(btn.icon) }),
-        children: [
-          { key: SPLIT_DUAL_MORE_LEFT_KEY, label: '左场内', disabled },
-          { key: SPLIT_DUAL_MORE_RIGHT_KEY, label: '右场内', disabled },
-          { key: SPLIT_DUAL_MORE_INLINE_KEY, label: '页内分屏', disabled },
-        ],
-      }
-    }
-    return {
-      key: btn.key,
-      label: btn.label,
-      icon: () => h(NIcon, null, { default: () => h(btn.icon) }),
-      disabled: btn.disabled?.() === true,
-    }
-  })
 })
 
 const emitAction = (button: ActionButton) => {
@@ -312,6 +291,8 @@ const emitAction = (button: ActionButton) => {
 }
 
 const handleMoreMenuSelect = (key: string) => {
+  moreMenuVisible.value = false
+  moreModeExpandedKey.value = null
   if (key === THEATER_MORE_STANDARD_KEY) {
     emit('open-theater', 'standard')
     return
@@ -335,6 +316,12 @@ const handleMoreMenuSelect = (key: string) => {
   const button = allActionButtons.value.find(btn => btn.key === key)
   if (!button) return
   emitAction(button)
+}
+
+const handleMoreModeTriggerClick = (button: ActionButton) => {
+  if (button.disabled?.() === true) return
+  if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) return
+  moreModeExpandedKey.value = moreModeExpandedKey.value === button.key ? null : button.key
 }
 
 const handleButtonClick = (button: ActionButton) => {
@@ -537,6 +524,26 @@ watch(roleSelectExpanded, () => {
   nextTick(scheduleVisibleCountCalculation)
 })
 
+watch(moreMenuVisible, (visible) => {
+  if (!visible) {
+    moreModeExpandedKey.value = null
+  }
+})
+
+watch(useExpandedMore, (expandedMode) => {
+  moreExpanded.value = false
+  if (expandedMode) {
+    moreMenuVisible.value = false
+  }
+})
+
+watch(hasOverflowButtons, (hasOverflow) => {
+  if (!hasOverflow) {
+    moreExpanded.value = false
+    moreMenuVisible.value = false
+  }
+})
+
 const roleSelectOptions = computed(() => {
   return props.roles.map(role => ({
     label: role.label || role.name || '未命名角色',
@@ -635,12 +642,15 @@ const cycleIcFilter = () => {
     <!-- 功能入口区域 -->
     <div
       class="ribbon-section ribbon-section--actions"
-      :class="{ 'is-action-chooser-expanded': splitChooserExpanded || theaterChooserExpanded }"
+      :class="{
+        'is-action-chooser-expanded': splitChooserExpanded || theaterChooserExpanded,
+        'is-more-expanded': useExpandedMore && moreExpanded,
+      }"
       ref="actionsContainerRef"
     >
       <div class="ribbon-actions-viewport">
         <div class="ribbon-actions-grid">
-          <template v-for="button in visibleButtons" :key="button.key">
+          <template v-for="button in renderedButtons" :key="button.key">
             <div
               v-if="button.template === 'theater-dual'"
               :ref="setTheaterActionRef"
@@ -745,22 +755,108 @@ const cycleIcFilter = () => {
       </div>
 
       <div v-if="hasOverflowButtons" class="ribbon-actions-anchor">
-        <n-dropdown
-          :options="moreMenuOptions"
-          trigger="click"
-          @select="handleMoreMenuSelect"
+        <n-button
+          v-if="useExpandedMore"
+          type="tertiary"
+          class="ribbon-action-button ribbon-more-button"
+          :class="{ 'is-active': moreExpanded || hasActiveOverflowAction }"
+          :aria-expanded="moreExpanded"
+          @click="moreExpanded = !moreExpanded"
         >
-          <n-button
-            type="tertiary"
-            class="ribbon-action-button ribbon-more-button"
-            :class="{ 'is-active': hasActiveOverflowAction }"
-          >
-            <template #icon>
-              <n-icon :component="MoreIcon" />
-            </template>
-            更多
-          </n-button>
-        </n-dropdown>
+          <template #icon>
+            <n-icon :component="MoreIcon" />
+          </template>
+          {{ moreExpanded ? '收起' : '更多' }}
+        </n-button>
+        <n-popover
+          v-else
+          v-model:show="moreMenuVisible"
+          placement="bottom-end"
+          trigger="click"
+          :show-arrow="false"
+          raw
+        >
+          <template #trigger>
+            <n-button
+              type="tertiary"
+              class="ribbon-action-button ribbon-more-button"
+              :class="{ 'is-active': hasActiveOverflowAction }"
+            >
+              <template #icon>
+                <n-icon :component="MoreIcon" />
+              </template>
+              更多
+            </n-button>
+          </template>
+
+          <div class="ribbon-more-panel" @click.stop>
+            <div class="ribbon-more-panel__grid">
+              <template v-for="button in overflowButtons" :key="`more-${button.key}`">
+                <div
+                  v-if="button.template === 'theater-dual'"
+                  class="ribbon-more-mode-card"
+                  :class="{
+                    'is-active': props[button.activeKey],
+                    'is-disabled': button.disabled?.() === true,
+                    'is-expanded': moreModeExpandedKey === button.key,
+                  }"
+                  :title="button.disabled?.() === true ? button.disabledReason : undefined"
+                >
+                  <button
+                    type="button"
+                    class="ribbon-more-mode-card__title"
+                    :disabled="button.disabled?.() === true"
+                    :aria-expanded="moreModeExpandedKey === button.key ? 'true' : 'false'"
+                    @click="handleMoreModeTriggerClick(button)"
+                  >
+                    <n-icon :component="button.icon" />
+                    <span>{{ button.label }}</span>
+                    <span class="ribbon-more-mode-card__hint" aria-hidden="true">›</span>
+                  </button>
+                  <div class="ribbon-more-mode-card__choices ribbon-more-mode-card__choices--two">
+                    <button type="button" class="ribbon-more-mode-card__choice" :disabled="button.disabled?.() === true" @click="handleMoreMenuSelect(THEATER_MORE_STANDARD_KEY)">标准模式</button>
+                    <button type="button" class="ribbon-more-mode-card__choice" :disabled="button.disabled?.() === true" @click="handleMoreMenuSelect(THEATER_MORE_PIP_KEY)">画中画</button>
+                  </div>
+                </div>
+
+                <div
+                  v-else-if="button.template === 'split-dual'"
+                  class="ribbon-more-mode-card"
+                  :class="{ 'is-active': props[button.activeKey], 'is-expanded': moreModeExpandedKey === button.key }"
+                >
+                  <button
+                    type="button"
+                    class="ribbon-more-mode-card__title"
+                    :aria-expanded="moreModeExpandedKey === button.key ? 'true' : 'false'"
+                    @click="handleMoreModeTriggerClick(button)"
+                  >
+                    <n-icon :component="button.icon" />
+                    <span>{{ button.label }}</span>
+                    <span class="ribbon-more-mode-card__hint" aria-hidden="true">›</span>
+                  </button>
+                  <div class="ribbon-more-mode-card__choices ribbon-more-mode-card__choices--three">
+                    <button type="button" class="ribbon-more-mode-card__choice" @click="handleMoreMenuSelect(SPLIT_DUAL_MORE_LEFT_KEY)">左场内</button>
+                    <button type="button" class="ribbon-more-mode-card__choice" @click="handleMoreMenuSelect(SPLIT_DUAL_MORE_RIGHT_KEY)">右场内</button>
+                    <button type="button" class="ribbon-more-mode-card__choice" @click="handleMoreMenuSelect(SPLIT_DUAL_MORE_INLINE_KEY)">页内分屏</button>
+                  </div>
+                </div>
+
+                <button
+                  v-else
+                  type="button"
+                  class="ribbon-more-item"
+                  :class="{ 'is-active': button.key !== 'sticky-note' && props[button.activeKey] }"
+                  :disabled="button.disabled?.() === true"
+                  :title="button.disabled?.() === true ? button.disabledReason : undefined"
+                  @click="handleMoreMenuSelect(button.key)"
+                >
+                  <n-icon :component="button.icon" />
+                  <span>{{ button.label }}</span>
+                </button>
+              </template>
+            </div>
+          </div>
+        </n-popover>
       </div>
 
       <div ref="actionMeasureRef" class="ribbon-action-measurements" aria-hidden="true">
@@ -907,6 +1003,11 @@ const cycleIcFilter = () => {
 }
 
 .ribbon-section--actions.is-action-chooser-expanded {
+  overflow: visible;
+}
+
+.ribbon-section--actions.is-more-expanded {
+  align-items: flex-start;
   overflow: visible;
 }
 
@@ -1086,6 +1187,15 @@ const cycleIcFilter = () => {
   overflow: hidden;
 }
 
+.ribbon-section--actions.is-more-expanded .ribbon-actions-viewport {
+  flex: 1 1 auto;
+  overflow: visible;
+}
+
+.ribbon-section--actions.is-more-expanded .ribbon-actions-grid {
+  flex-wrap: wrap;
+}
+
 .ribbon-section--actions.is-action-chooser-expanded .ribbon-actions-viewport {
   overflow: visible;
 }
@@ -1110,6 +1220,208 @@ const cycleIcFilter = () => {
 .ribbon-action-measurement-item {
   display: inline-flex;
   margin-right: 0.5rem;
+}
+
+.ribbon-more-panel {
+  width: min(430px, calc(100vw - 24px));
+  max-height: min(520px, calc(100vh - 112px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px;
+  border: 1px solid var(--sc-border-strong);
+  border-radius: 12px;
+  background: var(--sc-bg-elevated);
+  color: var(--sc-text-primary);
+}
+
+.ribbon-more-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.ribbon-more-item {
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--sc-border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sc-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.ribbon-more-item:hover:not(:disabled),
+.ribbon-more-item:focus-visible {
+  background: var(--sc-chip-bg);
+  border-color: var(--sc-border-strong);
+}
+
+.ribbon-more-item.is-active {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(37, 99, 235, 0.26);
+  color: #1d4ed8;
+}
+
+.ribbon-more-item:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.ribbon-more-item .n-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+}
+
+.ribbon-more-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ribbon-more-mode-card {
+  position: relative;
+  min-width: 0;
+  min-height: 40px;
+  border: 1px solid var(--sc-border-strong);
+  border-radius: 8px;
+  background: transparent;
+  overflow: hidden;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.ribbon-more-mode-card.is-active {
+  border-color: rgba(37, 99, 235, 0.3);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.ribbon-more-mode-card.is-disabled {
+  opacity: 0.5;
+}
+
+.ribbon-more-mode-card__title {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ribbon-more-mode-card__title .n-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+}
+
+.ribbon-more-mode-card__title span:not(.ribbon-more-mode-card__hint) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ribbon-more-mode-card__hint {
+  margin-left: auto;
+  color: var(--sc-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 0.16s ease;
+}
+
+.ribbon-more-mode-card__choices {
+  position: absolute;
+  inset: 3px;
+  display: grid;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.985);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.ribbon-more-mode-card__choices--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ribbon-more-mode-card__choices--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ribbon-more-mode-card__choice {
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid var(--sc-border-strong);
+  border-radius: 7px;
+  padding: 4px 7px;
+  background: var(--sc-bg-elevated);
+  color: var(--sc-text-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.ribbon-more-mode-card.is-expanded .ribbon-more-mode-card__choices {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.ribbon-more-mode-card.is-expanded .ribbon-more-mode-card__hint {
+  transform: rotate(90deg);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ribbon-more-mode-card:hover,
+  .ribbon-more-mode-card:focus-within {
+    border-color: var(--sc-border-strong);
+    background: var(--sc-chip-bg);
+  }
+
+  .ribbon-more-mode-card:hover .ribbon-more-mode-card__choices,
+  .ribbon-more-mode-card:focus-within .ribbon-more-mode-card__choices {
+    opacity: 1;
+    pointer-events: auto;
+    transform: scale(1);
+  }
+
+  .ribbon-more-mode-card:hover .ribbon-more-mode-card__title,
+  .ribbon-more-mode-card:focus-within .ribbon-more-mode-card__title {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
+.ribbon-more-mode-card__choice:hover:not(:disabled),
+.ribbon-more-mode-card__choice:focus-visible {
+  background: var(--sc-chip-bg);
+  border-color: color-mix(in srgb, var(--sc-text-secondary) 55%, var(--sc-border-strong));
+}
+
+.ribbon-more-mode-card__choice:disabled {
+  cursor: not-allowed;
+}
+
+:root[data-display-palette='night'] .ribbon-more-item.is-active {
+  background: rgba(96, 165, 250, 0.18);
+  border-color: rgba(147, 197, 253, 0.3);
+  color: #cfe0ff;
 }
 
 :root[data-display-palette='night'] .ribbon-action-button:hover {
@@ -1251,6 +1563,37 @@ const cycleIcFilter = () => {
 @media (max-width: 520px) {
   .ribbon-actions-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ribbon-more-panel {
+    width: calc(100vw - 16px);
+    max-height: min(70vh, 520px);
+    padding: 8px;
+  }
+
+  .ribbon-more-panel__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ribbon-more-mode-card {
+    grid-column: auto;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .ribbon-more-mode-card.is-expanded {
+    min-height: auto;
+    padding-bottom: 6px;
+    border-color: var(--sc-border-strong);
+    background: var(--sc-chip-bg);
+  }
+
+  .ribbon-more-mode-card.is-expanded .ribbon-more-mode-card__choices {
+    position: static;
+    margin: 0 6px;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
   }
 }
 </style>

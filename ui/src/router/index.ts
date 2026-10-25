@@ -127,6 +127,18 @@ const router = createRouter({
       meta: { internalSurface: true },
     },
     {
+      path: '/log/layout/:slug',
+      name: 'log-layout',
+      component: () => import('@/views/log/LogLayoutView.vue'),
+      meta: { logSurface: true },
+    },
+    {
+      path: '/log/views/:slug',
+      name: 'log-public',
+      component: () => import('@/views/log/LogPublicView.vue'),
+      meta: { logSurface: true, logPublic: true },
+    },
+    {
       path: '/:worldId/:channelId?',
       name: 'world-channel',
       component: HomeView,

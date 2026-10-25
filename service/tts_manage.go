@@ -18,6 +18,7 @@ import (
 	"sealchat/model"
 	"sealchat/pkg/ttsprovider"
 	aiService "sealchat/service/ai"
+	"sealchat/service/storage"
 	"sealchat/utils"
 )
 
@@ -84,28 +85,56 @@ func ttsCloneSourceAttachment(job *model.TTSJob) (*model.AttachmentModel, error)
 		return nil, ErrTTSDenied
 	}
 	var a model.AttachmentModel
-	if model.GetDB().Where("id = ? AND user_id = ? AND root_id_type = ? AND parent_id_type = ? AND deleted_at IS NULL", snapshot.SourceResourceID, job.PayerUserID, "tts", "clone_source").First(&a).Error != nil {
+	if model.GetDB().Where("id = ? AND user_id = ? AND root_id_type = ? AND parent_id_type = ? AND deleted_at IS NULL AND COALESCE(extra, '') <> ?", snapshot.SourceResourceID, job.PayerUserID, "tts", "clone_source", ttsCloneSourceCleanupClaim).First(&a).Error != nil {
 		return nil, ErrTTSDenied
 	}
 	return &a, nil
 }
 
-func TTSCloneReadURL(job *model.TTSJob) (string, error) {
-	if _, err := ttsCloneSourceAttachment(job); err != nil {
-		return "", err
-	}
+func ttsClonePublicBaseURL() (*url.URL, error) {
 	cfg := utils.GetConfig()
 	if cfg == nil {
-		return "", TTSValidationError("复刻样本读取需要配置公开 HTTPS Domain")
+		return nil, TTSValidationError("声音复刻需要配置可公网访问的 HTTPS Domain")
 	}
 	base, err := url.Parse(utils.PrimaryDomain(cfg.Domain))
 	if err != nil || base.Scheme != "https" || base.Host == "" || base.Hostname() == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" {
-		return "", TTSValidationError("复刻样本读取需要配置公开 HTTPS Domain")
+		return nil, TTSValidationError("声音复刻需要配置可公网访问的 HTTPS Domain")
 	}
 	base.Path = strings.TrimRight(base.Path, "/")
 	webRoot := strings.Trim(cfg.WebUrl, "/")
 	if webRoot != "" {
 		base.Path += "/" + webRoot
+	}
+	return base, nil
+}
+
+func ttsCloneProxyBaseURL(source *model.AttachmentModel) (*url.URL, error) {
+	base, err := ttsClonePublicBaseURL()
+	if err == nil {
+		return base, nil
+	}
+	if source != nil && source.StorageType == model.StorageS3 {
+		return nil, TTSValidationError("声音复刻的 S3 样本无法生成公网 HTTPS 临时地址，请检查 S3 Endpoint/SSL；或配置可公网访问的 HTTPS Domain")
+	}
+	if source != nil && source.StorageType == model.StorageLocal {
+		if m := GetStorageManager(); m != nil && m.HasRemote() {
+			return nil, TTSValidationError("声音复刻样本当前实际存于本地（S3 未使用或上传已回退）；请检查 S3 配置/上传，或配置可公网访问的 HTTPS Domain")
+		}
+	}
+	return nil, err
+}
+
+func TTSCloneReadURL(job *model.TTSJob) (string, error) {
+	a, err := ttsCloneSourceAttachment(job)
+	if err != nil {
+		return "", err
+	}
+	if signed := ttsClonePresignedURL(context.Background(), a); signed != "" {
+		return signed, nil
+	}
+	base, err := ttsCloneProxyBaseURL(a)
+	if err != nil {
+		return "", err
 	}
 	base.Path += "/api/v1/tts/clone-source/" + job.ID
 	base.RawPath = ""
@@ -115,6 +144,27 @@ func TTSCloneReadURL(job *model.TTSJob) (string, error) {
 		"token":   {ttsCloneSourceToken(job.ID, job.ReservationID, expires)},
 	}.Encode()
 	return base.String(), nil
+}
+
+func ttsClonePresignedURL(ctx context.Context, a *model.AttachmentModel) string {
+	if a == nil || a.StorageType != model.StorageS3 {
+		return ""
+	}
+	if backend, err := ttsResourceBackend(a); err != nil || backend != storage.BackendS3 {
+		return ""
+	}
+	m := GetStorageManager()
+	if m == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	signed := m.PresignedURL(ctx, storage.BackendS3, a.ObjectKey)
+	u, err := url.Parse(signed)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+		return ""
+	}
+	return signed
 }
 
 // Authorization is database-backed; serving local TTS files across instances
@@ -138,6 +188,151 @@ func TTSResolveCloneSource(jobID, expiresRaw, token string) (*model.AttachmentMo
 	return ttsCloneSourceAttachment(&job)
 }
 
+func ttsProviderVoiceNotFound(err error) bool {
+	var providerErr *ttsprovider.ProviderError
+	return errors.As(err, &providerErr) && strings.EqualFold(strings.TrimSpace(providerErr.Code), "BadRequest.VoiceNotFound")
+}
+
+func ttsReconcileVoice(parent context.Context, db *gorm.DB, speech *utils.SpeechConfig, v model.TTSVoice, forceDelete bool) error {
+	if db == nil || speech == nil {
+		return ErrTTSDisabled
+	}
+	if v.ProviderVoiceID == "" {
+		if v.Lifecycle != "delete_pending" {
+			return nil
+		}
+		var refs int64
+		if err := db.Model(&model.TTSJob{}).Where("voice_id = ? AND status IN ?", v.ID, []string{"queued", "running", "usage_unknown"}).Count(&refs).Error; err != nil {
+			return err
+		}
+		if refs != 0 {
+			return nil
+		}
+		r := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now()})
+		if r.Error != nil {
+			return r.Error
+		}
+		if r.RowsAffected == 1 && v.Kind == "clone" {
+			_ = ttsCleanupCloneSource(parent, v.SourceResourceID)
+		}
+		return nil
+	}
+
+	var provider *utils.SpeechProviderConfig
+	for _, p := range speech.Providers {
+		if p.ID == v.ProviderID && p.CredentialScope == v.CredentialScope && p.Region == v.Region && p.Workspace == v.Workspace {
+			cp := p
+			provider = &cp
+			break
+		}
+	}
+	if provider == nil {
+		return TTSValidationError("音色对应的供应商配置已不可用")
+	}
+
+	cleanupSourceID := ""
+	if v.Lifecycle == "delete_pending" {
+		var refs int64
+		if err := db.Model(&model.TTSJob{}).Where("voice_id = ? AND status IN ?", v.ID, []string{"queued", "running", "usage_unknown"}).Count(&refs).Error; err != nil {
+			return err
+		}
+		if refs != 0 {
+			return nil
+		}
+
+		readyToDelete := true
+		remoteGone := false
+		if v.ProviderStatus == "DEPLOYING" {
+			queryCtx, cancel := context.WithTimeout(parent, 10*time.Second)
+			queried, queryErr := ttsProviderQueryVoice(queryCtx, *provider, v.ProviderVoiceID)
+			cancel()
+			readyToDelete = false
+			if ttsProviderVoiceNotFound(queryErr) {
+				remoteGone = true
+			} else if queryErr != nil {
+				return queryErr
+			} else if queried.Output.TargetModel == v.TargetModel {
+				status := queried.Output.Status
+				if status != "" {
+					if err := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").UpdateColumn("provider_status", status).Error; err != nil {
+						return err
+					}
+				}
+				readyToDelete = forceDelete || status == "OK" || status == "UNDEPLOYED"
+			}
+		}
+		if readyToDelete && !remoteGone {
+			deleteCtx, cancel := context.WithTimeout(parent, 10*time.Second)
+			_, deleteErr := ttsProviderDeleteVoice(deleteCtx, *provider, v.ProviderVoiceID)
+			cancel()
+			if deleteErr != nil && !ttsProviderVoiceNotFound(deleteErr) {
+				if forceDelete {
+					var providerErr *ttsprovider.ProviderError
+					if errors.As(deleteErr, &providerErr) && strings.TrimSpace(providerErr.Code) != "" {
+						return TTSValidationError("供应商暂时拒绝删除此音色（" + providerErr.Code + "），请稍后重试")
+					}
+					return TTSValidationError("供应商暂时拒绝删除此音色，请稍后重试")
+				}
+				return deleteErr
+			}
+			remoteGone = true
+		}
+		if remoteGone {
+			r := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now()})
+			if r.Error != nil {
+				return r.Error
+			}
+			if r.RowsAffected == 1 && v.Kind == "clone" {
+				cleanupSourceID = v.SourceResourceID
+			}
+		}
+	} else if v.ProviderStatus != "OK" {
+		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+		r, err := ttsProviderQueryVoice(ctx, *provider, v.ProviderVoiceID)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if r.Output.TargetModel != v.TargetModel {
+			return ErrTTSConflict
+		}
+		updates := map[string]any{"provider_status": r.Output.Status}
+		if r.Output.Status == "OK" || r.Output.Status == "UNDEPLOYED" {
+			updates["lifecycle"] = "preview"
+		}
+		updated := db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle IN ?", v.ID, []string{"creating", "preview"}).Updates(updates)
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 1 && v.Kind == "clone" && (r.Output.Status == "OK" || r.Output.Status == "UNDEPLOYED") {
+			cleanupSourceID = v.SourceResourceID
+		}
+	}
+	if cleanupSourceID != "" {
+		_ = ttsCleanupCloneSource(parent, cleanupSourceID)
+	}
+	return nil
+}
+
+func TTSRefreshVoice(parent context.Context, userID, voiceID string) error {
+	if userID == "" || voiceID == "" {
+		return ErrTTSDenied
+	}
+	db := model.GetDB()
+	var voice model.TTSVoice
+	if err := db.Where("id = ? AND owner_user_id = ? AND deleted_at IS NULL", voiceID, userID).First(&voice).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrTTSDenied
+		}
+		return err
+	}
+	cfg := utils.GetConfig()
+	if cfg == nil || cfg.AI.Speech == nil {
+		return ErrTTSDisabled
+	}
+	return ttsReconcileVoice(parent, db, cfg.AI.Speech, voice, true)
+}
+
 var ttsMaintenanceAt time.Time
 
 func ttsMaintainVoices(parent context.Context) {
@@ -145,11 +340,12 @@ func ttsMaintainVoices(parent context.Context) {
 		return
 	}
 	ttsMaintenanceAt = time.Now()
+	db := model.GetDB()
+	defer ttsRetryCloneSourceCleanup(parent, db)
 	cfg := utils.GetConfig()
 	if cfg == nil || cfg.AI.Speech == nil {
 		return
 	}
-	db := model.GetDB()
 	// Cache eligibility is temporary; jobs/messages keep their own file refs.
 	_ = db.Where("expires_at <= ?", time.Now()).Delete(&model.TTSCache{}).Error
 	var voices []model.TTSVoice
@@ -163,40 +359,7 @@ func ttsMaintainVoices(parent context.Context) {
 			_ = TTSExpirePreviews(db, v.OwnerUserID, time.Now())
 			continue
 		}
-		if v.ProviderVoiceID == "" {
-			continue
-		}
-		var provider *utils.SpeechProviderConfig
-		for _, p := range cfg.AI.Speech.Providers {
-			if p.ID == v.ProviderID && p.CredentialScope == v.CredentialScope && p.Region == v.Region && p.Workspace == v.Workspace {
-				cp := p
-				provider = &cp
-				break
-			}
-		}
-		if provider == nil {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-		if v.Lifecycle == "delete_pending" {
-			var refs int64
-			err := db.Model(&model.TTSJob{}).Where("voice_id = ? AND status IN ?", v.ID, []string{"queued", "running", "usage_unknown"}).Count(&refs).Error
-			if err == nil && refs == 0 {
-				if _, err = ttsProviderDeleteVoice(ctx, *provider, v.ProviderVoiceID); err == nil {
-					_ = db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle = ?", v.ID, "delete_pending").Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now()}).Error
-				}
-			}
-		} else if v.ProviderStatus != "OK" {
-			r, err := ttsProviderQueryVoice(ctx, *provider, v.ProviderVoiceID)
-			if err == nil && r.Output.TargetModel == v.TargetModel {
-				updates := map[string]any{"provider_status": r.Output.Status}
-				if r.Output.Status == "OK" || r.Output.Status == "UNDEPLOYED" {
-					updates["lifecycle"] = "preview"
-				}
-				_ = db.Model(&model.TTSVoice{}).Where("id = ? AND lifecycle IN ?", v.ID, []string{"creating", "preview"}).Updates(updates).Error
-			}
-		}
-		cancel()
+		_ = ttsReconcileVoice(parent, db, cfg.AI.Speech, v, false)
 	}
 }
 
@@ -274,7 +437,136 @@ func TTSQuotaForUser(userID string) (TTSQuota, error) {
 	return q, err
 }
 
-func TTSRoleConfig(userID, identityID string) (*model.ChannelIdentityTTSConfig, error) {
+type sharedChannelIdentityTTSConfig struct {
+	Disabled              bool    `json:"disabled"`
+	VoiceID               string  `json:"voiceId"`
+	SystemVoice           string  `json:"systemVoice"`
+	SystemVoiceProvider   string  `json:"systemVoiceProvider"`
+	SystemVoiceProviderID string  `json:"systemVoiceProviderId"`
+	SystemVoiceModel      string  `json:"systemVoiceModel"`
+	SpeechLanguage        string  `json:"speechLanguage"`
+	Instruction           string  `json:"instruction"`
+	Rate                  float64 `json:"rate"`
+	Pitch                 float64 `json:"pitch"`
+	Volume                int     `json:"volume"`
+	Revision              int64   `json:"revision"`
+}
+
+func defaultChannelIdentityTTSConfig(identityID string) *model.ChannelIdentityTTSConfig {
+	return &model.ChannelIdentityTTSConfig{IdentityID: identityID, Rate: 1, Pitch: 1, Volume: 50}
+}
+
+func sharedChannelIdentityTTSConfigFromData(raw, identityID string) (*model.ChannelIdentityTTSConfig, bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, false, nil
+	}
+	document := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte(raw), &document); err != nil {
+		return nil, false, err
+	}
+	ttsRaw, ok := document["tts"]
+	if !ok || len(ttsRaw) == 0 || string(ttsRaw) == "null" {
+		return nil, false, nil
+	}
+	var shared sharedChannelIdentityTTSConfig
+	if err := json.Unmarshal(ttsRaw, &shared); err != nil {
+		return nil, false, err
+	}
+	return &model.ChannelIdentityTTSConfig{
+		IdentityID:            identityID,
+		Disabled:              shared.Disabled,
+		VoiceID:               shared.VoiceID,
+		SystemVoice:           shared.SystemVoice,
+		SystemVoiceProvider:   shared.SystemVoiceProvider,
+		SystemVoiceProviderID: shared.SystemVoiceProviderID,
+		SystemVoiceModel:      shared.SystemVoiceModel,
+		SpeechLanguage:        shared.SpeechLanguage,
+		Instruction:           shared.Instruction,
+		Rate:                  shared.Rate,
+		Pitch:                 shared.Pitch,
+		Volume:                shared.Volume,
+		Revision:              shared.Revision,
+	}, true, nil
+}
+
+func sharedChannelIdentityTTSData(previous string, role model.ChannelIdentityTTSConfig) (string, error) {
+	document := map[string]json.RawMessage{}
+	if strings.TrimSpace(previous) != "" {
+		if err := json.Unmarshal([]byte(previous), &document); err != nil {
+			return "", err
+		}
+	}
+	shared := sharedChannelIdentityTTSConfig{
+		Disabled: role.Disabled, VoiceID: role.VoiceID, SystemVoice: role.SystemVoice,
+		SystemVoiceProvider: role.SystemVoiceProvider, SystemVoiceProviderID: role.SystemVoiceProviderID,
+		SystemVoiceModel: role.SystemVoiceModel, SpeechLanguage: role.SpeechLanguage, Instruction: role.Instruction,
+		Rate: role.Rate, Pitch: role.Pitch, Volume: role.Volume, Revision: role.Revision,
+	}
+	raw, err := json.Marshal(shared)
+	if err != nil {
+		return "", err
+	}
+	document["tts"] = raw
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func legacyChannelIdentityTTSConfigTx(conn *gorm.DB, identityID string, lock bool) (*model.ChannelIdentityTTSConfig, bool, error) {
+	var role model.ChannelIdentityTTSConfig
+	query := conn.Where("identity_id = ? AND deleted_at IS NULL", identityID)
+	if lock {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.First(&role).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, nil
+	}
+	return &role, err == nil, err
+}
+
+func channelIdentityTTSConfigTx(conn *gorm.DB, identityID, sharedIdentityID string, lock bool) (*model.ChannelIdentityTTSConfig, bool, error) {
+	if sharedIdentityID != "" {
+		var template model.SharedChannelIdentityModel
+		query := conn.Select("id", "source_identity_id", "shared_data_json").Where("id = ?", sharedIdentityID)
+		if lock {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.Take(&template).Error; err != nil {
+			return nil, false, err
+		}
+		role, found, err := sharedChannelIdentityTTSConfigFromData(template.SharedDataJSON, identityID)
+		if err != nil || found {
+			return role, found, err
+		}
+		if template.SourceIdentityID != "" {
+			role, found, err = legacyChannelIdentityTTSConfigTx(conn, template.SourceIdentityID, lock)
+			if err != nil || found {
+				if role != nil {
+					role.IdentityID = identityID
+				}
+				return role, found, err
+			}
+			if template.SourceIdentityID == identityID {
+				return nil, false, nil
+			}
+		}
+	}
+	return legacyChannelIdentityTTSConfigTx(conn, identityID, lock)
+}
+
+func promoteChannelIdentityTTSConfigToSharedDataTx(tx *gorm.DB, identityID string, template *model.SharedChannelIdentityModel) error {
+	role, found, err := legacyChannelIdentityTTSConfigTx(tx, identityID, true)
+	if err != nil || !found {
+		return err
+	}
+	template.SharedDataJSON, err = sharedChannelIdentityTTSData(template.SharedDataJSON, *role)
+	return err
+}
+
+func ttsRoleIdentity(userID, identityID string) (*model.ChannelIdentityModel, error) {
 	var identity model.ChannelIdentityModel
 	if err := model.GetDB().Where("id = ? AND deleted_at IS NULL", identityID).First(&identity).Error; err != nil {
 		return nil, err
@@ -286,15 +578,25 @@ func TTSRoleConfig(userID, identityID string) (*model.ChannelIdentityTTSConfig, 
 	if _, err = ValidateChannelIdentityActorIdentity(actor, identity.ChannelID, identityID); err != nil {
 		return nil, err
 	}
-	var role model.ChannelIdentityTTSConfig
-	err = model.GetDB().Where("identity_id = ? AND deleted_at IS NULL", identityID).First(&role).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return &model.ChannelIdentityTTSConfig{IdentityID: identityID, Rate: 1, Pitch: 1, Volume: 50}, nil
+	return &identity, nil
+}
+
+func TTSRoleConfig(userID, identityID string) (*model.ChannelIdentityTTSConfig, error) {
+	identity, err := ttsRoleIdentity(userID, identityID)
+	if err != nil {
+		return nil, err
 	}
-	return &role, err
+	role, found, err := channelIdentityTTSConfigTx(model.GetDB(), identity.ID, identity.SharedIdentityID, false)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return defaultChannelIdentityTTSConfig(identityID), nil
+	}
+	return role, nil
 }
 func TTSSaveRoleConfig(userID, identityID string, input model.ChannelIdentityTTSConfig) error {
-	old, err := TTSRoleConfig(userID, identityID)
+	identity, err := ttsRoleIdentity(userID, identityID)
 	if err != nil {
 		return err
 	}
@@ -319,10 +621,60 @@ func TTSSaveRoleConfig(userID, identityID string, input model.ChannelIdentityTTS
 	if input.SystemVoice == "" {
 		input.SystemVoiceProvider, input.SystemVoiceProviderID, input.SystemVoiceModel = "", "", ""
 	}
+	if identity.SharedIdentityID != "" {
+		return model.GetDB().Transaction(func(tx *gorm.DB) error {
+			var template model.SharedChannelIdentityModel
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Select("id", "user_id", "source_identity_id", "shared_data_json").
+				Where("id = ? AND user_id = ?", identity.SharedIdentityID, identity.UserID).Take(&template).Error; err != nil {
+				return err
+			}
+			old, found, err := sharedChannelIdentityTTSConfigFromData(template.SharedDataJSON, identity.ID)
+			if err != nil {
+				return err
+			}
+			if !found && template.SourceIdentityID != "" {
+				old, found, err = legacyChannelIdentityTTSConfigTx(tx, template.SourceIdentityID, true)
+				if err != nil {
+					return err
+				}
+				if old != nil {
+					old.IdentityID = identity.ID
+				}
+			}
+			if !found && template.SourceIdentityID != identity.ID {
+				old, found, err = legacyChannelIdentityTTSConfigTx(tx, identity.ID, true)
+				if err != nil {
+					return err
+				}
+			}
+			if !found {
+				old = defaultChannelIdentityTTSConfig(identity.ID)
+			}
+			if input.Revision != old.Revision {
+				return ErrTTSConflict
+			}
+			input.IdentityID = identity.ID
+			input.Revision = old.Revision + 1
+			raw, err := sharedChannelIdentityTTSData(template.SharedDataJSON, input)
+			if err != nil {
+				return err
+			}
+			return tx.Model(&model.SharedChannelIdentityModel{}).Where("id = ? AND user_id = ?", template.ID, identity.UserID).
+				Update("shared_data_json", raw).Error
+		})
+	}
+	old, found, err := legacyChannelIdentityTTSConfigTx(model.GetDB(), identity.ID, false)
+	if err != nil {
+		return err
+	}
+	if !found {
+		old = defaultChannelIdentityTTSConfig(identity.ID)
+	}
 	if input.Revision != old.Revision {
 		return ErrTTSConflict
 	}
-	input.IdentityID = identityID
+	input.IdentityID = identity.ID
 	input.Revision = old.Revision + 1
 	if old.ID == "" {
 		input.StringPKBaseModel = model.StringPKBaseModel{}
@@ -386,6 +738,50 @@ func TTSDeleteVoice(userID, id string) error {
 	})
 }
 
+func TTSForceDeleteVoice(parent context.Context, userID, id string) error {
+	if userID == "" || id == "" {
+		return ErrTTSDenied
+	}
+	db := model.GetDB()
+	var voice model.TTSVoice
+	if err := db.Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND deleted_at IS NULL", id, userID, "delete_pending").First(&voice).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrTTSDenied
+		}
+		return err
+	}
+
+	// Force delete is explicitly local-first semantics from the user's point of
+	// view. Try the cloud deletion once, but never let a stuck provider prevent
+	// the local record from being retired.
+	if voice.ProviderVoiceID != "" {
+		if cfg := utils.GetConfig(); cfg != nil && cfg.AI.Speech != nil {
+			for _, p := range cfg.AI.Speech.Providers {
+				if p.ID == voice.ProviderID && p.CredentialScope == voice.CredentialScope && p.Region == voice.Region && p.Workspace == voice.Workspace {
+					ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+					_, _ = ttsProviderDeleteVoice(ctx, p, voice.ProviderVoiceID)
+					cancel()
+					break
+				}
+			}
+		}
+	}
+
+	r := db.Model(&model.TTSVoice{}).
+		Where("id = ? AND owner_user_id = ? AND lifecycle = ? AND deleted_at IS NULL", id, userID, "delete_pending").
+		Updates(map[string]any{"lifecycle": "deleted", "deleted_at": time.Now(), "is_public": false, "revision": gorm.Expr("revision + 1")})
+	if r.Error != nil {
+		return r.Error
+	}
+	if r.RowsAffected != 1 {
+		return ErrTTSConflict
+	}
+	if voice.Kind == "clone" {
+		_ = ttsCleanupCloneSource(parent, voice.SourceResourceID)
+	}
+	return nil
+}
+
 func TTSSetPolicy(userID string, input model.TTSUserPolicy) error {
 	if input.Slots != nil && *input.Slots < 0 {
 		return TTSValidationError("槽位不能为负数")
@@ -408,7 +804,8 @@ func TTSResolveUnknown(actor, jobID, action, note string, units int64, tokenUsag
 	if err := model.GetDB().Select("payer_user_id, world_id").Where("id = ? AND status = ?", jobID, "usage_unknown").First(&owner).Error; err != nil {
 		return err
 	}
-	return withTTSQuotaPolicies(model.GetDB(), owner.PayerUserID, owner.WorldID, func(tx *gorm.DB, _ *model.TTSUserPolicy, _ model.TTSWorldPolicy) error {
+	var resolved model.TTSJob
+	err := withTTSQuotaPolicies(model.GetDB(), owner.PayerUserID, owner.WorldID, func(tx *gorm.DB, _ *model.TTSUserPolicy, _ model.TTSWorldPolicy) error {
 		var j model.TTSJob
 		if err := tx.Where("id = ? AND status = ?", jobID, "usage_unknown").First(&j).Error; err != nil {
 			return err
@@ -442,8 +839,19 @@ func TTSResolveUnknown(actor, jobID, action, note string, units int64, tokenUsag
 		} else {
 			return ErrTTSConflict
 		}
-		return tx.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "audit_actor": actor, "audit_note": note, "error_code": "admin_resolved"}).Error
+		if err := tx.Model(&model.TTSJob{}).Where("id = ?", j.ID).Updates(map[string]any{"status": "failed", "audit_actor": actor, "audit_note": note, "error_code": "admin_resolved"}).Error; err != nil {
+			return err
+		}
+		if err := ttsRetireFailedCreationVoice(tx, &j, time.Now()); err != nil {
+			return err
+		}
+		resolved = j
+		return nil
 	})
+	if err == nil {
+		ttsCleanupCloneJobSource(&resolved)
+	}
+	return err
 }
 
 // The platform lock serializes bounded channel queues and provider account slots.

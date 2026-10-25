@@ -34,6 +34,7 @@ type SharedChannelIdentitySyncInput struct {
 	DisplayName              string
 	Color                    string
 	AvatarAttachmentID       string
+	AvatarTextStyle          string
 	AvatarDecorations        protocol.AvatarDecorationList
 	TheaterPresentation      *protocol.TheaterPresentation
 	TheaterPresentationSet   bool
@@ -124,6 +125,7 @@ func serializeSharedChannelIdentityData(previous string, item *model.SharedChann
 	for key, value := range map[string]any{
 		"version": 2, "displayName": item.DisplayName, "color": item.Color,
 		"avatarAttachmentId": item.AvatarAttachmentID, "avatarDecorations": item.AvatarDecorations,
+		"avatarTextStyle":     item.AvatarTextStyle,
 		"theaterPresentation": item.TheaterPresentation,
 	} {
 		if err := put(key, value); err != nil {
@@ -155,6 +157,7 @@ func sharedChannelIdentityCopyValues(template *model.SharedChannelIdentityModel,
 	values := map[string]any{
 		"display_name": template.DisplayName, "color": template.Color,
 		"avatar_attachment_id": template.AvatarAttachmentID,
+		"avatar_text_style":    template.AvatarTextStyle,
 		"avatar_decoration":    string(decorations), "shared_revision": template.Revision,
 	}
 	botSettings, err := sharedChannelIdentityBotSettingsFromData(template.SharedDataJSON)
@@ -388,6 +391,7 @@ func createSharedChannelIdentityCopiesWithOptionsTx(tx *gorm.DB, source *model.C
 			copy = model.ChannelIdentityModel{
 				ChannelID: channel.ID, UserID: source.UserID, SharedIdentityID: template.ID, SharedRevision: template.Revision,
 				DisplayName: template.DisplayName, Color: template.Color, AvatarAttachmentID: template.AvatarAttachmentID,
+				AvatarTextStyle:   template.AvatarTextStyle,
 				AvatarDecorations: append(protocol.AvatarDecorationList(nil), template.AvatarDecorations...),
 				IsDefault:         defaultCount == 0, SortOrder: maxSort + 1,
 			}
@@ -519,6 +523,7 @@ func sharedChannelIdentityCreateFromCopyTxWithOrphans(tx *gorm.DB, ownerUserID, 
 		WorldID: worldID, UserID: identity.UserID, SourceChannelID: identity.ChannelID, SourceIdentityID: identity.ID,
 		DisplayName: identity.DisplayName, Color: identity.Color,
 		AvatarAttachmentID:  identity.AvatarAttachmentID,
+		AvatarTextStyle:     identity.AvatarTextStyle,
 		AvatarDecorations:   append(protocol.AvatarDecorationList(nil), identity.AvatarDecorations...),
 		TheaterPresentation: cloneTheaterPresentation(identity.TheaterPresentation), Revision: 1,
 	}
@@ -530,6 +535,9 @@ func sharedChannelIdentityCreateFromCopyTxWithOrphans(tx *gorm.DB, ownerUserID, 
 	template.SharedDataJSON, dataErr = serializeSharedChannelIdentityData("", template, botSettings)
 	if dataErr != nil {
 		return dataErr
+	}
+	if err := promoteChannelIdentityTTSConfigToSharedDataTx(tx, identity.ID, template); err != nil {
+		return err
 	}
 	if err := tx.Create(template).Error; err != nil {
 		return err
@@ -582,6 +590,7 @@ func sharedChannelIdentityInputMatchesCopy(identity *model.ChannelIdentityModel,
 	}
 	if strings.TrimSpace(input.DisplayName) != template.DisplayName || model.ChannelIdentityNormalizeColor(input.Color) != template.Color ||
 		strings.TrimSpace(input.AvatarAttachmentID) != template.AvatarAttachmentID ||
+		input.AvatarTextStyle != template.AvatarTextStyle ||
 		!sharedAvatarDecorationsEqual(input.AvatarDecorations, template.AvatarDecorations) {
 		return false
 	}
@@ -629,7 +638,7 @@ func sharedChannelIdentitySyncFromCopy(ownerUserID, operatorUserID, identityID s
 	if input == nil {
 		return nil, errors.New("参数不能为空")
 	}
-	validationInput := &ChannelIdentityInput{DisplayName: input.DisplayName, Color: input.Color, AvatarAttachmentID: input.AvatarAttachmentID, TheaterPresentation: input.TheaterPresentation}
+	validationInput := &ChannelIdentityInput{DisplayName: input.DisplayName, Color: input.Color, AvatarAttachmentID: input.AvatarAttachmentID, AvatarTextStyle: input.AvatarTextStyle, TheaterPresentation: input.TheaterPresentation}
 	if err := validateIdentityInput(validationInput); err != nil {
 		return nil, err
 	}
@@ -686,6 +695,7 @@ func sharedChannelIdentitySyncFromCopy(ownerUserID, operatorUserID, identityID s
 		template.DisplayName = strings.TrimSpace(validationInput.DisplayName)
 		template.Color = validationInput.Color
 		template.AvatarAttachmentID = strings.TrimSpace(input.AvatarAttachmentID)
+		template.AvatarTextStyle = input.AvatarTextStyle
 		template.AvatarDecorations = append(protocol.AvatarDecorationList(nil), avatarDecorations...)
 		if input.TheaterPresentationSet {
 			template.TheaterPresentation = cloneTheaterPresentation(input.TheaterPresentation)
@@ -703,7 +713,7 @@ func sharedChannelIdentitySyncFromCopy(ownerUserID, operatorUserID, identityID s
 		if err != nil {
 			return err
 		}
-		if err := tx.Model(&template).Select("world_id", "source_channel_id", "source_identity_id", "display_name", "color", "avatar_attachment_id", "avatar_decoration", "theater_presentation", "shared_data_json", "revision").Updates(&template).Error; err != nil {
+		if err := tx.Model(&template).Select("world_id", "source_channel_id", "source_identity_id", "display_name", "color", "avatar_attachment_id", "avatar_text_style", "avatar_decoration", "theater_presentation", "shared_data_json", "revision").Updates(&template).Error; err != nil {
 			return err
 		}
 		if input.TheaterPresentationSet {

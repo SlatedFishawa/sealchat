@@ -278,18 +278,24 @@ export interface MediaFxTemporalRaster {
   pixelRatio: number
 }
 
+export interface MediaFxRasterBudget {
+  maxPixels: number
+  maxEdge: number
+}
+
 export const resolveMediaFxTemporalRaster = (
   layoutWidth: number,
   layoutHeight: number,
   devicePixelRatio: number,
+  budget: MediaFxRasterBudget = { maxPixels: MEDIA_FX_TEMPORAL_MAX_RASTER_PIXELS, maxEdge: MEDIA_FX_TEMPORAL_MAX_RASTER_EDGE },
 ): MediaFxTemporalRaster | null => {
   if (!(layoutWidth > 0 && layoutHeight > 0) || !Number.isFinite(layoutWidth) || !Number.isFinite(layoutHeight)) return null
   const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1
   const ratio = Math.min(
     dpr,
-    MEDIA_FX_TEMPORAL_MAX_RASTER_EDGE / layoutWidth,
-    MEDIA_FX_TEMPORAL_MAX_RASTER_EDGE / layoutHeight,
-    Math.sqrt(MEDIA_FX_TEMPORAL_MAX_RASTER_PIXELS / (layoutWidth * layoutHeight)),
+    budget.maxEdge / layoutWidth,
+    budget.maxEdge / layoutHeight,
+    Math.sqrt(budget.maxPixels / (layoutWidth * layoutHeight)),
   )
   const pixelRatio = Math.max(0.001, Math.round(ratio * 1000) / 1000)
   return {

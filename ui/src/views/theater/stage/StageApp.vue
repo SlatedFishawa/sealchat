@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import Konva from 'konva'
+import StageSurfaceVariants from './StageSurfaceVariants.vue'
+import { surfaceVariantsFor, type SurfaceVariantOperation } from '../shared/stage-surface-variants'
+import { stageSurfaceTransitionTypes, type StageSurfaceVariants as SurfaceVariants } from '../shared/stage-types'
 import { captureTheaterViewport, waitForCaptureReady } from './theater-mcp-capture'
 import type { TheaterRendererCommand, TheaterRendererView } from '../shared/theater-renderer-protocol'
 import { Howl, Howler } from 'howler'
@@ -27,11 +30,14 @@ import {
   Edit,
   Eye,
   EyeOff,
+  Files,
   Filter,
   Folder,
   FolderPlus,
   Focus,
   GripVertical,
+  LayoutGrid,
+  LayoutList,
   LayoutSidebarLeftExpand,
   LayoutSidebar,
   LayoutNavbar,
@@ -80,6 +86,7 @@ import {
   createDefaultStageImageAnnotation,
   normalizeStageImageAnnotation,
   normalizeStageIframeContent,
+  normalizeStageViewportPosition,
   normalizeStageAudioRef,
   normalizeStageMusicSnapshot,
   normalizeStageEntranceConfig,
@@ -110,10 +117,10 @@ import {
   type StageMusicPlaylistMode,
   type StageMusicTrackType,
   type StageObject,
+  type StageObjectCoordinateSpace,
   type StageObjectFit,
   type StagePointerTrace,
   type StagePointerTraceInput,
-  type SceneFolder,
   type StageScene,
   type StageSceneTransition,
   type StageSceneTransitionPhase,
@@ -126,9 +133,21 @@ import { stageActionSchema, type ChatCharactersSnapshotPayload, type ChatClueAcc
 import { syncStageObjectHierarchy } from './stage-layering'
 import { compareStageLayersBottomToTop, compareStageLayersTopToBottom, planStageObjectRenderBands, stageObjectHasDomVisualDescendant } from './stage-layer-order'
 import { createStageDomVisualPreview } from './stage-dom-visual-preview'
+import {
+  commitStageNodePosition,
+  convertStageRootCoordinateSpace,
+  stageObjectEffectiveCoordinateSpace,
+  stageObjectNodeRenderTransform,
+  stageObjectTreeRoot,
+  stageScreenPoseToRootPose,
+  stageViewportBandCamera,
+  type StageRootPose,
+  type StageWorldCameraTransform,
+} from './stage-coordinate-space'
 import { buildStageLayerRows, stageLayerSelectionExpansionIds } from './stage-layer-tree'
 import { stageSelectionRootIds } from './stage-selection'
-import { stageSceneTransitionKeyframes, stageSceneTransitionOptions } from './stage-scene-transition'
+import { stageSceneTransitionKeyframes, stageSceneTransitionOptions, stageSurfaceTransitionFrame } from './stage-scene-transition'
+import { createSurfaceTransitionController } from './stage-surface-transition'
 import { snapStageResizeBox, type StageGridResizeSession } from './stage-grid-resize'
 import {
   STAGE_INSERT_CLICK_THRESHOLD_PX,
@@ -141,6 +160,10 @@ import {
 } from './stage-insert-placement'
 import {
   resolveTheaterStageMediaLocation,
+  resolveTheaterStageThumbnailLocation,
+  resolveTheaterMediaPlaybackReference,
+  normalizedTheaterMediaType as normalizedFileType,
+  supportedTheaterMedia,
   theaterResourceContentPath,
   theaterResourcePath as buildTheaterResourcePath,
   type TheaterStageMediaLocation,
@@ -149,6 +172,28 @@ import StageDrawingToolbar, { type StageCanvasTool } from './StageDrawingToolbar
 import StageCopyToolbar from './StageCopyToolbar.vue'
 import StageGridToolbar from './StageGridToolbar.vue'
 import StageSceneFixedToolbar from './StageSceneFixedToolbar.vue'
+import StageSceneThumbnail from './StageSceneThumbnail.vue'
+import StageSceneBatchCreateModal from './StageSceneBatchCreateModal.vue'
+import type { StageSceneBatchSession } from './stage-scene-batch-create'
+import {
+  buildSceneGridEntries,
+  buildSceneGridFolderTabs,
+  buildSceneListEntries,
+  effectiveSceneFolderId,
+  normalizeSceneSearchQuery,
+  readSceneBrowserThumbSize,
+  readSceneBrowserViewMode,
+  resolveSceneBrowserDropTarget,
+  resolveSceneGridFolderId,
+  sceneBrowserThumbRequestSize,
+  sceneBrowserThumbSizes,
+  writeSceneBrowserThumbSize,
+  writeSceneBrowserViewMode,
+  type SceneBrowserDropTarget,
+  type SceneBrowserThumbSize,
+  type SceneBrowserViewMode,
+  type SceneListEntry,
+} from './stage-scene-browser'
 import { cloneStageData, type StageCopyMode } from './stage-editing'
 import StageTextEditor, { type StageTextEditorMode } from './StageTextEditor.vue'
 import StageTextOverlay from './StageTextOverlay.vue'
@@ -159,13 +204,14 @@ import StageImageAnnotationEditor from './StageImageAnnotationEditor.vue'
 import TheaterActionSequenceEditor from './TheaterActionSequenceEditor.vue'
 import TheaterRandomTableEditor from './TheaterRandomTableEditor.vue'
 import TheaterClueActionEditor from './TheaterClueActionEditor.vue'
-import type { TheaterStageStore } from './StageStore'
+import type { StageObjectReparentTransform, TheaterStageStore } from './StageStore'
 import { createStageSequenceAction, isStageSequenceAction } from '../shared/stage-actions'
 import { resolveTheaterReducedMotion } from '../shared/theater-reduced-motion'
 import {
   compactMediaFxSpec,
   createDefaultMediaFxSpec,
   mediaFxAdvancedHasContent,
+  mediaFxFilterHasContent,
   mediaFxFilterToCss,
   mediaFxHasContent,
   mediaFxSpecsEqual,
@@ -179,12 +225,16 @@ import {
 import { canvasFilterSupported } from '@/features/media-fx/media-fx-canvas'
 import {
   createKonvaMediaFxController,
+  createKonvaMediaFxLiveController,
   createKonvaMediaFxTemporalController,
+  konvaMediaFxDisplayScale,
   mediaFxAdvancedSignature,
   type KonvaMediaFxController,
+  type KonvaMediaFxLiveController,
   type KonvaMediaFxTemporalController,
 } from '@/features/media-fx/media-fx-konva'
 import { createMediaFxGpuFilter, mediaFxGpuSupported, subscribeMediaFxGpuAvailability } from '@/features/media-fx/media-fx-gpu'
+import { mediaFxLiveWanted } from '@/features/media-fx/media-fx-live'
 import type { MessageImageEditorResult } from '@/composables/useMessageImageEditor'
 import MediaFxPanel from '@/features/media-fx/MediaFxPanel.vue'
 import TheaterDialogueOverlay from '../dialogue/TheaterDialogueOverlay.vue'
@@ -238,6 +288,9 @@ const sceneOverlayImageFolderName = '场景叠加'
 
 const props = defineProps<{
   store: TheaterStageStore
+  transparentBackdrop?: boolean
+  pipCompact?: boolean
+  pipMinimal?: boolean
   floatingWindows?: TheaterFloatingWindowSummary[]
   floatingChannelOptions?: { value: string; label: string }[]
   worldId: string
@@ -301,6 +354,9 @@ const emit = defineEmits<{
   updateSceneDialogueEnabled: [enabled: boolean]
   updateSceneAudioEnabled: [enabled: boolean]
 }>()
+
+const pipToolsOpen = ref(false)
+watch(() => props.pipMinimal, (minimal) => { if (!minimal) pipToolsOpen.value = false })
 
 const chatBridgeStatusLabel = computed(() => {
   switch (props.chatBridgeStatus) {
@@ -367,6 +423,36 @@ const componentActionsExpanded = ref(false)
 const iframeInteractionDisabled = ref(false)
 // Disposable GM preview; never enters StageStore, history, or synchronization.
 const surfaceInteractionTest = ref<StageSurfaceTarget | null>(null)
+const theaterSurfaceSettingsVisibilityStorageKey = 'sealchat.theater.surface-settings-visibility.v1'
+const readTheaterSurfaceSettingsVisibility = (): Record<StageSurfaceTarget, boolean> => {
+  const defaults: Record<StageSurfaceTarget, boolean> = { background: true, foreground: true }
+  try {
+    if (typeof window === 'undefined') return defaults
+    const stored = window.localStorage.getItem(theaterSurfaceSettingsVisibilityStorageKey)
+    if (stored === null) return defaults
+    const parsed: unknown = JSON.parse(stored)
+    if (!parsed || typeof parsed !== 'object') return defaults
+    const value = parsed as Record<string, unknown>
+    return {
+      background: value.background !== false,
+      foreground: value.foreground !== false,
+    }
+  } catch {
+    return defaults
+  }
+}
+const surfaceSettingsVisible = reactive<Record<StageSurfaceTarget, boolean>>(readTheaterSurfaceSettingsVisibility())
+const toggleSurfaceSettingsVisible = (target: StageSurfaceTarget) => {
+  surfaceSettingsVisible[target] = !surfaceSettingsVisible[target]
+  try {
+    window.localStorage.setItem(theaterSurfaceSettingsVisibilityStorageKey, JSON.stringify({
+      background: surfaceSettingsVisible.background,
+      foreground: surfaceSettingsVisible.foreground,
+    }))
+  } catch {
+    // Browser storage may be unavailable; keep the current visibility in memory.
+  }
+}
 type TheaterToolbarLayout = 'horizontal' | 'vertical'
 const theaterToolbarLayoutStorageKey = 'sealchat.theater.toolbar-layout.v1'
 const readTheaterToolbarLayout = (): TheaterToolbarLayout => {
@@ -1181,7 +1267,7 @@ const handlePanelSwitchesFocusOut = (event: FocusEvent) => {
 }
 
 type ImageTarget =
-  | { kind: 'scene', target: 'background' | 'foreground' }
+  | { kind: 'scene', target: 'background' | 'foreground', sceneId?: string, slotId?: string, add?: boolean, epoch?: number }
   | { kind: 'object', objectId: string }
 
 const surfaceSettingRows: { target: StageSurfaceTarget, label: string }[] = [
@@ -1196,6 +1282,21 @@ const surfaceFitOptions: { value: StageSurfaceFit, label: string }[] = [
   { value: 'center', label: '居中' },
 ]
 const surfaceStyle = (target: StageSurfaceTarget) => props.store.state.liveState.surfaceStyles[target]
+const surfaceVariants = (target: StageSurfaceTarget) => surfaceVariantsFor(props.store.state.liveState, target)
+const surfaceTransitionOptions = stageSurfaceTransitionTypes.map(value => ({ value, label: ({ none: '无', fade: '淡入淡出', slide: '滑动', dissolve: '溶解', zoom: '缩放', blur: '模糊' })[value] }))
+const surfaceTransitionMenuProps = () => ({ class: 'theater-secondary-surface theater-surface-transition-menu' })
+const patchSurfaceTransition = (target: StageSurfaceTarget, patch: Partial<SurfaceVariants['transition']>) => props.store.operateSurfaceVariant(target, { type: 'transition', patch })
+const operateSurface = (target: StageSurfaceTarget, operation: SurfaceVariantOperation) => {
+  if (canEditAllObjects.value) props.store.operateSurfaceVariant(target, operation)
+}
+const surfaceThumbnail = (image: StageImageRef | null) => resolveTheaterStageThumbnailLocation(image, theaterMediaScope(), 160)
+let surfaceImageEpoch = 0
+const bindImageTarget = (target: ImageTarget): ImageTarget => {
+  if (target.kind !== 'scene' || target.sceneId) return target
+  const activeId = surfaceVariants(target.target).activeId
+  return { ...target, sceneId: props.store.state.activeSceneId, epoch: surfaceImageEpoch, slotId: target.slotId ?? activeId ?? undefined, add: target.add || (!target.slotId && !activeId) }
+}
+const requestSurfaceUpload = (target: StageSurfaceTarget, id: string | null) => requestImageUpload({ kind: 'scene', target, ...(id ? { slotId: id } : { add: true }) })
 const updateSurfaceFit = (target: StageSurfaceTarget, value: string | number | boolean) => {
   if (typeof value !== 'string' || !surfaceFitOptions.some((option) => option.value === value)) return
   props.store.patchSceneSurfaceStyle(target, { fit: value as StageSurfaceFit })
@@ -1209,13 +1310,24 @@ const updateSurfaceOverlay = (target: StageSurfaceTarget, patch: Partial<StageSu
 // Surface Media FX is layered over the base display parameters; an all-default spec
 // (including the panel's own reset) removes the field instead of storing it.
 const surfaceMediaFx = (target: StageSurfaceTarget) => surfaceStyle(target).mediaFx ?? createDefaultMediaFxSpec()
-// Advanced and temporal GPU effects only render on the static direct-image path (not
-// tile, video or animated media). Unsupported cases keep any stored values untouched.
+// Advanced and temporal GPU effects render on the static direct-image path, or for
+// animated media that plays through a video source on the live output path (never tile).
+// Unsupported cases keep any stored values untouched.
+const isAnimatedStageImageRef = (image: StageImageRef | null | undefined) => {
+  const mimeType = image?.mimeType?.trim().toLowerCase()
+  return Boolean(image && (image.animated === true || mimeType === 'image/apng' || mimeType === 'image/gif' || mimeType?.startsWith('video/')))
+}
+// Animated media whose playback source is an HTMLVideoElement (video, or the transparent
+// WebM playback variant of an animated image): only these have live-frame input.
+const stageImageRefPlaysAsVideo = (image: StageImageRef | null | undefined) => (
+  Boolean(image) && resolveTheaterStageMedia(image!)?.sourceKind === 'video'
+)
 const surfaceMediaFxCapabilities = (target: StageSurfaceTarget) => {
   const image = props.store.state.liveState[target]
-  const animatedMedia = Boolean(image && (image.animated === true || image.mimeType?.startsWith('video/')))
+  const animatedMedia = isAnimatedStageImageRef(image)
   const gpuPixels = Boolean(image) && surfaceStyle(target).fit !== 'tile' && mediaFxGpuAvailable.value
-  return resolveMediaFxCapabilities('konva', animatedMedia, gpuPixels, gpuPixels)
+  const livePixels = animatedMedia && surfaceStyle(target).fit !== 'tile' && stageImageRefPlaysAsVideo(image)
+  return resolveMediaFxCapabilities('konva', animatedMedia, gpuPixels, gpuPixels, livePixels)
 }
 const updateSurfaceMediaFx = (target: StageSurfaceTarget, spec: MediaFxSpec) => {
   props.store.patchSceneSurfaceStyle(target, { mediaFx: compactMediaFxSpec(spec) })
@@ -1229,6 +1341,7 @@ interface TheaterResource {
   id?: string
   status?: string
   animated?: boolean
+  mimeType?: string
   playbackVariant?: string
   playbackMimeType?: string
   loopCount?: number | null
@@ -1250,6 +1363,7 @@ const pendingImageTarget = ref<ImageTarget | null>(null)
 const imageEditorTarget = ref<ImageTarget | null>(null)
 const imageEditorFile = ref<File | null>(null)
 const imageEditorVisible = ref(false)
+let imageEditorReadGeneration = 0
 const activeCanvasTool = ref<StageCanvasTool | null>(null)
 const copyMode = ref<StageCopyMode>('offset')
 const quickDeleteActive = ref(false)
@@ -1330,6 +1444,31 @@ const sceneOverlayImageAssets = computed(() => {
       - (itemOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER)
       || left.name.localeCompare(right.name))
 })
+const theaterImageResourceById = computed(() => new Map(
+  theaterImageAssets.value.map((asset) => [asset.resourceId, asset.resource]),
+))
+const sceneOverlayRenderBindings = computed(() => props.store.state.liveState.sceneOverlays.map((binding) => {
+  const media = binding.media
+  const resource = media ? theaterImageResourceById.value.get(media.resourceId) : undefined
+  if (!media || !resource || resource.kind !== 'animated_image') return binding
+  const playback = resolveTheaterMediaPlaybackReference({
+    variant: resource.playbackVariant || media.variant,
+    mimeType: resource.playbackMimeType || media.mimeType,
+    animated: true,
+    resourceKind: resource.kind,
+    resourceMimeType: resource.mimeType,
+  })
+  if (playback.variant === media.variant && playback.mimeType === media.mimeType) return binding
+  return {
+    ...binding,
+    media: {
+      ...media,
+      variant: playback.variant,
+      mimeType: playback.mimeType || resource.mimeType,
+      animated: true,
+    },
+  }
+}))
 const referencedTheaterAudioAssetIds = computed(() => [...new Set([
   ...Object.values(props.store.state.scenes).flatMap((scene) => [
     scene.state.switchAudio?.assetId,
@@ -1789,42 +1928,85 @@ const sceneFolderDialogVisible = ref(false)
 const sceneFolderDialogMode = ref<SceneFolderDialogMode>('create')
 const sceneFolderDialogFolderId = ref<string | null>(null)
 const sceneFolderNameDraft = ref('')
-type SceneListEntry =
-  | { kind: 'scene', key: string, scene: StageScene, nested: boolean }
-  | { kind: 'folder', key: string, folder: SceneFolder, scenes: StageScene[], collapsed: boolean }
-  | { kind: 'uncategorized', key: string, scenes: StageScene[], collapsed: boolean }
-const sceneListEntries = computed<SceneListEntry[]>(() => {
-  const folders = props.store.state.sceneFolders || []
-  const scenes = props.store.scenes.value
-  const folderIDs = new Set(folders.map((folder) => folder.id))
-  const grouped = new Map<string, StageScene[]>()
-  const uncategorized: StageScene[] = []
-  scenes.forEach((scene) => {
-    const folderId = scene.folderId && folderIDs.has(scene.folderId) ? scene.folderId : ''
-    if (!folderId) uncategorized.push(scene)
-    else {
-      const bucket = grouped.get(folderId)
-      if (bucket) bucket.push(scene)
-      else grouped.set(folderId, [scene])
-    }
-  })
-  const entries: SceneListEntry[] = []
-  folders.forEach((folder) => {
-    const scenesInFolder = grouped.get(folder.id) || []
-    const collapsed = collapsedSceneFolders.value.has(sceneFolderCollapseKey(folder.id))
-    entries.push({ kind: 'folder', key: `folder:${folder.id}`, folder, scenes: scenesInFolder, collapsed })
-    if (!collapsed) scenesInFolder.forEach((scene) => entries.push({ kind: 'scene', key: scene.id, scene, nested: true }))
-  })
-  const uncategorizedCollapsed = collapsedSceneFolders.value.has(uncategorizedSceneFolderCollapseKey)
-  entries.push({ kind: 'uncategorized', key: 'virtual-folder:uncategorized', scenes: uncategorized, collapsed: uncategorizedCollapsed })
-  if (!uncategorizedCollapsed) uncategorized.forEach((scene) => entries.push({ kind: 'scene', key: scene.id, scene, nested: true }))
+// Scene Browser presentation state is per-browser: view preferences live in
+// localStorage, the search query and grid folder tab stay in memory.
+const sceneBrowserViewMode = ref<SceneBrowserViewMode>(readSceneBrowserViewMode())
+const sceneBrowserThumbSize = ref<SceneBrowserThumbSize>(readSceneBrowserThumbSize())
+const sceneBrowserThumbSizeLabels: Record<SceneBrowserThumbSize, string> = { small: '小', medium: '中', large: '大' }
+const sceneBrowserRef = ref<HTMLElement | null>(null)
+const sceneSearchQuery = ref('')
+const normalizedSceneSearch = computed(() => normalizeSceneSearchQuery(sceneSearchQuery.value))
+const sceneSearchActive = computed(() => Boolean(normalizedSceneSearch.value))
+const sceneGridSelectedFolderId = ref<string | null>(null)
+const sceneGridFolderId = computed(() => resolveSceneGridFolderId(sceneGridSelectedFolderId.value, props.store.state.sceneFolders || []))
+const sceneGridFolderTabs = computed(() => {
+  const tabs = buildSceneGridFolderTabs(props.store.state.sceneFolders || [], props.store.scenes.value)
   return canEditAllObjects.value || canSwitchScene.value
-    ? entries
-    : entries.filter((entry) => entry.kind === 'scene' || entry.scenes.length > 0)
+    ? tabs
+    : tabs.filter((tab) => tab.count > 0 || tab.id === sceneGridFolderId.value)
 })
+const activeSceneFolderId = computed(() => {
+  const scene = props.store.activeScene.value
+  return scene ? effectiveSceneFolderId(scene, new Set((props.store.state.sceneFolders || []).map((folder) => folder.id))) : ''
+})
+// Follow the active scene only when the grid becomes visible; later scene
+// switches must not move a tab the user picked.
+watch(() => scenePanelOpen.value && sceneBrowserViewMode.value === 'grid', (visible) => {
+  if (visible) sceneGridSelectedFolderId.value = activeSceneFolderId.value
+}, { immediate: true })
+
+const setSceneBrowserViewMode = (mode: SceneBrowserViewMode) => {
+  if (sceneBrowserViewMode.value === mode) return
+  // The editor popover is anchored to the old card; edit/batch modes survive.
+  closeSceneEditor()
+  sceneBrowserViewMode.value = mode
+  writeSceneBrowserViewMode(mode)
+}
+
+const setSceneBrowserThumbSize = (size: SceneBrowserThumbSize) => {
+  sceneBrowserThumbSize.value = size
+  writeSceneBrowserThumbSize(size)
+}
+
+const selectSceneGridFolder = (folderId: string) => {
+  sceneGridSelectedFolderId.value = folderId
+}
+
+const sceneThumbnailState = (scene: StageScene) => (
+  scene.id === props.store.state.activeSceneId ? props.store.state.liveState : scene.state
+)
+
+const sceneThumbnailLocation = (scene: StageScene) => resolveTheaterStageThumbnailLocation(
+  sceneThumbnailState(scene).background,
+  theaterMediaScope(),
+  sceneBrowserThumbRequestSize[sceneBrowserThumbSize.value],
+)
+
+const sceneListEntries = computed(() => buildSceneListEntries({
+  scenes: props.store.scenes.value,
+  folders: props.store.state.sceneFolders || [],
+  normalizedQuery: normalizedSceneSearch.value,
+  isCollapsed: (folderId) => collapsedSceneFolders.value.has(folderId ? sceneFolderCollapseKey(folderId) : uncategorizedSceneFolderCollapseKey),
+  includeEmptyFolders: canEditAllObjects.value || canSwitchScene.value,
+}))
+const sceneBrowserEntries = computed<SceneListEntry[]>(() => (
+  sceneBrowserViewMode.value === 'grid'
+    ? buildSceneGridEntries(props.store.scenes.value, props.store.state.sceneFolders || [], sceneGridFolderId.value, normalizedSceneSearch.value)
+      .map(({ scene, folderName }) => ({ kind: 'scene' as const, key: scene.id, scene, nested: false, folderName }))
+    : sceneListEntries.value
+))
+const sceneBrowserHasScenes = computed(() => sceneBrowserEntries.value.some((entry) => entry.kind === 'scene'))
 const draggedSceneId = ref<string | null>(null)
-type SceneDropPlacement = 'before' | 'after'
-const sceneDropTarget = ref<{ id: string, placement: SceneDropPlacement } | null>(null)
+const sceneDropTarget = ref<SceneBrowserDropTarget | null>(null)
+const sceneDropTargetKey = (target: SceneBrowserDropTarget | null) => (
+  !target ? '' : target.kind === 'folder' ? `folder:${target.folderId}` : `scene:${target.id}:${target.placement}`
+)
+const isSceneDropTarget = (sceneId: string, placement: 'before' | 'after') => (
+  sceneDropTarget.value?.kind === 'scene' && sceneDropTarget.value.id === sceneId && sceneDropTarget.value.placement === placement
+)
+const isSceneFolderDropTarget = (folderId: string) => (
+  sceneDropTarget.value?.kind === 'folder' && sceneDropTarget.value.folderId === folderId
+)
 let sceneDragSession: {
   sceneId: string
   pointerId: number
@@ -1911,6 +2093,7 @@ watch(scenePanelOpen, (open) => {
   exitSceneBatchMode()
   sceneEditMode.value = false
   closeSceneEditor()
+  sceneSearchQuery.value = ''
 })
 
 const handleSceneClick = (scene: StageScene) => {
@@ -1947,24 +2130,34 @@ const saveSceneDetails = () => {
   closeSceneEditor()
 }
 
-const setSceneDropTarget = (target: typeof sceneDropTarget.value) => {
-  if (sceneDropTarget.value?.id === target?.id && sceneDropTarget.value?.placement === target?.placement) return
+const setSceneDropTarget = (target: SceneBrowserDropTarget | null) => {
+  if (sceneDropTargetKey(sceneDropTarget.value) === sceneDropTargetKey(target)) return
   sceneDropTarget.value = target
 }
 
+// Folder headers (list) and folder tabs (grid) carry data-scene-folder-drop;
+// '' is the virtual uncategorized folder.
 const updateSceneDropTarget = (clientX: number, clientY: number) => {
   const session = sceneDragSession
-  const list = sceneListRef.value
-  if (!session || !list) return
+  const browser = sceneBrowserRef.value
+  if (!session || !browser) return
   const element = document.elementFromPoint(clientX, clientY) as HTMLElement | null
-  const row = element?.closest<HTMLElement>('.theater-scene-row')
-  const targetId = row?.dataset.sceneId
-  if (!row || !targetId || !list.contains(row) || targetId === session.sceneId) {
-    setSceneDropTarget(null)
-    return
+  const folderElement = element?.closest<HTMLElement>('[data-scene-folder-drop]')
+  const row = folderElement ? null : element?.closest<HTMLElement>('.theater-scene-row')
+  let placement: 'before' | 'after' = 'after'
+  if (row && browser.contains(row)) {
+    const rect = row.getBoundingClientRect()
+    placement = sceneBrowserViewMode.value === 'grid'
+      ? clientX < rect.left + rect.width / 2 ? 'before' : 'after'
+      : clientY < rect.top + rect.height / 2 ? 'before' : 'after'
   }
-  const rect = row.getBoundingClientRect()
-  setSceneDropTarget({ id: targetId, placement: clientY < rect.top + rect.height / 2 ? 'before' : 'after' })
+  setSceneDropTarget(resolveSceneBrowserDropTarget({
+    sourceSceneId: session.sceneId,
+    searching: sceneSearchActive.value,
+    folderId: folderElement && browser.contains(folderElement) ? folderElement.dataset.sceneFolderDrop ?? '' : undefined,
+    sceneId: row && browser.contains(row) ? row.dataset.sceneId : null,
+    placement,
+  }))
 }
 
 const runSceneDragFrame = () => {
@@ -1994,6 +2187,16 @@ const scheduleSceneDragFrame = () => {
   if (sceneDragFrame === null) sceneDragFrame = window.requestAnimationFrame(runSceneDragFrame)
 }
 
+const createSceneDragPreview = (sceneId: string, clientX: number, clientY: number) => {
+  const scene = props.store.state.scenes[sceneId]
+  const ghost = document.createElement('div')
+  ghost.className = 'theater-scene-drag-preview'
+  ghost.setAttribute('aria-hidden', 'true')
+  ghost.textContent = scene?.name || '场景'
+  ghost.style.transform = `translate3d(${clientX + 12}px, ${clientY + 12}px, 0)`
+  return ghost
+}
+
 const startScenePointerDrag = (event: PointerEvent, sceneId: string) => {
   if (!canEditAllObjects.value || !sceneEditMode.value || event.button !== 0 || sceneDragSession) return
   const grip = event.currentTarget as HTMLElement
@@ -2001,11 +2204,7 @@ const startScenePointerDrag = (event: PointerEvent, sceneId: string) => {
   if (!row) return
   event.preventDefault()
   grip.setPointerCapture(event.pointerId)
-  const rect = row.getBoundingClientRect()
-  const ghost = row.cloneNode(true) as HTMLElement
-  ghost.classList.add('is-drag-preview')
-  ghost.setAttribute('aria-hidden', 'true')
-  ghost.style.width = `${rect.width}px`
+  const ghost = createSceneDragPreview(sceneId, event.clientX, event.clientY)
   document.body.appendChild(ghost)
   sceneDragSession = { sceneId, pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, ghost }
   draggedSceneId.value = sceneId
@@ -2033,7 +2232,11 @@ const finishScenePointerDrag = (event: PointerEvent, cancelled = false) => {
   session.ghost.remove()
   draggedSceneId.value = null
   setSceneDropTarget(null)
-  if (!cancelled && dropTarget) props.store.reorderScenes(session.sceneId, dropTarget.id, dropTarget.placement)
+  if (!cancelled && dropTarget) {
+    props.store.moveScene(session.sceneId, dropTarget.kind === 'scene'
+      ? { kind: 'scene', sceneId: dropTarget.id, placement: dropTarget.placement }
+      : { kind: 'folder', folderId: dropTarget.folderId || null })
+  }
 }
 
 const toggleSceneFolder = (folderId: string) => {
@@ -2056,6 +2259,40 @@ const openSceneFolderDialog = (mode: SceneFolderDialogMode, folderId: string | n
 }
 
 const createSceneFolder = () => openSceneFolderDialog('create')
+
+const sceneBatchCreateVisible = ref(false)
+const canBatchCreateScenes = computed(() => canEditAllObjects.value && canSwitchScene.value && canUploadResources.value)
+// Every capability is bound to the scope captured when the batch starts, so a
+// world/channel switch or lost permission stops writes into the new context.
+const createSceneBatchSession = (): StageSceneBatchSession => {
+  const scope = captureTheaterRequestScope()
+  const isCurrent = () => isCurrentTheaterRequestScope(scope) && canBatchCreateScenes.value
+  return {
+    isCurrent,
+    upload: async (file) => {
+      if (!isCurrent()) throw new Error('小剧场上下文已变化')
+      try {
+        const uploaded = await uploadTheaterImageResource(file, '', scope)
+        return {
+          url: uploaded.url,
+          resourceId: uploaded.resourceId,
+          mimeType: uploaded.mimeType,
+          animated: uploaded.resource?.animated === true,
+          loopCount: uploaded.resource?.loopCount || undefined,
+        }
+      } catch (error) {
+        throw new Error(theaterAudioErrorMessage(error, '图片上传失败'))
+      }
+    },
+    createScene: (options) => isCurrent() ? props.store.appendScene(options) : null,
+    createFolder: (name) => isCurrent() ? props.store.createSceneFolder(name) : null,
+    folders: () => props.store.state.sceneFolders,
+  }
+}
+const handleSceneBatchFinished = ({ created, failed }: { created: number, failed: number }) => {
+  if (failed) stageMessage.warning(`批量创建场景：${created} 个成功，${failed} 个失败`)
+  else stageMessage.success(`已批量创建 ${created} 个场景`)
+}
 
 const closeSceneFolderDialog = () => {
   sceneFolderDialogVisible.value = false
@@ -2678,7 +2915,7 @@ let gridTopCameraGroup: Konva.Group | null = null
 let gridGroup: Konva.Group | null = null
 let objectRoot: Konva.Group | null = null
 // Band 0 belongs to worldLayer/worldCameraGroup/objectRoot and is never destroyed here.
-const extraObjectRenderBands: Array<{ layer: Konva.Layer; camera: Konva.Group; root: Konva.Group }> = []
+const extraObjectRenderBands: Array<{ layer: Konva.Layer; camera: Konva.Group; root: Konva.Group; space: StageObjectCoordinateSpace }> = []
 const rootStackingOrder = ref<Record<string, number>>({})
 const TOP_VISUAL_LAYER_Z = 9990
 let sceneMorphStage: Konva.Stage | null = null
@@ -2761,6 +2998,38 @@ const snapDrawingPoint = (tool: StageDrawingTool, position: { x: number, y: numb
   tool === 'pen' || tool === 'highlighter' ? position : snapStagePosition(position)
 )
 
+// World camera as Konva reports it; conversions between stage px and world px go through this.
+const worldCameraTransform = (): StageWorldCameraTransform | null => {
+  if (!worldCameraGroup) return null
+  const transform = worldCameraGroup.getAbsoluteTransform().copy()
+  const inverse = transform.copy().invert()
+  return {
+    worldToScreen: point => transform.point(point),
+    screenToWorld: point => inverse.point(point),
+    scale: Math.max(0.000001, worldCameraGroup.getAbsoluteScale().x),
+  }
+}
+
+const objectCoordinateSpace = (object: StageObject) => stageObjectEffectiveCoordinateSpace(object, stageObjects.value)
+
+const objectNodeRenderTransform = (object: StageObject) => (
+  stageObjectNodeRenderTransform(object, stageObjects.value, viewportSize.value)
+)
+
+// Commits a dragged/transformed node position to transform.x/y or, for screen-fixed roots, viewportX/Y.
+const commitObjectNodePosition = (object: StageObject, node: Konva.Node) => commitStageNodePosition(
+  object,
+  props.store.activeObjects.value,
+  node.position(),
+  viewportSize.value,
+)
+
+// Screen-fixed objects do not take part in world map grid snapping (first version).
+const nodeUsesWorldGrid = (node: Konva.Node) => {
+  const object = getObject(String(node.getAttr('stageObjectId') || ''))
+  return !object || objectCoordinateSpace(object) === 'world'
+}
+
 const cameraForNode = (node: Konva.Node) => {
   let ancestor = node.getParent()
   while (ancestor && ancestor.getParent() && !(ancestor.getParent() instanceof Konva.Layer)) {
@@ -2771,7 +3040,7 @@ const cameraForNode = (node: Konva.Node) => {
 
 const beginNodeGridSnap = (node: Konva.Node) => {
   const cameraGroup = cameraForNode(node)
-  if (!gridSnapEnabled.value || !cameraGroup) {
+  if (!gridSnapEnabled.value || !cameraGroup || !nodeUsesWorldGrid(node)) {
     gridNodeSnapSession = null
     return
   }
@@ -2803,7 +3072,7 @@ const snapStageCoordinateWithHysteresis = (
   : snapStageCoordinate(value, axis)
 
 const snapNodeToGrid = (node: Konva.Node) => {
-  if (!gridSnapEnabled.value) return { x: 0, y: 0 }
+  if (!gridSnapEnabled.value || !nodeUsesWorldGrid(node)) return { x: 0, y: 0 }
   if (gridNodeSnapSession?.node !== node) beginNodeGridSnap(node)
   const session = gridNodeSnapSession
   if (!session) return { x: 0, y: 0 }
@@ -2839,6 +3108,7 @@ const beginGridResize = () => {
     !object
     || object.type === 'group'
     || object.type === 'effect'
+    || objectCoordinateSpace(object) === 'viewport'
     || object.aspectRatioLocked
     || !anchor
     || anchor === 'rotater'
@@ -3028,6 +3298,8 @@ const imageLoadVersions = new Map<string, number>()
 const objectEntranceTweens = new Map<string, Konva.Tween>()
 // Media FX motion/filter controllers for image objects, keyed by object id.
 const objectMediaFxControllers = new Map<string, KonvaMediaFxController>()
+// Live advanced / temporal output of image objects playing a video source.
+const objectLiveFxControllers = new Map<string, KonvaMediaFxLiveController>()
 const pendingObjectEntrances = new Set<string>()
 type StageMediaSource = HTMLImageElement | HTMLVideoElement
 const activeAnimatedMedia = new Set<StageMediaSource>()
@@ -3073,12 +3345,16 @@ const drawTopVisualLayer = (immediate = false) => {
 interface SurfaceSlot {
   target: StageSurfaceTarget
   group: Konva.Group
+  transitionGroup: Konva.Group
   base: Konva.Rect | null
   mediaFxGroup: Konva.Group
   mediaContentGroup: Konva.Group
   mediaFxController: KonvaMediaFxController
   // Temporal live frames drawn in place of directImage's cached static look.
   mediaFxTemporal: KonvaMediaFxTemporalController
+  // Advanced / temporal for a video source: a separate output node over `media`, created
+  // only while the spec needs it (see syncSurfaceLiveFx).
+  liveFx: KonvaMediaFxLiveController | null
   media: Konva.Shape
   directImage: Konva.Image
   overlay: Konva.Rect
@@ -3088,6 +3364,7 @@ interface SurfaceSlot {
   url: string
   version: number
   source: StageMediaSource | null
+  pendingSource: StageMediaSource | null
   ready: boolean
   // Animated image / video: Media FX filters are disabled (V1 capability rule).
   animatedMedia: boolean
@@ -3098,6 +3375,32 @@ interface SurfaceSlot {
 
 let backgroundSlot: SurfaceSlot | null = null
 let foregroundSlot: SurfaceSlot | null = null
+const disposeSurfaceSlot = (slot: SurfaceSlot) => {
+  slot.version++
+  slot.liveFx?.dispose()
+  slot.mediaFxController.dispose()
+  slot.mediaFxTemporal.dispose()
+  releaseStageMedia(slot.pendingSource)
+  slot.pendingSource = null
+  releaseStageMedia(slot.source)
+  slot.source = null
+  slot.group.clearCache()
+  slot.group.destroy()
+}
+const surfaceTransitions = {
+  background: createSurfaceTransitionController<SurfaceSlot>(disposeSurfaceSlot),
+  foreground: createSurfaceTransitionController<SurfaceSlot>(disposeSurfaceSlot),
+}
+const surfaceChangeVersions = { background: 0, foreground: 0 }
+const surfaceRenderSignatures = { background: '', foreground: '' }
+const cancelSurfaceTransitions = () => {
+  surfaceTransitions.background.cancel()
+  surfaceTransitions.foreground.cancel()
+  surfaceChangeVersions.background = props.store.surfaceChanges.background
+  surfaceChangeVersions.foreground = props.store.surfaceChanges.foreground
+  surfaceRenderSignatures.background = ''
+  surfaceRenderSignatures.foreground = ''
+}
 
 const selectedObject = computed(() => {
   const id = props.store.state.selectedObjectId
@@ -3598,11 +3901,7 @@ const finishObjectTransition = (object: StageObject, node: Konva.Group) => {
   objectEntranceTweens.get(object.id)?.destroy()
   objectEntranceTweens.delete(object.id)
   node.setAttrs({
-    x: object.transform.x * WORLD_UNIT_PX,
-    y: object.transform.y * WORLD_UNIT_PX,
-    rotation: object.transform.rotation,
-    scaleX: object.transform.scaleX,
-    scaleY: object.transform.scaleY,
+    ...objectNodeRenderTransform(object),
     opacity: 1,
   })
   node.setAttr('clipX', undefined)
@@ -3629,11 +3928,7 @@ const playObjectTransition = (object: StageObject, node: Konva.Group, direction:
     return
   }
   const target = {
-    x: object.transform.x * WORLD_UNIT_PX,
-    y: object.transform.y * WORLD_UNIT_PX,
-    rotation: object.transform.rotation,
-    scaleX: object.transform.scaleX,
-    scaleY: object.transform.scaleY,
+    ...objectNodeRenderTransform(object),
     opacity: 1,
   }
   const duration = config.durationMs / 1_000
@@ -3782,15 +4077,23 @@ const selectedMediaFx = computed(() => (
 const selectedMediaFxActive = computed(() => mediaFxHasContent(selectedMediaFx.value))
 // Image objects render through Konva (filters are cached, so animated media disables
 // them). Iframe objects render as DOM, where CSS filter composites the live frame.
-// Advanced and temporal GPU effects are only offered for static images.
+// Advanced and temporal GPU effects are offered for static images (cache path) and for
+// animated images / videos playing through a video source (live output path).
+const isLiveVideoImageObject = (object: StageObject | null | undefined) => (
+  object?.type === 'image'
+  && Boolean(object.image)
+  && !isStaticImageObject(object)
+  && stageImageRefPlaysAsVideo(object.image)
+)
 const selectedMediaFxCapabilities = computed(() => (
   selectedObject.value?.type === 'iframe'
     ? resolveMediaFxCapabilities('dom', false)
     : resolveMediaFxCapabilities(
       'konva',
       selectedObject.value?.type === 'image' && Boolean(selectedObject.value.image) && !isStaticImageObject(selectedObject.value),
-      isStaticImageObject(selectedObject.value) && mediaFxGpuAvailable.value,
-      isStaticImageObject(selectedObject.value) && mediaFxGpuAvailable.value,
+      (isStaticImageObject(selectedObject.value) || isLiveVideoImageObject(selectedObject.value)) && mediaFxGpuAvailable.value,
+      (isStaticImageObject(selectedObject.value) || isLiveVideoImageObject(selectedObject.value)) && mediaFxGpuAvailable.value,
+      isLiveVideoImageObject(selectedObject.value),
     )
 ))
 let selectedMediaFxEditing = false
@@ -3931,7 +4234,11 @@ const stageObjects = computed<Record<string, StageObject>>(() => ({
 const selectedObjects = props.store.selectedObjects
 const selectedIdSet = computed(() => new Set(props.store.selection.selectedIds))
 const isBatchSelection = computed(() => props.store.selection.bulkMode && selectedObjects.value.length > 1)
-const batchMoveBlocked = computed(() => isBatchSelection.value && props.store.selectionGroup.value.lockedIds.length > 0)
+// World and screen-fixed roots have no shared coordinate delta: batch geometry stays disabled, while
+// non-geometric batch operations (delete, copy, visibility, locks) keep working.
+const batchMixedCoordinateSpaces = computed(() => isBatchSelection.value && props.store.selectionGroup.value.mixedCoordinateSpaces)
+const batchHasLockedObjects = computed(() => isBatchSelection.value && props.store.selectionGroup.value.lockedIds.length > 0)
+const batchMoveBlocked = computed(() => batchHasLockedObjects.value || batchMixedCoordinateSpaces.value)
 
 const toggleSelectedDrawingFill = (checked: boolean) => {
   const drawing = selectedObject.value?.drawing
@@ -3995,6 +4302,64 @@ const updateSelectedAspectRatioLocked = (checked: boolean) => {
     syncObjects()
     updateTransformer()
   })
+}
+
+// Screen-fixed state belongs to the top-level root, so a child or group edits its whole tree.
+const selectedCoordinateRoot = computed(() => selectedObject.value
+  ? stageObjectTreeRoot(selectedObject.value, props.store.activeObjects.value)
+  : null)
+const selectedScreenFixed = computed(() => selectedCoordinateRoot.value?.coordinateSpace === 'viewport')
+const selectedScreenFixedAppliesToTree = computed(() => Boolean(selectedObject.value && selectedCoordinateRoot.value) && (
+  selectedCoordinateRoot.value!.id !== selectedObject.value!.id || selectedObject.value!.type === 'group'
+))
+const selectedUsesViewportPosition = computed(() => selectedScreenFixed.value
+  && selectedCoordinateRoot.value?.id === selectedObject.value?.id)
+const batchCoordinateRoots = computed(() => [...new Map(selectedObjects.value.map((object) => {
+  const root = stageObjectTreeRoot(object, props.store.activeObjects.value)
+  return [root.id, root] as const
+})).values()].filter((root) => root.type !== 'effect'))
+const batchScreenFixedChecked = computed(() => batchCoordinateRoots.value.length > 0
+  && batchCoordinateRoots.value.every((root) => root.coordinateSpace === 'viewport'))
+
+// Each root converts with the live world camera and viewport, so the switch is visually still.
+const setRootsScreenFixed = (roots: StageObject[], screenFixed: boolean) => {
+  const camera = worldCameraTransform()
+  if (!camera || !canEditAllObjects.value) return
+  const poses: Record<string, StageRootPose> = {}
+  for (const root of roots) {
+    const pose = convertStageRootCoordinateSpace(root, screenFixed ? 'viewport' : 'world', camera, viewportSize.value)
+    if (pose && 'error' in pose) {
+      stageMessage.warning(pose.error === 'scale-out-of-range'
+        ? '无法保持当前视觉大小：目标坐标空间的缩放超出 0.01～100，未切换屏幕固定'
+        : '无法保持当前位置：目标视口位置超出 -100%～200%，未切换屏幕固定')
+      return
+    }
+    if (pose) poses[root.id] = pose
+  }
+  if (!Object.keys(poses).length) return
+  props.store.beginObjectEdit(screenFixed ? '设为屏幕固定' : '取消屏幕固定')
+  props.store.setRootCoordinateSpaces(poses)
+  props.store.commitObjectEdit()
+  nextTick(() => {
+    syncObjects()
+    updateTransformer()
+  })
+}
+
+const updateSelectedScreenFixed = (checked: boolean) => {
+  const root = selectedCoordinateRoot.value
+  if (root && root.type !== 'effect') setRootsScreenFixed([root], checked)
+}
+
+const updateBatchScreenFixed = (checked: boolean) => {
+  if (batchMixedCoordinateSpaces.value) return
+  setRootsScreenFixed(batchCoordinateRoots.value, checked)
+}
+
+const updateSelectedViewportPosition = (key: 'viewportX' | 'viewportY', percent: number | null) => {
+  const object = selectedObject.value
+  if (!object || !selectedUsesViewportPosition.value || percent === null || !Number.isFinite(percent)) return
+  object[key] = normalizeStageViewportPosition(Number((percent / 100).toFixed(6)))
 }
 
 const updateSelectedDimension = (dimension: 'width' | 'height', value: number | null) => {
@@ -4589,7 +4954,9 @@ const applyCamera = () => {
   sceneMorphTextCameras.forEach((camera) => {
     camera.style.transform = `translate(${position.x}px, ${position.y}px) scale(${scale.x})`
   })
-  extraObjectRenderBands.forEach(({ camera }) => {
+  // Viewport bands keep the viewport frame; only world bands follow the scene camera.
+  extraObjectRenderBands.forEach(({ camera, space }) => {
+    if (space !== 'world') return
     camera.position(position)
     camera.scale(scale)
   })
@@ -4643,8 +5010,7 @@ const syncSelectionGroupHitArea = (nodes: Konva.Group[]) => {
 
 const applyObjectNodeTransform = (node: Konva.Group, object: StageObject) => {
   if (object.type === 'group') {
-    object.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-    object.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+    commitObjectNodePosition(object, node)
     object.transform.rotation = Number(node.rotation().toFixed(6))
     object.transform.scaleX = Number(Math.min(100, Math.max(0.01, node.scaleX())).toFixed(6))
     object.transform.scaleY = Number(Math.min(100, Math.max(0.01, node.scaleY())).toFixed(6))
@@ -4653,8 +5019,7 @@ const applyObjectNodeTransform = (node: Konva.Group, object: StageObject) => {
   object.transform.width = Number((Math.max(12, object.transform.width * WORLD_UNIT_PX * node.scaleX()) / WORLD_UNIT_PX).toFixed(6))
   object.transform.height = Number((Math.max(12, object.transform.height * WORLD_UNIT_PX * node.scaleY()) / WORLD_UNIT_PX).toFixed(6))
   object.transform.rotation = Number(node.rotation().toFixed(6))
-  object.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-  object.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+  commitObjectNodePosition(object, node)
   object.transform.scaleX = 1
   object.transform.scaleY = 1
   node.scale({ x: 1, y: 1 })
@@ -4789,7 +5154,12 @@ const resolveTheaterResourceUrl = (resourceId: string, variant = 'original') => 
   return `${resourceBase.replace(/\/$/, '')}${theaterResourceContentPath(theaterMediaScope(), normalizedResourceId, variant || 'original')}`
 }
 
-const resolveTheaterStageMedia = (imageRef: StageImageRef) => resolveTheaterStageMediaLocation(imageRef, theaterMediaScope())
+const resolveTheaterStageMedia = (imageRef: StageImageRef) => resolveTheaterStageMediaLocation(
+  imageRef,
+  theaterMediaScope(),
+  undefined,
+  theaterImageResourceById.value.get(imageRef.resourceId),
+)
 
 const stageMediaDimensions = (source: StageMediaSource) => isVideoSource(source)
   ? { width: source.videoWidth, height: source.videoHeight }
@@ -4815,7 +5185,6 @@ const stageMediaRequestControllers = new WeakMap<StageMediaSource, AbortControll
 const stageMediaObjectUrls = new WeakMap<StageMediaSource, string>()
 const stageMediaBlobCache = new Map<string, Blob>()
 const stageMediaBlobRequests = new Map<string, Promise<Blob>>()
-
 const cacheStageMediaBlob = (url: string, blob: Blob) => {
   stageMediaBlobCache.delete(url)
   stageMediaBlobCache.set(url, blob)
@@ -4904,7 +5273,7 @@ const loadStageMedia = (
   onReady: (source: StageMediaSource) => void,
   onError: (message: string) => void,
 ) => {
-  const source: StageMediaSource = imageRef.mimeType === 'video/webm'
+  const source: StageMediaSource = location.sourceKind === 'video'
     ? document.createElement('video')
     : new Image()
   const controller = new AbortController()
@@ -5466,6 +5835,7 @@ const finishSceneTransitionWhenReady = () => {
 }
 
 const prepareSceneMorph = (captureCurrent: boolean, sceneId: string, previousSceneId = '') => {
+  cancelSurfaceTransitions()
   finishSceneMorph()
   const nextTransition = normalizeStageSceneTransition(props.store.state.scenes[sceneId]?.state.transition)
   const previousTransition = normalizeStageSceneTransition(props.store.state.scenes[previousSceneId]?.state.transition)
@@ -5492,6 +5862,9 @@ const prepareSceneMorph = (captureCurrent: boolean, sceneId: string, previousSce
       if (!node) return
       const root = !object.parentId || !previousSceneObjects[object.parentId]
       if (!root) return
+      // Screen-fixed roots are excluded from shared-element morph (first version): morph ghosts
+      // live in world-camera layers. Scene transitions and entrances still apply to them.
+      if (object.coordinateSpace === 'viewport') return
       const ghost = root ? node.clone({ listening: false }) as Konva.Group : null
       const textElement = root ? stageTextVisualElement(object.id) : null
       const textGhost = textElement ? textElement.cloneNode(true) as HTMLElement : null
@@ -5538,6 +5911,7 @@ const primeSceneMorphTargets = () => {
   const sceneObjects = Object.values(props.store.state.liveState.sceneObjects)
     .filter((object) => !isTheaterEffectObject(object))
     .filter((object) => !object.parentId || !props.store.state.liveState.sceneObjects[object.parentId])
+    .filter((object) => object.coordinateSpace !== 'viewport')
   snapshot.matches = matchSceneMorphObjects(snapshot.previous, sceneObjects)
   snapshot.targetAttrs.clear()
   snapshot.targetGhosts.forEach((ghost) => ghost.destroy())
@@ -5883,7 +6257,10 @@ const activateStageMedia = (source: StageMediaSource, imageRef: StageImageRef) =
     configureVideoLoop(source, imageRef, true)
     activeAnimatedMedia.add(source)
     void source.play().catch((error) => theaterMediaDebug('video play error', stageMediaErrorMessage(error)))
-  } else if (imageRef.animated) {
+  } else if (isAnimatedStageImageRef(imageRef)) {
+    // Native animated images are a last-resort fallback when no display WebM exists.
+    // Canvas/Konva cannot reliably obtain their live frames, so managed resources
+    // should resolve to the transparent WebM playback variant whenever available.
     activeAnimatedMedia.add(source)
   }
   syncMediaAnimation()
@@ -5912,7 +6289,7 @@ const settleSceneMedia = (key: string, url: string, reveal?: () => void, activat
   const batch = sceneMediaBatch
   if (!batch || batch.sceneId !== props.store.state.activeSceneId || batch.expected.get(key) !== url || batch.released) {
     reveal?.()
-    if (reveal) activate?.()
+    activate?.()
     return
   }
   if (reveal) batch.reveals.push(reveal)
@@ -5955,9 +6332,14 @@ const applyRendererView = async (command: TheaterRendererCommand) => {
     camera.x = camera.y = 0
     camera.zoom = Math.max(0.01, Math.min(100, viewportSize.value.width / (props.store.state.liveState.fieldWidth * WORLD_UNIT_PX), viewportSize.value.height / (props.store.state.liveState.fieldHeight * WORLD_UNIT_PX)) * 0.9)
   } else if (command.operation === 'focus_object') {
-    const bounds = rendererObjectBounds(payload.objectIds?.[0] || '')
-    camera.x += viewportSize.value.width / 2 - bounds.x - bounds.width / 2
-    camera.y += viewportSize.value.height / 2 - bounds.y - bounds.height / 2
+    const objectId = payload.objectIds?.[0] || ''
+    const bounds = rendererObjectBounds(objectId)
+    const object = getObject(objectId)
+    // A screen-fixed object keeps its viewport placement; panning the world camera would not move it.
+    if (!object || objectCoordinateSpace(object) === 'world') {
+      camera.x += viewportSize.value.width / 2 - bounds.x - bounds.width / 2
+      camera.y += viewportSize.value.height / 2 - bounds.y - bounds.height / 2
+    }
   } else if (command.operation === 'select_objects') {
     props.store.setSelectedObjectIds(payload.objectIds || [])
   } else if (command.operation === 'clear_selection') props.store.clearSelection()
@@ -6092,15 +6474,15 @@ const surfaceDrawRect = (
 // Base Surface brightness / blur keep their legacy ranges and output; Media FX filters
 // are appended after them so the two layers compose instead of overriding each other.
 // Every token comes from normalized numbers, never from persisted CSS text.
-const surfaceMediaFxFilterCss = (slot: SurfaceSlot) => {
+const surfaceMediaFxFilterCss = (slot: SurfaceSlot, blurScale = 1, includeVideo = false) => {
   const mediaFx = slot.style.mediaFx
-  if (!mediaFx || slot.animatedMedia || (slot.source && isVideoSource(slot.source))) return ''
-  return mediaFxFilterToCss(mediaFx.filter)
+  if (!mediaFx || (!includeVideo && slot.source && isVideoSource(slot.source))) return ''
+  return mediaFxFilterToCss(mediaFx.filter, { blurScale })
 }
 
-const surfaceFilterCss = (style: StageSurfaceStyle, mediaFxCss: string) => {
+const surfaceFilterCss = (style: StageSurfaceStyle, mediaFxCss: string, blurScale = 1) => {
   const parts: string[] = []
-  if (style.brightness !== 1 || style.blurPx > 0) parts.push(`brightness(${style.brightness}) blur(${style.blurPx}px)`)
+  if (style.brightness !== 1 || style.blurPx > 0) parts.push(`brightness(${style.brightness}) blur(${style.blurPx * blurScale}px)`)
   if (mediaFxCss) parts.push(mediaFxCss)
   return parts.join(' ')
 }
@@ -6108,6 +6490,8 @@ const surfaceFilterCss = (style: StageSurfaceStyle, mediaFxCss: string) => {
 const drawSurfaceMedia = (slot: SurfaceSlot, context: Konva.Context) => {
   const source = slot.source
   if (!source) return
+  // The live output node shows the processed frames of this source instead.
+  if (slot.liveFx?.live) return
   if (slot.debugDrawCount < 2) {
     slot.debugDrawCount += 1
     theaterMediaDebug('surface draw', {
@@ -6147,6 +6531,7 @@ const drawSurfaceMedia = (slot: SurfaceSlot, context: Konva.Context) => {
 
 const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget, withBase: boolean, style: StageSurfaceStyle): SurfaceSlot => {
   const group = new Konva.Group()
+  const transitionGroup = new Konva.Group({ listening: false })
   const base = withBase ? new Konva.Rect({ listening: false }) : null
   const directImage = new Konva.Image({ visible: false, listening: false })
   let slot: SurfaceSlot
@@ -6177,10 +6562,12 @@ const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget,
   mediaFxGroup.add(mediaContentGroup)
   cameraGroup.add(group)
   if (base) group.add(base)
-  group.add(mediaFxGroup, overlay, placeholder, label)
+  transitionGroup.add(mediaFxGroup, overlay, placeholder, label)
+  group.add(transitionGroup)
   slot = {
     target,
     group,
+    transitionGroup,
     base,
     mediaFxGroup,
     mediaContentGroup,
@@ -6193,6 +6580,7 @@ const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget,
       },
     }),
     mediaFxTemporal: createKonvaMediaFxTemporalController(directImage),
+    liveFx: null,
     media,
     directImage,
     overlay,
@@ -6202,6 +6590,7 @@ const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget,
     url: '',
     version: 0,
     source: null,
+    pendingSource: null,
     ready: false,
     animatedMedia: false,
     directImageSource: null,
@@ -6214,6 +6603,73 @@ const createSurfaceSlot = (cameraGroup: Konva.Group, target: StageSurfaceTarget,
 const surfaceMediaFxOverscanScale = (slot: SurfaceSlot, style: StageSurfaceStyle, reducedMotion: boolean) => {
   if (slot.target !== 'background' || (style.fit !== 'cover' && style.fit !== 'fill') || !style.mediaFx || reducedMotion) return 1
   return resolveMediaFxMotionOverscanScale(style.mediaFx.motion)
+}
+
+// Same pixels as drawSurfaceMedia's non-tile branch (legacy brightness / blur, then the
+// Media FX basic filter, fit / zoom rect), drawn into the live staging raster. The filter
+// string is the one the media shape uses on its own canvas, so the live frame matches the
+// original look before advanced / temporal are applied on top.
+const drawSurfaceLiveFrame = (slot: SurfaceSlot, context: CanvasRenderingContext2D, video: HTMLVideoElement, raster: { width: number, height: number }) => {
+  const width = slot.placeholder.width()
+  const height = slot.placeholder.height()
+  const style = slot.style
+  if (style.fit === 'tile' || !(width > 0 && height > 0)) return false
+  const filter = surfaceFilterCss(
+    style,
+    surfaceMediaFxFilterCss(slot, raster.pixelRatio, true),
+    raster.pixelRatio,
+  )
+  if (filter && !canvasFilterSupported()) return false
+  const scaleX = raster.width / width
+  const scaleY = raster.height / height
+  const rect = surfaceDrawRect(video, width, height, style.fit, style.blurPx, style.zoom)
+  const dimensions = stageMediaDimensions(video)
+  context.filter = filter || 'none'
+  context.imageSmoothingEnabled = true
+  context.drawImage(video, 0, 0, dimensions.width, dimensions.height, rect.x * scaleX, rect.y * scaleY, rect.width * scaleX, rect.height * scaleY)
+  return true
+}
+
+// Advanced / temporal for a video surface source: a live output node over the media shape
+// (inside the motion / overscan groups), created only while the spec needs it. Tile keeps
+// its current pattern path without live pixels; static images keep directImage's cache.
+const syncSurfaceLiveFx = (slot: SurfaceSlot, box: { width: number, height: number }, reducedMotion: boolean) => {
+  // slot.source is always a loaded source; while a replacement loads it is still the one
+  // drawn, so its processed frames keep showing until the new source takes over.
+  const source = slot.source
+  const spec = slot.style.mediaFx
+  const video = source && isVideoSource(source) ? source : null
+  const basic = Boolean(spec && mediaFxFilterHasContent(spec.filter))
+  const gpuWanted = Boolean(spec && mediaFxLiveWanted(spec.advanced, spec.temporal))
+  const wanted = Boolean(video && spec)
+    && slot.animatedMedia
+    && slot.style.fit !== 'tile'
+    && (basic || (mediaFxGpuAvailable.value && gpuWanted))
+  if (!wanted) {
+    slot.liveFx?.dispose()
+    slot.liveFx = null
+    return
+  }
+  slot.liveFx ??= createKonvaMediaFxLiveController({
+    sourceNode: slot.media,
+    name: 'theater-surface-live-fx',
+    stage: (context, frameVideo, raster) => drawSurfaceLiveFrame(slot, context, frameVideo, raster),
+    // drawSurfaceMedia checks slot.liveFx.live itself; only a redraw is needed here.
+    setSourceHidden: () => slot.media.getLayer()?.batchDraw(),
+  })
+  const style = slot.style
+  slot.liveFx.update({
+    video,
+    sourceKey: stageMediaObjectUrls.get(video!) || video!.currentSrc || video!.src,
+    stageKey: [style.fit, style.zoom, style.brightness, style.blurPx, surfaceMediaFxFilterCss(slot, 1, true), box.width, box.height].join('|'),
+    rect: { x: 0, y: 0, width: box.width, height: box.height },
+    displayScale: konvaMediaFxDisplayScale(slot.media),
+    opacity: style.opacity,
+    basic,
+    advanced: mediaFxGpuAvailable.value ? spec!.advanced : null,
+    temporal: mediaFxGpuAvailable.value && !reducedMotion ? spec!.temporal : null,
+    active: slot.media.visible() || slot.liveFx.live,
+  })
 }
 
 const syncSurfaceMediaFx = (slot: SurfaceSlot, box: { width: number, height: number }) => {
@@ -6235,6 +6691,7 @@ const syncSurfaceMediaFx = (slot: SurfaceSlot, box: { width: number, height: num
     slot.style.mediaFx?.temporal,
     Boolean(hasFx && slot.source && slot.directImage.visible() && surfaceMediaFxTemporal(slot, slot.source)),
   )
+  syncSurfaceLiveFx(slot, box, reducedMotion)
   const overscan = hasFx && slot.mediaFxController.isMotionActive()
     ? surfaceMediaFxOverscanScale(slot, slot.style, reducedMotion)
     : 1
@@ -6314,7 +6771,7 @@ const updateDirectSurfaceImage = (
     isVideo: source ? isVideoSource(source) : false,
     useDirect: useDirectSurfaceImage(slot.style),
   })
-  if (!source || !useDirectSurfaceImage(slot.style) || isVideoSource(source)) {
+  if (!source || slot.animatedMedia || !useDirectSurfaceImage(slot.style) || isVideoSource(source)) {
     clearDirectSurfaceImage(slot)
     return
   }
@@ -6398,13 +6855,14 @@ const updateSurfaceSlot = (
   style: StageSurfaceStyle,
   loadingLabel: string,
   mediaKey: string,
+  callbacks?: { ready: () => void, error: () => void },
 ) => {
   const renderedStyle = slot.style
   const applyStyle = (nextStyle: StageSurfaceStyle) => {
     slot.style = nextStyle
     slot.group.position({ x: box.x, y: box.y })
     slot.group.clip({ x: 0, y: 0, width: box.width, height: box.height })
-    slot.base?.setAttrs({ width: box.width, height: box.height, fill: props.store.state.liveState.backgroundColor })
+    slot.base?.setAttrs({ width: box.width, height: box.height, fill: props.transparentBackdrop ? 'rgba(0, 0, 0, 0)' : props.store.state.liveState.backgroundColor })
     slot.placeholder.setAttrs({ width: box.width, height: box.height })
     slot.label.setAttrs({ width: box.width, height: box.height })
     slot.media.setAttrs({ width: box.width, height: box.height, opacity: nextStyle.opacity })
@@ -6417,7 +6875,7 @@ const updateSurfaceSlot = (
     })
   }
   applyStyle(style)
-  slot.animatedMedia = Boolean(imageRef && (imageRef.animated === true || imageRef.mimeType?.startsWith('video/')))
+  slot.animatedMedia = isAnimatedStageImageRef(imageRef)
 
   const location = imageRef ? resolveTheaterStageMedia(imageRef) : null
   const resolved = location?.url || null
@@ -6434,6 +6892,9 @@ const updateSurfaceSlot = (
     scope: theaterMediaScope(),
   })
   if (!imageRef) {
+    slot.version++
+    releaseStageMedia(slot.pendingSource)
+    slot.pendingSource = null
     releaseStageMedia(slot.source)
     slot.url = ''
     slot.source = null
@@ -6447,6 +6908,9 @@ const updateSurfaceSlot = (
     return
   }
   if (!resolved) {
+    slot.version++
+    releaseStageMedia(slot.pendingSource)
+    slot.pendingSource = null
     releaseStageMedia(slot.source)
     slot.url = imageRef.url
     slot.source = null
@@ -6457,6 +6921,7 @@ const updateSurfaceSlot = (
     slot.overlay.visible(false)
     slot.placeholder.visible(true)
     slot.label.text('图片地址被安全策略拒绝').visible(true)
+    callbacks?.error()
     return
   }
   if (slot.url === resolved && slot.source && slot.ready) {
@@ -6466,7 +6931,10 @@ const updateSurfaceSlot = (
     slot.overlay.visible(Boolean(slot.source) && style.overlay.enabled && style.overlay.opacity > 0)
     syncSurfaceMediaFx(slot, box)
     slot.group.getLayer()?.batchDraw()
-    settleSceneMedia(mediaKey, resolved, undefined, () => activateStageMedia(slot.source!, imageRef))
+    const version = slot.version
+    settleSceneMedia(mediaKey, resolved, undefined, () => {
+      if (slot.version === version && slot.url === resolved && slot.source) activateStageMedia(slot.source, imageRef)
+    })
     return
   }
   if (slot.url === resolved && !slot.ready) {
@@ -6477,6 +6945,8 @@ const updateSurfaceSlot = (
   const previousUrl = slot.url
   const previousSource = slot.source
   const previousReady = slot.ready
+  releaseStageMedia(slot.pendingSource)
+  slot.pendingSource = null
   slot.url = resolved
   slot.ready = false
   slot.version += 1
@@ -6498,6 +6968,7 @@ const updateSurfaceSlot = (
       }
       if (previousSource !== loadedSource) releaseStageMedia(previousSource)
       slot.source = loadedSource
+      slot.pendingSource = null
       slot.ready = true
       applyStyle(style)
       theaterMediaDebug('surface ready', {
@@ -6513,6 +6984,7 @@ const updateSurfaceSlot = (
       slot.placeholder.visible(false)
       slot.label.visible(false)
       syncSurfaceMediaFx(slot, box)
+      callbacks?.ready()
       theaterMediaDebug('surface visible', {
         resourceId: imageRef.resourceId,
         visible: slot.media.visible(),
@@ -6553,11 +7025,14 @@ const updateSurfaceSlot = (
           }
         })
       }
-    }, () => activateStageMedia(loadedSource, imageRef))
+    }, () => {
+      if (slot.version === version && slot.url === resolved && slot.source === loadedSource) activateStageMedia(loadedSource, imageRef)
+    })
   }, (errorMessage) => {
     if (slot.version !== version || slot.url !== resolved) return
     settleSceneMedia(mediaKey, resolved)
     releaseStageMedia(source)
+    slot.pendingSource = null
     slot.url = previousUrl
     slot.source = previousSource
     slot.ready = previousReady
@@ -6577,7 +7052,9 @@ const updateSurfaceSlot = (
     syncSurfaceMediaFx(slot, box)
     theaterMediaDebug('surface error', { resourceId: imageRef.resourceId, errorMessage, box })
     slot.group.getLayer()?.batchDraw()
+    callbacks?.error()
   })
+  if (!slot.ready) slot.pendingSource = source
 }
 
 const syncGridLayer = () => {
@@ -6694,6 +7171,123 @@ const scheduleGridSync = () => {
   })
 }
 
+const animateSurfacePair = (previous: SurfaceSlot, next: SurfaceSlot, done: () => void) => {
+  const target = next.target
+  let phase = surfaceVariants(target).transition
+  const reducedMotion = resolveTheaterReducedMotion(false, undefined, false).effectiveReducedMotion
+  // A temporary group cache can filter still pixels, but must never freeze live
+  // video, animated images or temporal Media FX. Those use the live fade path.
+  const live = previous.animatedMedia || next.animatedMedia || Boolean(previous.source && isVideoSource(previous.source)) || Boolean(next.source && isVideoSource(next.source)) || Boolean(previous.style.mediaFx || next.style.mediaFx)
+  if (live && (phase.type === 'blur' || phase.type === 'dissolve')) phase = { ...phase, type: 'fade' }
+  const origins = [previous, next].map(slot => slot.transitionGroup.position())
+  next.group.opacity(1)
+  next.base?.visible(false)
+  const filtered = phase.type === 'blur' || phase.type === 'dissolve'
+  if (filtered) {
+    try {
+      for (const slot of [previous, next]) {
+        if (!slot.source) continue
+        slot.transitionGroup.cache({ pixelRatio: 1 })
+        slot.transitionGroup.filters([Konva.Filters.Blur, Konva.Filters.Contrast, Konva.Filters.Brighten])
+      }
+    } catch {
+      phase = { ...phase, type: 'fade' }
+      for (const slot of [previous, next]) { slot.transitionGroup.filters([]); slot.transitionGroup.clearCache() }
+    }
+  }
+  const paint = (progress: number) => {
+    ;[previous, next].forEach((slot, index) => {
+      const frame = stageSurfaceTransitionFrame(phase, index === 0 ? 'exit' : 'enter', progress)
+      const width = slot.placeholder.width(), height = slot.placeholder.height()
+      slot.transitionGroup.opacity(frame.opacity)
+      slot.transitionGroup.scale({ x: frame.scale, y: frame.scale })
+      slot.transitionGroup.position({ x: origins[index].x + width * frame.offsetX + width * (1 - frame.scale) / 2, y: origins[index].y + height * (1 - frame.scale) / 2 })
+      if (filtered && phase.type !== 'fade') {
+        slot.transitionGroup.blurRadius(frame.blurPx)
+        slot.transitionGroup.contrast((frame.contrast - 1) * 100)
+        slot.transitionGroup.brightness(frame.brightness - 1)
+      }
+    })
+  }
+  let animation: Konva.Animation | null = null
+  const stop = () => {
+    animation?.stop()
+    animation = null
+    ;[previous, next].forEach((slot, index) => {
+      slot.transitionGroup.opacity(1).scale({ x: 1, y: 1 }).position(origins[index])
+      slot.transitionGroup.filters([])
+      slot.transitionGroup.clearCache()
+      slot.group.getLayer()?.batchDraw()
+    })
+    next.base?.visible(true)
+  }
+  if (reducedMotion || phase.type === 'none' || sceneCompositeTransition) {
+    done()
+    return stop
+  }
+  paint(0)
+  animation = new Konva.Animation(frame => {
+    if (resolveTheaterReducedMotion(false, undefined, false).effectiveReducedMotion) { done(); return }
+    const progress = Math.min(1, (frame?.time ?? phase.durationMs) / phase.durationMs)
+    paint(1 - Math.pow(1 - progress, 3))
+    if (progress === 1) done()
+  }, next.group.getLayer())
+  animation.start()
+  return stop
+}
+
+const syncSurface = (target: StageSurfaceTarget, image: StageImageRef | null, box: { x: number, y: number, width: number, height: number }, style: StageSurfaceStyle) => {
+  let current = target === 'background' ? backgroundSlot : foregroundSlot
+  if (!current) return
+  const controller = surfaceTransitions[target]
+  const signature = JSON.stringify([props.worldId, props.channelId, props.store.state.activeSceneId, image, box, style, props.store.state.liveState.backgroundColor, Boolean(props.store.state.liveState.surfaceEmbeds[target])])
+  const changed = surfaceChangeVersions[target] !== props.store.surfaceChanges[target]
+  surfaceChangeVersions[target] = props.store.surfaceChanges[target]
+  const awaitingScene = sceneMediaBatch && !sceneMediaBatch.released && sceneMediaBatch.expected.has(`surface:${target}`) && !sceneMediaBatch.settled.has(`surface:${target}`)
+  // Do not restart the other surface's video/Media FX on a local selection.
+  if (!changed && surfaceRenderSignatures[target] === signature && !awaitingScene) return
+  controller.cancel()
+  surfaceRenderSignatures[target] = signature
+  const location = image ? resolveTheaterStageMedia(image) : null
+  const batch = sceneMediaBatch
+  const mediaKey = `surface:${target}`
+  if (batch && !batch.released && batch.sceneId === props.store.state.activeSceneId && batch.expected.get(mediaKey) !== location?.url) {
+    // If a selection arrives during scene entry, the barrier follows the newest
+    // active media instead of waiting for an abandoned request to time out.
+    batch.settled.delete(mediaKey)
+    if (location) batch.expected.set(mediaKey, location.url)
+    else batch.expected.delete(mediaKey)
+    if (batch.settled.size >= batch.expected.size) releaseSceneMediaBatch(batch)
+  }
+  const phase = surfaceVariants(target).transition
+  const canAnimate = changed && !sceneCompositeTransition && (!sceneMediaBatch || sceneMediaBatch.ready) && phase.type !== 'none'
+    && !resolveTheaterReducedMotion(false, undefined, false).effectiveReducedMotion && !props.store.state.liveState.surfaceEmbeds[target]
+    && (!image || Boolean(location)) && (current.source || image) && current.url !== (location?.url || '')
+  const label = target === 'background' ? '背景' : '前景'
+  if (!canAnimate) {
+    updateSurfaceSlot(current, image, box, style, label, mediaKey)
+    return
+  }
+  const parent = current.group.getParent() as Konva.Group
+  const next = createSurfaceSlot(parent, target, target === 'background', style)
+  next.group.opacity(0)
+  const token = controller.begin(next)
+  const ready = () => {
+    if (sceneCompositeTransition || !controller.isCurrent(token)) { controller.failed(token); return }
+    controller.ready(token, current!, slot => {
+      if (target === 'background') backgroundSlot = slot
+      else foregroundSlot = slot
+      current = slot
+    }, animateSurfacePair)
+  }
+  updateSurfaceSlot(next, image, box, style, label, mediaKey, { ready, error: () => {
+    if (!controller.isCurrent(token)) return
+    controller.failed(token)
+    props.store.rollbackFailedSurfaceVariant(target, image)
+  } })
+  if (!image) ready()
+}
+
 const syncSurfaceSlots = () => {
   if (!backgroundSlot || !foregroundSlot) return
   const liveState = props.store.state.liveState
@@ -6710,8 +7304,8 @@ const syncSurfaceSlots = () => {
   const height = liveState.fieldHeight * WORLD_UNIT_PX
   const box = { x: -width / 2, y: -height / 2, width, height }
   const viewportBox = { x: 0, y: 0, width: viewportSize.value.width, height: viewportSize.value.height }
-  updateSurfaceSlot(backgroundSlot, liveState.background, viewportBox, liveState.surfaceStyles.background, '背景', 'surface:background')
-  updateSurfaceSlot(foregroundSlot, liveState.foreground, box, liveState.surfaceStyles.foreground, '前景', 'surface:foreground')
+  syncSurface('background', liveState.background, viewportBox, liveState.surfaceStyles.background)
+  syncSurface('foreground', liveState.foreground, box, liveState.surfaceStyles.foreground)
   backgroundLayer?.batchDraw()
   topVisualLayer?.batchDraw()
 }
@@ -7219,9 +7813,7 @@ const createObjectNode = (object: StageObject) => {
       multiDrag = null
       currentDrag.nodes.forEach(({ node }, id) => {
         const current = getObject(id)
-        if (!current) return
-        current.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-        current.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+        if (current) commitObjectNodePosition(current, node)
       })
       props.store.commitObjectEdit()
       domVisualPreview.clear()
@@ -7239,8 +7831,7 @@ const createObjectNode = (object: StageObject) => {
     if (gridSnapEnabled.value) {
       snapNodeToGrid(wrapper)
     }
-    current.transform.x = Number((wrapper.x() / WORLD_UNIT_PX).toFixed(6))
-    current.transform.y = Number((wrapper.y() / WORLD_UNIT_PX).toFixed(6))
+    commitObjectNodePosition(current, wrapper)
     props.store.commitObjectEdit()
     domVisualPreview.clear()
     setGridSnapPreview(false)
@@ -7267,9 +7858,15 @@ const createObjectNode = (object: StageObject) => {
   return wrapper
 }
 
+const disposeObjectLiveFx = (objectId: string) => {
+  objectLiveFxControllers.get(objectId)?.dispose()
+  objectLiveFxControllers.delete(objectId)
+}
+
 const disposeObjectMediaFx = (objectId: string) => {
   objectMediaFxControllers.get(objectId)?.dispose()
   objectMediaFxControllers.delete(objectId)
+  disposeObjectLiveFx(objectId)
 }
 
 // Temporal is allowed to subscribe only while the image is actually visible in the
@@ -7285,12 +7882,71 @@ const stageObjectMediaFxVisible = (object: StageObject) => {
   return true
 }
 
+// Hides the original video node's pixels while live output is shown; its image, size,
+// hit region (hitFunc is untouched) and lifecycle stay as they are.
+const hiddenStageSourceSceneFunc = () => {}
+
+// Video-backed image objects with advanced / temporal content: a separate live output
+// node next to `.theater-object-image`, which keeps owning the video. Without such content
+// no controller (and no GPU / canvas / frame work) exists for the object.
+const syncObjectLiveFx = (wrapper: Konva.Group, object: StageObject, spec: MediaFxSpec) => {
+  const image = wrapper.findOne<Konva.Image>('.theater-object-image')
+  const basic = mediaFxFilterHasContent(spec.filter)
+  const gpuWanted = mediaFxLiveWanted(spec.advanced, spec.temporal)
+  const wanted = Boolean(image)
+    && isLiveVideoImageObject(object)
+    && (basic || (mediaFxGpuAvailable.value && gpuWanted))
+  if (!wanted || !image) {
+    disposeObjectLiveFx(object.id)
+    return
+  }
+  let controller = objectLiveFxControllers.get(object.id)
+  if (!controller) {
+    controller = createKonvaMediaFxLiveController({
+      sourceNode: image,
+      name: 'theater-object-live-fx',
+      // The source node always draws the whole video into its fitted rect. Animated
+      // objects never enter Konva cache; Basic is reproduced on this staging canvas.
+      stage: (context, video, raster) => {
+        const current = getObject(object.id)
+        const filter = current
+          ? mediaFxFilterToCss(stageObjectMediaFx(current).filter, { blurScale: raster.pixelRatio })
+          : ''
+        if (filter && !canvasFilterSupported()) return false
+        context.filter = filter || 'none'
+        context.imageSmoothingEnabled = true
+        context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, raster.width, raster.height)
+        return true
+      },
+      setSourceHidden: (hidden) => {
+        image.setAttr('sceneFunc', hidden ? hiddenStageSourceSceneFunc : undefined)
+      },
+    })
+    objectLiveFxControllers.set(object.id, controller)
+  }
+  const source = image.image() as StageMediaSource | undefined
+  const video = source && isVideoSource(source) && image.visible() ? source : null
+  const paused = mediaFxPreviewPaused.value && props.store.state.selectedObjectId === object.id
+  controller.update({
+    video,
+    sourceKey: video ? stageMediaObjectUrls.get(video) || video.currentSrc || video.src : '',
+    stageKey: `full-frame|${mediaFxFilterToCss(spec.filter)}`,
+    rect: { x: image.x(), y: image.y(), width: image.width(), height: image.height() },
+    displayScale: konvaMediaFxDisplayScale(image),
+    basic,
+    advanced: mediaFxGpuAvailable.value ? spec.advanced : null,
+    // Temporal is a dynamic effect: preview pause and reduced motion stop it like motion.
+    temporal: mediaFxGpuAvailable.value && !paused && !resolveTheaterReducedMotion().effectiveReducedMotion ? spec.temporal : null,
+    active: stageObjectMediaFxVisible(object),
+  })
+}
+
 const syncObjectMediaFx = (wrapper: Konva.Group, object: StageObject, width: number, height: number) => {
   const spec = stageObjectMediaFx(object)
   let controller = objectMediaFxControllers.get(object.id)
   if (!mediaFxHasContent(spec)) {
     // No effect: release the controller so no tween/cache survives for this object.
-    if (controller) disposeObjectMediaFx(object.id)
+    if (controller || objectLiveFxControllers.has(object.id)) disposeObjectMediaFx(object.id)
     return
   }
   const motionNode = wrapper.findOne<Konva.Group>('.theater-object-media-fx')
@@ -7312,6 +7968,7 @@ const syncObjectMediaFx = (wrapper: Konva.Group, object: StageObject, width: num
     paused: mediaFxPreviewPaused.value && props.store.state.selectedObjectId === object.id,
     reducedMotion: resolveTheaterReducedMotion().effectiveReducedMotion,
   })
+  syncObjectLiveFx(wrapper, object, spec)
 }
 
 const syncObjectImage = (wrapper: Konva.Group, object: StageObject, width: number, height: number) => {
@@ -7385,6 +8042,8 @@ const syncObjectImage = (wrapper: Konva.Group, object: StageObject, width: numbe
       )
       image.visible(true)
       objectMediaFxControllers.get(object.id)?.refreshFilter()
+      const current = getObject(object.id)
+      if (current && objectMediaFxControllers.has(object.id)) syncObjectLiveFx(wrapper, current, stageObjectMediaFx(current))
       if (!isVideoSource(loadedSource)) {
         const previewUrl = stageMediaObjectUrls.get(loadedSource) || location!.url
         if (previewUrl) setLayerPreviewUrl(object.id, previewUrl)
@@ -7430,13 +8089,9 @@ const updateObjectNode = (wrapper: Konva.Group, object: StageObject) => {
     || props.store.state.selectedObjectId === object.id
     || multiSelected
   wrapper.setAttrs({
-    x: object.transform.x * WORLD_UNIT_PX,
-    y: object.transform.y * WORLD_UNIT_PX,
+    ...objectNodeRenderTransform(object),
     offsetX: width / 2,
     offsetY: height / 2,
-    rotation: object.transform.rotation,
-    scaleX: object.transform.scaleX,
-    scaleY: object.transform.scaleY,
     visible: props.syncReady
       && !hasPendingSceneEntrance(object.id)
       && (object.visible || objectEntranceTweens.has(object.id)),
@@ -7496,12 +8151,15 @@ const syncObjectRenderBands = (objects: Record<string, StageObject>) => {
     camera.add(root)
     layer.add(camera)
     stage.add(layer)
-    extraObjectRenderBands.push({ layer, camera, root })
+    extraObjectRenderBands.push({ layer, camera, root, space: 'world' })
   }
+  const viewportCamera = stageViewportBandCamera(viewportSize.value)
   plan.bands.forEach((band, index) => {
     const entry = index === 0 ? firstBand : extraObjectRenderBands[index - 1]
-    entry.camera.position(firstBand.camera.position())
-    entry.camera.scale(firstBand.camera.scale())
+    if (index > 0) extraObjectRenderBands[index - 1].space = band.space
+    // World bands share the scene camera; viewport bands use the viewport frame (no pan/zoom).
+    entry.camera.position(band.space === 'viewport' ? viewportCamera.position : firstBand.camera.position())
+    entry.camera.scale(band.space === 'viewport' ? viewportCamera.scale : firstBand.camera.scale())
     entry.layer.getNativeCanvasElement().style.zIndex = String(band.canvasZIndex)
     band.roots.forEach((object) => {
       const node = objectNodes.get(object.id)
@@ -7632,7 +8290,25 @@ const resizeStage = () => {
   sceneMorphStage?.size(viewportSize.value)
   syncField()
   clampOpenPanels()
+  syncViewportObjectNodes()
   applyCamera()
+}
+
+// Screen-fixed roots re-anchor to the resized viewport (normalized center, uniform design scale);
+// descendants follow through their root node. World objects are untouched.
+const syncViewportObjectNodes = () => {
+  const viewportCamera = stageViewportBandCamera(viewportSize.value)
+  extraObjectRenderBands.forEach(({ camera, space }) => {
+    if (space !== 'viewport') return
+    camera.position(viewportCamera.position)
+    camera.scale(viewportCamera.scale)
+  })
+  Object.values(canvasStageObjects()).forEach((object) => {
+    if (object.coordinateSpace !== 'viewport' || (object.parentId && stageObjects.value[object.parentId])) return
+    const node = objectNodes.get(object.id)
+    if (node && !objectEntranceTweens.has(object.id)) node.setAttrs(objectNodeRenderTransform(object))
+  })
+  if (transformer?.nodes().length) transformer.forceUpdate()
 }
 
 const handleWheel = (event: Konva.KonvaEventObject<WheelEvent>) => {
@@ -7852,7 +8528,7 @@ const stopPan = (event?: Konva.KonvaEventObject<PointerEvent>) => {
 }
 
 const targetImageRef = (target: ImageTarget) => target.kind === 'scene'
-  ? props.store.state.liveState[target.target]
+  ? target.slotId ? surfaceVariants(target.target).slots.find(slot => slot.id === target.slotId)?.image ?? null : props.store.state.liveState[target.target]
   : props.store.activeObjects.value[target.objectId]?.image || null
 
 const targetImageUrl = (target: ImageTarget) => targetImageRef(target)?.url || ''
@@ -7873,7 +8549,13 @@ const applyImageUrl = (
   loopCount?: number,
   dimensions?: { width: number, height: number },
 ) => {
-  if (target.kind === 'scene') return props.store.setSceneImage(target.target, url, resourceId, mimeType, animated, loopCount)
+  if (target.kind === 'scene') {
+    if (target.sceneId && (target.sceneId !== props.store.state.activeSceneId || target.epoch !== surfaceImageEpoch)) return false
+    if (!target.sceneId) return props.store.setSceneImage(target.target, url, resourceId, mimeType, animated, loopCount)
+    const image: StageImageRef | null = url ? { url, resourceId: resourceId || '', mimeType, animated, loopCount } : null
+    if (target.add) return props.store.operateSurfaceVariant(target.target, { type: 'add', id: crypto.randomUUID(), name: `图片 ${surfaceVariants(target.target).slots.length + 1}`, image })
+    return target.slotId ? props.store.operateSurfaceVariant(target.target, { type: 'replace', id: target.slotId, image }) : false
+  }
   return props.store.setObjectImage(target.objectId, url, resourceId, mimeType, animated, loopCount, dimensions)
 }
 
@@ -7893,27 +8575,6 @@ const waitForResource = async (resourceId: string, scope = captureTheaterRequest
     await new Promise((resolve) => window.setTimeout(resolve, 500))
   }
   throw new Error('图片处理超时')
-}
-
-const supportedTheaterMedia = new Set(['image/jpeg', 'image/png', 'image/apng', 'image/webp', 'image/gif', 'video/webm'])
-
-const normalizedFileType = (file: File) => {
-  const declared = file.type.trim().toLowerCase()
-  if (supportedTheaterMedia.has(declared)) return declared
-  const extension = file.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1]
-  return extension === 'jpg' || extension === 'jpeg'
-    ? 'image/jpeg'
-    : extension === 'png'
-      ? 'image/png'
-      : extension === 'apng'
-        ? 'image/apng'
-        : extension === 'webp'
-          ? 'image/webp'
-          : extension === 'gif'
-            ? 'image/gif'
-            : extension === 'webm'
-              ? 'video/webm'
-              : declared
 }
 
 const isAnimatedPNG = async (file: File) => {
@@ -7973,8 +8634,9 @@ const uploadTheaterImageResource = async (file: File, targetObjectId = '', scope
   const resourceId = resource?.id
   if (!resourceId) throw new Error('上传响应缺少资源 ID')
   if (resource?.status !== 'ready') resource = await waitForResource(resourceId, scope)
+  const originalMimeType = resource?.mimeType?.trim().toLowerCase() || prepared.type || normalizedFileType(prepared)
   const variant = resource?.playbackVariant || 'original'
-  const mimeType = resource?.playbackMimeType || prepared.type || normalizedFileType(prepared)
+  const mimeType = resource?.playbackMimeType || originalMimeType
   const resourceBase = urlBase.startsWith('//') ? `${window.location.protocol}${urlBase}` : urlBase
   return {
     resource,
@@ -7985,15 +8647,23 @@ const uploadTheaterImageResource = async (file: File, targetObjectId = '', scope
   }
 }
 
+let imageUploadGeneration = 0
+const activeImageUploads = new Map<string, number>()
 const uploadImage = async (file: File, target: ImageTarget) => {
+  target = bindImageTarget(target)
+  const scope = captureTheaterRequestScope()
+  const generation = ++imageUploadGeneration
+  const uploadKey = target.kind === 'scene' ? `${target.sceneId}:${target.target}:${target.add ? 'add' : target.slotId}` : target.objectId
   if (!canUploadImageTarget(target)) throw new Error('缺少小剧场图片编辑权限')
   if (!props.worldId || !props.channelId) throw new Error('缺少小剧场频道信息')
+  activeImageUploads.set(uploadKey, generation)
   resourceUploading.value = true
   resourceError.value = ''
   try {
     const targetObject = target.kind === 'object' ? props.store.activeObjects.value[target.objectId] : null
     const targetEffectConfig = isTheaterEffectObject(targetObject) ? theaterEffectConfigFromObject(targetObject) : null
-    const uploaded = await uploadTheaterImageResource(file, target.kind === 'object' ? target.objectId : '')
+    const uploaded = await uploadTheaterImageResource(file, target.kind === 'object' ? target.objectId : '', scope)
+    if (!isCurrentTheaterRequestScope(scope) || activeImageUploads.get(uploadKey) !== generation) throw new Error('图片目标已失效')
     const dimensions = (
       targetObject?.type === 'image' && !targetObject.image
     ) || (
@@ -8001,12 +8671,17 @@ const uploadImage = async (file: File, target: ImageTarget) => {
     )
       ? await theaterMediaDimensions(uploaded.prepared)
       : undefined
+    if (!isCurrentTheaterRequestScope(scope) || activeImageUploads.get(uploadKey) !== generation || !canUploadImageTarget(target)) throw new Error('图片目标已失效')
     if (!applyImageUrl(target, uploaded.url, uploaded.resourceId, uploaded.mimeType, uploaded.resource?.animated === true, uploaded.resource?.loopCount || undefined, dimensions)) throw new Error('图片目标已失效')
   } catch (error) {
-    resourceError.value = error instanceof Error ? error.message : '图片上传失败'
+    if (activeImageUploads.get(uploadKey) === generation && isCurrentTheaterRequestScope(scope)
+      && (target.kind !== 'scene' || (target.sceneId === props.store.state.activeSceneId && target.epoch === surfaceImageEpoch))) {
+      resourceError.value = error instanceof Error ? error.message : '图片上传失败'
+    }
     throw error
   } finally {
-    resourceUploading.value = false
+    if (activeImageUploads.get(uploadKey) === generation) activeImageUploads.delete(uploadKey)
+    resourceUploading.value = activeImageUploads.size > 0
   }
 }
 
@@ -8123,7 +8798,7 @@ const uploadSceneOverlayMedia = async (files: File[]) => {
 }
 
 const requestImageUpload = (target: ImageTarget) => {
-  pendingImageTarget.value = target
+  pendingImageTarget.value = bindImageTarget(target)
   imageInputRef.value?.click()
 }
 
@@ -8149,6 +8824,9 @@ const clearImage = (target: ImageTarget) => {
 }
 
 const openImageEditor = async (target: ImageTarget) => {
+  target = bindImageTarget(target)
+  const epoch = surfaceImageEpoch
+  const generation = ++imageEditorReadGeneration
   if (targetImageRef(target)?.animated) return
   const url = targetImageUrl(target)
   if (!url) return
@@ -8156,18 +8834,20 @@ const openImageEditor = async (target: ImageTarget) => {
   resourceError.value = ''
   try {
     const response = await api.get<Blob>(url, { responseType: 'blob' })
+    if (epoch !== surfaceImageEpoch || generation !== imageEditorReadGeneration) return
     const blob = response.data
     imageEditorFile.value = new File([blob], 'theater-image.webp', { type: blob.type || 'image/webp' })
     imageEditorTarget.value = target
     imageEditorVisible.value = true
   } catch (error) {
-    resourceError.value = error instanceof Error ? error.message : '图片读取失败'
+    if (epoch === surfaceImageEpoch && generation === imageEditorReadGeneration) resourceError.value = error instanceof Error ? error.message : '图片读取失败'
   } finally {
-    resourceUploading.value = false
+    resourceUploading.value = activeImageUploads.size > 0
   }
 }
 
 const closeImageEditor = () => {
+  imageEditorReadGeneration++
   imageEditorVisible.value = false
   imageEditorFile.value = null
   imageEditorTarget.value = null
@@ -8226,9 +8906,10 @@ const saveEditedImage = async (result: MessageImageEditorResult) => {
     await uploadImage(result.file, target)
   } catch {
     // Upload failed: Media FX was not touched; reopen the editor on the same target.
-    imageEditorVisible.value = true
+    if (imageEditorTarget.value === target) imageEditorVisible.value = true
     return
   }
+  if (imageEditorTarget.value !== target) return
   commitImageEditorMediaFx(target, result.mediaFx)
   closeImageEditor()
 }
@@ -8336,22 +9017,34 @@ const handleCanvasDrop = async (event: DragEvent) => {
   }
 }
 
-const reparentObjectPreservingTransform = (objectId: string, parentId: string | null) => {
-  const object = getObject(objectId)
-  const node = objectNodes.get(objectId)
-  const parentNode = parentId ? objectNodes.get(parentId) : objectRoot
-  if (!object || !node || !parentNode || object.parentId === parentId) return false
-  if (parentId) {
-    let parent: StageObject | undefined = getObject(parentId)
-    if (!parent || parent.type !== 'group') return false
-    while (parent) {
-      if (parent.id === objectId) return false
-      parent = parent.parentId ? getObject(parent.parentId) : undefined
-    }
-  }
+// Pose that keeps a reparented node visually still. A child reads its parent-local attrs after
+// moveTo(parentNode); a new top-level root converts its absolute stage pose into the tree's space
+// (world camera inverse or viewport frame), so leaving a group never changes the coordinate space.
+const reparentTransformForNode = (
+  object: StageObject,
+  node: Konva.Group,
+  parentId: string | null,
+): StageObjectReparentTransform | null => {
   const absolutePosition = node.absolutePosition()
   const absoluteRotation = node.getAbsoluteRotation()
   const absoluteScale = node.getAbsoluteScale()
+  if (!parentId) {
+    const camera = worldCameraTransform()
+    if (!camera) return null
+    const pose = stageScreenPoseToRootPose({
+      ...absolutePosition,
+      rotation: absoluteRotation,
+      scaleX: absoluteScale.x,
+      scaleY: absoluteScale.y,
+    }, objectCoordinateSpace(object), camera, viewportSize.value)
+    if ('error' in pose) {
+      stageMessage.warning('无法在允许的坐标或缩放范围内保持外观，未移出分组')
+      return null
+    }
+    return { ...pose.transform, coordinateSpace: pose.coordinateSpace, viewportX: pose.viewportX, viewportY: pose.viewportY }
+  }
+  const parentNode = objectNodes.get(parentId)
+  if (!parentNode) return null
   node.moveTo(parentNode)
   const parentScale = parentNode.getAbsoluteScale()
   node.rotation(absoluteRotation - parentNode.getAbsoluteRotation())
@@ -8360,13 +9053,21 @@ const reparentObjectPreservingTransform = (objectId: string, parentId: string | 
     y: absoluteScale.y / Math.max(0.000001, parentScale.y),
   })
   node.absolutePosition(absolutePosition)
-  const changed = props.store.reparentObject(objectId, parentId, {
+  return {
     x: Number((node.x() / WORLD_UNIT_PX).toFixed(6)),
     y: Number((node.y() / WORLD_UNIT_PX).toFixed(6)),
     rotation: Number(node.rotation().toFixed(6)),
     scaleX: Number(node.scaleX().toFixed(6)),
     scaleY: Number(node.scaleY().toFixed(6)),
-  })
+  }
+}
+
+const reparentObjectPreservingTransform = (objectId: string, parentId: string | null) => {
+  const object = getObject(objectId)
+  const node = objectNodes.get(objectId)
+  if (!object || !node || object.parentId === parentId || !props.store.canSetParent(objectId, parentId)) return false
+  const transform = reparentTransformForNode(object, node, parentId)
+  const changed = Boolean(transform) && props.store.reparentObject(objectId, parentId, transform!)
   if (!changed) syncObjects()
   return changed
 }
@@ -8379,30 +9080,15 @@ const moveLayerObjectPreservingTransform = (
 ) => {
   const object = getObject(objectId)
   const node = objectNodes.get(objectId)
-  const parentNode = parentId ? objectNodes.get(parentId) : objectRoot
-  if (!object || !node || !parentNode || !props.store.canSetParent(objectId, parentId)) return false
-  if (object.parentId !== parentId) {
-    const absolutePosition = node.absolutePosition()
-    const absoluteRotation = node.getAbsoluteRotation()
-    const absoluteScale = node.getAbsoluteScale()
-    node.moveTo(parentNode)
-    const parentScale = parentNode.getAbsoluteScale()
-    node.rotation(absoluteRotation - parentNode.getAbsoluteRotation())
-    node.scale({
-      x: absoluteScale.x / Math.max(0.000001, parentScale.x),
-      y: absoluteScale.y / Math.max(0.000001, parentScale.y),
-    })
-    node.absolutePosition(absolutePosition)
-  }
+  if (!object || !node || !props.store.canSetParent(objectId, parentId)) return false
+  // Same parent: only the layer rank changes and the stored transform stays as is.
+  const transform = object.parentId === parentId
+    ? { rotation: object.transform.rotation, scaleX: object.transform.scaleX, scaleY: object.transform.scaleY }
+    : reparentTransformForNode(object, node, parentId)
+  if (!transform) return false
   layerHierarchyMovePending = true
   layerHierarchyUpdatedObjectIds = new Set([...props.store.selection.selectedIds, objectId])
-  const changed = props.store.moveObject(objectId, parentId, {
-    x: Number((node.x() / WORLD_UNIT_PX).toFixed(6)),
-    y: Number((node.y() / WORLD_UNIT_PX).toFixed(6)),
-    rotation: Number(node.rotation().toFixed(6)),
-    scaleX: Number(node.scaleX().toFixed(6)),
-    scaleY: Number(node.scaleY().toFixed(6)),
-  }, targetId, placement)
+  const changed = props.store.moveObject(objectId, parentId, transform, targetId, placement)
   void nextTick(() => {
     layerHierarchyMovePending = false
     layerHierarchyUpdatedObjectIds.clear()
@@ -8767,9 +9453,7 @@ onMounted(() => {
     selectionGroupDrag = null
     currentDrag.nodes.forEach(({ node }, id) => {
       const object = getObject(id)
-      if (!object) return
-      object.transform.x = Number((node.x() / WORLD_UNIT_PX).toFixed(6))
-      object.transform.y = Number((node.y() / WORLD_UNIT_PX).toFixed(6))
+      if (object) commitObjectNodePosition(object, node)
     })
     props.store.commitObjectEdit()
     domVisualPreview.clear()
@@ -8881,12 +9565,21 @@ watch(() => ({
   background: props.store.state.liveState.background,
   foreground: props.store.state.liveState.foreground,
   surfaceStyles: props.store.state.liveState.surfaceStyles,
+  backgroundEmbed: Boolean(props.store.state.liveState.surfaceEmbeds.background),
   foregroundEmbed: Boolean(props.store.state.liveState.surfaceEmbeds.foreground),
   backgroundColor: props.store.state.liveState.backgroundColor,
+  transparentBackdrop: props.transparentBackdrop,
   fieldWidth: props.store.state.liveState.fieldWidth,
   fieldHeight: props.store.state.liveState.fieldHeight,
   fieldObjectFit: props.store.state.liveState.fieldObjectFit,
+  surfaceChanges: { ...props.store.surfaceChanges },
 }), syncSurfaceSlots, { deep: true })
+watch(() => [props.worldId, props.channelId, props.store.state.activeSceneId, props.store.surfaceChanges.reset], () => {
+  surfaceImageEpoch++
+  pendingImageTarget.value = null
+  if (imageEditorTarget.value?.kind === 'scene') closeImageEditor()
+  cancelSurfaceTransitions()
+}, { flush: 'sync' })
 watch(() => ({
   fieldWidth: props.store.state.liveState.fieldWidth,
   fieldHeight: props.store.state.liveState.fieldHeight,
@@ -9004,6 +9697,14 @@ watch([dialoguePerformanceHidden, portraitPerformanceHidden], ([dialogueHidden, 
 }, { flush: 'sync' })
 
 onBeforeUnmount(() => {
+  surfaceImageEpoch++
+  cancelSurfaceTransitions()
+  for (const slot of [backgroundSlot, foregroundSlot]) {
+    if (!slot) continue
+    slot.version++
+    releaseStageMedia(slot.pendingSource)
+    slot.pendingSource = null
+  }
   endSelectedMediaFxEdit()
   unsubscribeMediaFxGpuAvailability()
   quickToolPickerEpoch += 1
@@ -9053,6 +9754,11 @@ onBeforeUnmount(() => {
   pendingSceneEntrances = null
   pendingTextEntranceIds.value = []
   finishSceneMorph()
+  // Live outputs stop their frame callbacks before their video sources are released.
+  objectLiveFxControllers.forEach((controller) => controller.dispose())
+  objectLiveFxControllers.clear()
+  backgroundSlot?.liveFx?.dispose()
+  foregroundSlot?.liveFx?.dispose()
   objectNodes.forEach(releaseObjectMedia)
   releaseStageMedia(backgroundSlot?.source)
   releaseStageMedia(foregroundSlot?.source)
@@ -9099,7 +9805,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section ref="stageAppRef" class="theater-stage-app">
+  <section ref="stageAppRef" class="theater-stage-app" :class="{ 'is-pip-compact': props.pipCompact, 'is-pip-minimal': props.pipMinimal }">
     <input ref="imageInputRef" class="theater-image-input" type="file" accept="image/png,image/apng,image/jpeg,image/webp,image/gif,video/webm,.apng,.webm" @change="handleImageInput">
     <input ref="sceneAudioInputRef" class="theater-image-input" type="file" accept="audio/ogg,audio/mpeg,audio/wav,.ogg,.mp3,.wav" @change="handleSceneAudioInput">
     <input ref="packageInputRef" class="theater-image-input" type="file" accept=".zip,application/zip" @change="handlePackageInput">
@@ -9120,6 +9826,14 @@ onBeforeUnmount(() => {
         </template>
         退出小剧场
       </n-tooltip>
+      <n-tooltip v-if="props.pipMinimal" trigger="hover">
+        <template #trigger>
+          <n-button class="theater-pip-tools-toggle" quaternary size="small" aria-label="画中画工具" @click="pipToolsOpen = !pipToolsOpen">
+            <template #icon><n-icon><Dots /></n-icon></template>
+          </n-button>
+        </template>
+        画中画工具
+      </n-tooltip>
       <n-dropdown v-if="canManagePackages" trigger="click" :options="packageMenuOptions" :menu-props="theaterSecondaryMenuProps" @select="handlePackageMenuSelect">
         <button class="theater-stage-title is-actionable" type="button" :title="`${store.activeScene.value.name} · 导入/导出`" :aria-busy="packageBusy">
           {{ store.activeScene.value.name }}
@@ -9128,11 +9842,11 @@ onBeforeUnmount(() => {
       <div v-else class="theater-stage-title" :title="store.activeScene.value.name">{{ store.activeScene.value.name }}</div>
       <Teleport
         :to="stageAppRef || '.theater-stage-app'"
-        :disabled="theaterToolbarLayout === 'horizontal' || !stageAppRef"
+        :disabled="!props.pipMinimal && (theaterToolbarLayout === 'horizontal' || !stageAppRef)"
       >
         <div
           class="theater-panel-switches-wrap"
-          :class="{ 'is-vertical': theaterToolbarLayout === 'vertical', 'is-controls-visible': panelSwitchesColorsVisible }"
+          :class="{ 'is-vertical': theaterToolbarLayout === 'vertical' && !props.pipMinimal, 'is-controls-visible': panelSwitchesColorsVisible, 'is-pip-minimal': props.pipMinimal, 'is-pip-minimal-open': props.pipMinimal && pipToolsOpen }"
           @pointerenter="revealPanelSwitchesColors"
           @pointerleave="hidePanelSwitchesColors"
           @focusin="revealPanelSwitchesColors"
@@ -9520,7 +10234,7 @@ onBeforeUnmount(() => {
           </template>
           <SceneOverlayStageHost
             :scene-id="store.state.activeSceneId"
-            :overlays="store.state.liveState.sceneOverlays"
+            :overlays="sceneOverlayRenderBindings"
             :resolve-resource-url="resolveTheaterResourceUrl"
           />
           <StageTextOverlay
@@ -9585,9 +10299,10 @@ onBeforeUnmount(() => {
           <n-tooltip trigger="hover"><template #trigger><n-button :class="{ 'is-active': batchBooleanChecked('editable'), 'is-mixed': batchBooleanIndeterminate('editable') }" :disabled="!batchBooleanObjects('editable').length" aria-label="批量设置可编辑" @click.stop="toggleBatchQuickFlag('editable')"><template #icon><n-icon><Edit /></n-icon></template></n-button></template>{{ batchBooleanChecked('editable') ? '取消可编辑' : '设为可编辑' }}</n-tooltip>
           <n-tooltip trigger="hover"><template #trigger><n-button :class="{ 'is-active': batchBooleanChecked('interactive'), 'is-mixed': batchBooleanIndeterminate('interactive') }" :disabled="!batchBooleanObjects('interactive').length" aria-label="批量设置可交互" @click.stop="toggleBatchQuickFlag('interactive')"><template #icon><n-icon><component :is="batchBooleanChecked('interactive') ? Bolt : BoltOff" /></n-icon></template></n-button></template>{{ batchBooleanChecked('interactive') ? '取消可交互' : '设为可交互' }}</n-tooltip>
         </div>
-          <TheaterCharacterStatsOverlay
+        <TheaterCharacterStatsOverlay
           :world-id="worldId"
           :channel-id="channelId"
+          :compact="props.pipCompact === true"
           @open-character-card="emit('openCharacterCard', $event)"
         />
         <TheaterDialogueOverlay
@@ -9608,6 +10323,7 @@ onBeforeUnmount(() => {
           :selected-object="selectedEffectObject"
           :editing="effectPanelOpen && canEditAllObjects"
           :editing-target="effectEditingTarget"
+          :resolve-media="resolveTheaterStageMedia"
           @transform-start="beginEffectTransform"
           @transform-update="updateEffectTransform"
           @transform-end="endEffectTransform"
@@ -9698,25 +10414,74 @@ onBeforeUnmount(() => {
         <div class="theater-panel-heading" @pointerdown="startPanelDrag('scene', $event)">
           <span>场景</span>
           <div class="theater-panel-heading__actions">
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button text size="tiny" :aria-label="sceneBrowserViewMode === 'grid' ? '切换为列表视图' : '切换为缩略图视图'" @click="setSceneBrowserViewMode(sceneBrowserViewMode === 'grid' ? 'list' : 'grid')">
+                  <n-icon><LayoutList v-if="sceneBrowserViewMode === 'grid'" /><LayoutGrid v-else /></n-icon>
+                </n-button>
+              </template>
+              {{ sceneBrowserViewMode === 'grid' ? '切换为列表视图' : '切换为缩略图视图' }}
+            </n-tooltip>
             <n-tooltip v-if="canSwitchScene" trigger="hover">
               <template #trigger>
                 <n-button text size="tiny" aria-label="预加载全部场景" :loading="store.scenes.value.some((scene) => scenePreloadStatus[scene.id] === 'loading')" @click="requestScenePreload(store.scenes.value.map((scene) => scene.id))"><n-icon><CloudDownload /></n-icon></n-button>
               </template>
               预加载全部场景到所有设备
             </n-tooltip>
+            <n-tooltip v-if="canBatchCreateScenes" trigger="hover">
+              <template #trigger>
+                <n-button text size="tiny" aria-label="批量创建场景" :disabled="sceneEditMode" @click="sceneBatchCreateVisible = true"><n-icon><Files /></n-icon></n-button>
+              </template>
+              批量创建场景
+            </n-tooltip>
             <n-button v-if="canEditAllObjects && canSwitchScene" text size="tiny" aria-label="新建场景" :disabled="sceneEditMode" @click="store.addScene"><n-icon><Plus /></n-icon></n-button>
             <n-button v-if="canEditAllObjects" text size="tiny" aria-label="新建场景文件夹" :disabled="sceneEditMode" @click="createSceneFolder"><n-icon><FolderPlus /></n-icon></n-button>
             <n-button class="theater-panel-close" text size="tiny" aria-label="关闭场景面板" @click="scenePanelOpen = false"><n-icon><X /></n-icon></n-button>
           </div>
         </div>
-        <div ref="sceneListRef" class="theater-scene-list">
-          <template v-for="entry in sceneListEntries" :key="entry.key">
+        <div ref="sceneBrowserRef" class="theater-scene-browser">
+        <div class="theater-scene-browser__toolbar">
+          <n-input v-model:value="sceneSearchQuery" size="tiny" clearable placeholder="搜索场景名称" aria-label="按名称搜索场景">
+            <template #prefix><n-icon><Search /></n-icon></template>
+          </n-input>
+          <div v-if="sceneBrowserViewMode === 'grid'" class="theater-scene-browser__sizes" role="group" aria-label="缩略图大小">
+            <button
+              v-for="size in sceneBrowserThumbSizes"
+              :key="size"
+              type="button"
+              :class="{ 'is-active': sceneBrowserThumbSize === size }"
+              :aria-pressed="sceneBrowserThumbSize === size"
+              :aria-label="`${sceneBrowserThumbSizeLabels[size]}缩略图`"
+              @click="setSceneBrowserThumbSize(size)"
+            >{{ sceneBrowserThumbSizeLabels[size] }}</button>
+          </div>
+        </div>
+        <div v-if="sceneBrowserViewMode === 'grid'" class="theater-scene-folder-tabs" role="tablist" aria-label="场景文件夹">
+          <div
+            v-for="tab in sceneGridFolderTabs"
+            :key="tab.id || 'virtual:uncategorized'"
+            class="theater-scene-folder-tab"
+            :class="{ 'is-active': !sceneSearchActive && tab.id === sceneGridFolderId, 'is-drop-target': isSceneFolderDropTarget(tab.id) }"
+            :data-scene-folder-drop="tab.id"
+          >
+            <button type="button" role="tab" :aria-selected="tab.id === sceneGridFolderId" @click="selectSceneGridFolder(tab.id)">
+              <span>{{ tab.name }}</span>
+              <small>{{ tab.count }}</small>
+            </button>
+            <n-dropdown v-if="tab.folder && canEditAllObjects && tab.id === sceneGridFolderId && !sceneSearchActive" trigger="click" :options="sceneFolderMenuOptions" :menu-props="theaterSecondaryMenuProps" @select="handleSceneFolderMenu($event, tab.id)">
+              <n-button quaternary circle size="tiny" aria-label="文件夹操作" @click.stop><template #icon><n-icon><Dots /></n-icon></template></n-button>
+            </n-dropdown>
+          </div>
+        </div>
+        <div ref="sceneListRef" class="theater-scene-list" :class="sceneBrowserViewMode === 'grid' ? ['is-grid', `is-thumb-${sceneBrowserThumbSize}`] : []">
+          <template v-for="entry in sceneBrowserEntries" :key="entry.key">
           <div
             v-if="entry.kind === 'folder' || entry.kind === 'uncategorized'"
             class="theater-scene-folder"
-            :class="{ 'is-collapsed': entry.collapsed, 'is-virtual': entry.kind === 'uncategorized' }"
+            :class="{ 'is-collapsed': entry.collapsed, 'is-virtual': entry.kind === 'uncategorized', 'is-drop-target': isSceneFolderDropTarget(entry.kind === 'folder' ? entry.folder.id : '') }"
+            :data-scene-folder-drop="entry.kind === 'folder' ? entry.folder.id : ''"
           >
-            <button type="button" class="theater-scene-folder__main" @click="toggleSceneFolder(entry.kind === 'folder' ? sceneFolderCollapseKey(entry.folder.id) : uncategorizedSceneFolderCollapseKey)">
+            <button type="button" class="theater-scene-folder__main" @click="!sceneSearchActive && toggleSceneFolder(entry.kind === 'folder' ? sceneFolderCollapseKey(entry.folder.id) : uncategorizedSceneFolderCollapseKey)">
               <n-icon :component="entry.collapsed ? ChevronRight : ChevronDown" />
               <n-icon><Folder /></n-icon>
               <strong>{{ entry.kind === 'folder' ? entry.folder.name : '未分类' }}</strong>
@@ -9733,13 +10498,14 @@ onBeforeUnmount(() => {
             :class="{
               'has-preload-pulse': scenePreloadPulse[entry.scene.id],
               'is-nested': entry.nested,
+              'is-grid': sceneBrowserViewMode === 'grid',
               'is-edit-mode': sceneEditMode,
               'is-batch-mode': sceneBatchMode,
               'has-scene-move-actions': canEditAllObjects,
               'has-scene-publish-actions': canEditAllObjects && canSwitchScene,
               'is-dragging': draggedSceneId === entry.scene.id,
-              'is-drop-before': sceneDropTarget?.id === entry.scene.id && sceneDropTarget.placement === 'before',
-              'is-drop-after': sceneDropTarget?.id === entry.scene.id && sceneDropTarget.placement === 'after',
+              'is-drop-before': isSceneDropTarget(entry.scene.id, 'before'),
+              'is-drop-after': isSceneDropTarget(entry.scene.id, 'after'),
             }"
           >
             <n-checkbox
@@ -9753,7 +10519,7 @@ onBeforeUnmount(() => {
             <span
               v-if="sceneEditMode && canEditAllObjects"
               class="theater-scene-row__grip"
-              aria-label="拖动调整场景顺序"
+              :aria-label="sceneSearchActive ? '拖动到文件夹' : '拖动调整场景顺序'"
               role="button"
               tabindex="0"
               @pointerdown.stop="startScenePointerDrag($event, entry.scene.id)"
@@ -9781,8 +10547,26 @@ onBeforeUnmount(() => {
                 :disabled="sceneEditMode || sceneBatchMode ? !canEditAllObjects : !canBrowseScenes"
                 @click="handleSceneClick(entry.scene)"
               >
-                <span class="theater-scene-card__title">{{ entry.scene.name }}</span>
-                <n-icon v-if="constructionSceneId === entry.scene.id" class="theater-scene-card__construction" aria-label="施工模式锁定场景"><Lock /></n-icon>
+                <template v-if="sceneBrowserViewMode === 'grid'">
+                  <StageSceneThumbnail :location="sceneThumbnailLocation(entry.scene)" :background-color="sceneThumbnailState(entry.scene).backgroundColor" />
+                  <span class="theater-scene-card__meta">
+                    <span class="theater-scene-card__title">{{ entry.scene.name }}</span>
+                    <n-icon v-if="constructionSceneId === entry.scene.id" class="theater-scene-card__construction" aria-label="施工模式锁定场景"><Lock /></n-icon>
+                    <n-icon v-if="canEditAllObjects && entry.scene.published" class="theater-scene-card__published" aria-label="已展示给玩家"><Eye /></n-icon>
+                    <span
+                      v-if="scenePreloadStatus[entry.scene.id]"
+                      class="theater-scene-card__preload"
+                      :class="`is-${scenePreloadStatus[entry.scene.id]}`"
+                      role="img"
+                      :aria-label="scenePreloadStatus[entry.scene.id] === 'loading' ? '预加载中' : scenePreloadStatus[entry.scene.id] === 'ready' ? '已预加载' : '预加载失败'"
+                    />
+                  </span>
+                  <small v-if="entry.folderName" class="theater-scene-card__folder">{{ entry.folderName }}</small>
+                </template>
+                <template v-else>
+                  <span class="theater-scene-card__title">{{ entry.scene.name }}</span>
+                  <n-icon v-if="constructionSceneId === entry.scene.id" class="theater-scene-card__construction" aria-label="施工模式锁定场景"><Lock /></n-icon>
+                </template>
               </button>
             </template>
             <div class="theater-scene-editor">
@@ -9919,6 +10703,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
           </template>
+          <div v-if="(sceneSearchActive || sceneBrowserViewMode === 'grid') && !sceneBrowserHasScenes" class="theater-panel-empty theater-scene-browser__empty">
+            {{ sceneSearchActive ? '没有匹配的场景' : '此文件夹暂无场景' }}
+          </div>
+        </div>
         </div>
         <div v-if="canSwitchScene || canEditAllObjects" class="theater-scene-actions">
           <n-tooltip v-if="canEditAllObjects" trigger="hover">
@@ -9984,8 +10772,11 @@ onBeforeUnmount(() => {
               <span>{{ selectedObjects.length }} 个组件</span>
               <n-button text size="tiny" @click="store.clearSelection">清除选择</n-button>
             </div>
-            <div v-if="batchMoveBlocked" class="theater-batch-warning">
+            <div v-if="batchHasLockedObjects" class="theater-batch-warning">
               选中组件包含锁定位置项
+            </div>
+            <div v-if="batchMixedCoordinateSpaces" class="theater-batch-warning">
+              选中组件同时包含屏幕固定与世界坐标对象，批量移动、变换和屏幕固定切换已禁用
             </div>
             <div class="theater-object-editor__checks theater-batch-checks">
               <n-checkbox
@@ -10015,6 +10806,12 @@ onBeforeUnmount(() => {
                 :indeterminate="batchBooleanIndeterminate('aspectRatioLocked')"
                 @update:checked="updateBatchBoolean('aspectRatioLocked', $event)"
               >锁定比例</n-checkbox>
+              <n-checkbox
+                :checked="batchScreenFixedChecked"
+                :indeterminate="batchMixedCoordinateSpaces"
+                :disabled="batchMixedCoordinateSpaces || !batchCoordinateRoots.length"
+                @update:checked="updateBatchScreenFixed"
+              >屏幕固定</n-checkbox>
             </div>
             <n-button secondary type="error" @click="removeSelectedObjectsWithConfirm">
               <template #icon><n-icon><Trash /></n-icon></template>
@@ -10221,8 +11018,14 @@ onBeforeUnmount(() => {
               <n-input v-model:value="selectedObject.fill" />
             </template>
             <div class="theater-object-editor__transform">
-              <label>X</label><n-input-number v-model:value="selectedObject.transform.x" :precision="2" :disabled="!canEditSelectedTransform" />
-              <label>Y</label><n-input-number v-model:value="selectedObject.transform.y" :precision="2" :disabled="!canEditSelectedTransform" />
+              <template v-if="selectedUsesViewportPosition">
+                <label>屏幕 X%</label><n-input-number :value="Number((selectedObject.viewportX * 100).toFixed(2))" :min="-100" :max="200" :precision="2" :disabled="!canEditSelectedTransform" @update:value="updateSelectedViewportPosition('viewportX', $event)" />
+                <label>屏幕 Y%</label><n-input-number :value="Number((selectedObject.viewportY * 100).toFixed(2))" :min="-100" :max="200" :precision="2" :disabled="!canEditSelectedTransform" @update:value="updateSelectedViewportPosition('viewportY', $event)" />
+              </template>
+              <template v-else>
+                <label>X</label><n-input-number v-model:value="selectedObject.transform.x" :precision="2" :disabled="!canEditSelectedTransform" />
+                <label>Y</label><n-input-number v-model:value="selectedObject.transform.y" :precision="2" :disabled="!canEditSelectedTransform" />
+              </template>
               <template v-if="selectedObject.type === 'group'">
                 <label>旋转</label><n-input-number v-model:value="selectedObject.transform.rotation" :precision="2" />
                 <label>缩放 X</label><n-input-number :value="selectedObject.transform.scaleX" :min="0.01" :max="100" :step="0.1" :precision="2" @update:value="updateSelectedScale('scaleX', $event)" />
@@ -10250,6 +11053,12 @@ onBeforeUnmount(() => {
                 :checked="selectedObject.aspectRatioLocked"
                 @update:checked="updateSelectedAspectRatioLocked"
               >锁定比例</n-checkbox>
+              <n-checkbox
+                v-if="canEditAllObjects && selectedObject.type !== 'effect'"
+                :checked="selectedScreenFixed"
+                @update:checked="updateSelectedScreenFixed"
+              >屏幕固定</n-checkbox>
+              <small v-if="canEditAllObjects && selectedObject.type !== 'effect' && selectedScreenFixedAppliesToTree" class="theater-embed-event-hint">屏幕固定对所在整个组生效：固定在视口位置，不随场景镜头移动和缩放</small>
             </div>
             <template v-if="canEditAllObjects && isStageActionOwner(selectedObject.type)">
               <label>{{ selectedObject.type === 'iframe' ? '嵌入事件动作' : '点击动作' }}</label>
@@ -10409,9 +11218,27 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-if="canEditAllObjects" class="theater-media-settings">
-          <template v-for="surface in surfaceSettingRows" :key="surface.target">
-            <label>{{ surface.label }}</label>
-            <div class="theater-image-actions">
+          <template v-for="surface in surfaceSettingRows" :key="`${store.state.activeSceneId}:${surface.target}`">
+            <div class="theater-surface-setting-heading">
+              <label>{{ surface.label }}</label>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-button
+                    class="theater-surface-visibility-toggle"
+                    size="tiny"
+                    quaternary
+                    circle
+                    :aria-expanded="surfaceSettingsVisible[surface.target]"
+                    :aria-label="`${surfaceSettingsVisible[surface.target] ? '隐藏' : '显示'}${surface.target === 'background' ? '背景' : '前景'}设置`"
+                    @click="toggleSurfaceSettingsVisible(surface.target)"
+                  >
+                    <template #icon><n-icon><component :is="surfaceSettingsVisible[surface.target] ? Eye : EyeOff" /></n-icon></template>
+                  </n-button>
+                </template>
+                {{ surfaceSettingsVisible[surface.target] ? '隐藏设置' : '显示设置' }}
+              </n-tooltip>
+            </div>
+            <div v-if="surfaceSettingsVisible[surface.target]" class="theater-image-actions">
               <n-button size="tiny" :disabled="!canUploadResources" :loading="resourceUploading" @click="requestImageUpload({ kind: 'scene', target: surface.target })"><template #icon><n-icon><Photo /></n-icon></template>上传</n-button>
               <n-button size="tiny" quaternary :disabled="!canUploadResources || !store.state.liveState[surface.target] || store.state.liveState[surface.target]?.animated" :aria-label="`编辑${surface.label}`" @click="openImageEditor({ kind: 'scene', target: surface.target })"><template #icon><n-icon><Edit /></n-icon></template></n-button>
               <n-popover :theme-overrides="theaterPopoverThemeOverrides" class="theater-secondary-surface" trigger="click" placement="right-start" :width="300" :show-arrow="false">
@@ -10478,10 +11305,19 @@ onBeforeUnmount(() => {
                     @remove="store.removeSceneSurfaceEmbed(surface.target)"
                     @test="toggleSurfaceInteractionTest(surface.target)"
                   />
+                  <div class="theater-surface-settings__section">槽位切换</div>
+                  <n-select size="small" :value="surfaceVariants(surface.target).transition.type" :options="surfaceTransitionOptions" :menu-props="surfaceTransitionMenuProps" @update:value="patchSurfaceTransition(surface.target, { type: $event })" />
+                  <div class="theater-surface-settings__slider">
+                    <span>持续时间</span>
+                    <n-slider :value="surfaceVariants(surface.target).transition.durationMs" :min="20" :max="5000" :step="10" @update:value="patchSurfaceTransition(surface.target, { durationMs: $event })" />
+                    <output>{{ surfaceVariants(surface.target).transition.durationMs }}ms</output>
+                  </div>
                 </div>
               </n-popover>
               <n-button size="tiny" quaternary type="error" :disabled="!store.state.liveState[surface.target]" @click="clearImage({ kind: 'scene', target: surface.target })">清除</n-button>
+              <n-button v-if="surfaceVariants(surface.target).slots.length <= 1" size="tiny" quaternary :disabled="!canUploadResources || resourceUploading" @click="requestSurfaceUpload(surface.target, null)">+ 添加更多{{ surface.target === 'background' ? '背景' : '前景' }}</n-button>
             </div>
+            <StageSurfaceVariants v-if="surfaceSettingsVisible[surface.target] && surfaceVariants(surface.target).slots.length > 1" :group="surfaceVariants(surface.target)" :foreground="surface.target === 'foreground'" :uploading="resourceUploading" :can-upload="canUploadResources" :thumbnail="surfaceThumbnail" @operate="operateSurface(surface.target, $event)" @upload="requestSurfaceUpload(surface.target, $event)" />
           </template>
           <div class="theater-scene-overlay-settings-row">
             <label>场景叠加效果</label>
@@ -10887,6 +11723,14 @@ onBeforeUnmount(() => {
         </footer>
       </div>
     </n-modal>
+    <StageSceneBatchCreateModal
+      v-if="canBatchCreateScenes"
+      :key="`${worldId}:${channelId}:${scopeType || ''}`"
+      v-model:show="sceneBatchCreateVisible"
+      :folders="store.state.sceneFolders"
+      :create-session="createSceneBatchSession"
+      @finished="handleSceneBatchFinished"
+    />
     <n-modal v-model:show="packageProgressVisible" :mask-closable="false" :closable="false" preset="card" title="小剧场导入进度" class="theater-package-progress-modal">
       <div class="theater-package-progress">
         <n-progress type="line" :percentage="Math.round(packageDisplayedProgress * 100)" :status="packageProgressJob?.status === 'failed' ? 'error' : packageProgressJob?.status === 'done' ? 'success' : 'default'" />
@@ -11005,6 +11849,22 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
 .theater-stage-toolbar::-webkit-scrollbar { display: none; }
+.theater-stage-app.is-pip-compact .theater-stage-toolbar { height: 32px; gap: 3px; padding: 0 4px; }
+.theater-stage-app.is-pip-compact .theater-stage-toolbar :deep(.n-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
+.theater-stage-app.is-pip-compact .theater-stage-title { width: 5.5em; flex-basis: 5.5em; font-size: 12px; }
+.theater-stage-app.is-pip-compact .theater-panel-switches-wrap.is-vertical { top: 32px; width: 36px; max-height: calc(100% - 32px); gap: 2px; padding: 2px 1px; }
+.theater-stage-app.is-pip-compact .theater-panel-switches.is-vertical { width: 32px; }
+.theater-stage-app.is-pip-compact .theater-panel-switches-wrap.is-vertical :deep(.n-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
+.theater-stage-app.is-pip-compact .theater-panel-layout-toggle { width: 28px; min-width: 28px; height: 28px; }
+.theater-stage-app.is-pip-compact .theater-component-actions-toolbar { top: 32px; height: 32px; }
+.theater-stage-app.is-pip-minimal .theater-stage-toolbar { width: auto; right: auto; gap: 2px; padding: 2px 4px; overflow: visible; border: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.theater-stage-app.is-pip-minimal .theater-stage-toolbar > :not(.theater-toolbar-exit):not(.theater-pip-tools-toggle) { display: none !important; }
+.theater-stage-app.is-pip-minimal .theater-component-actions-toolbar { display: none !important; }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal { position: absolute; z-index: 10003; top: 32px; left: 4px; box-sizing: border-box; width: calc(100% - 8px); max-height: calc(100% - 36px); display: none; padding: 4px; overflow: auto; border: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .12)); border-radius: 7px; background: color-mix(in srgb, var(--sc-bg-header, #262626) 88%, transparent); box-shadow: 0 8px 18px rgba(0, 0, 0, .28); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal-open { display: block; }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal .theater-panel-layout-toggle { display: none; }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal .theater-panel-switches { width: 100%; display: flex; flex-flow: row wrap; align-items: center; gap: 2px; }
+.theater-stage-app.is-pip-minimal .theater-panel-switches-wrap.is-pip-minimal :deep(.n-button) { width: 28px; min-width: 28px; height: 28px; padding: 0; }
 .theater-panel-switches-wrap {
   position: relative; display: inline-flex; align-items: center; flex: 0 0 auto;
 }
@@ -11286,14 +12146,18 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, transparent, var(--theater-panel) 10px); transition: opacity .14s ease;
 }
 .theater-scene-row:hover .theater-scene-row__actions, .theater-scene-row:has(button:focus-visible) .theater-scene-row__actions, .theater-scene-row.has-preload-pulse .theater-scene-row__actions { opacity: 1; pointer-events: auto; }
-.theater-scene-row:hover .theater-scene-card, .theater-scene-row:has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-preload-pulse .theater-scene-card { padding-right: 36px; }
-.theater-scene-row.has-scene-move-actions:hover .theater-scene-card, .theater-scene-row.has-scene-move-actions:has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-move-actions.has-preload-pulse .theater-scene-card { padding-right: 66px; }
-.theater-scene-row.has-scene-publish-actions:hover .theater-scene-card, .theater-scene-row.has-scene-publish-actions:has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-publish-actions.has-preload-pulse .theater-scene-card { padding-right: 96px; }
-.theater-scene-row.is-dragging { opacity: .36; }
-.theater-scene-row.is-drag-preview {
-  position: fixed; z-index: 10003; top: 0; left: 0; pointer-events: none; opacity: .92;
-  border: 1px solid color-mix(in srgb, var(--theater-accent, #38bdf8) 58%, transparent); border-radius: 5px;
-  background: var(--theater-panel); box-shadow: 0 10px 24px rgba(0, 0, 0, .26); will-change: transform;
+.theater-scene-row:not(.is-grid):hover .theater-scene-card, .theater-scene-row:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 36px; }
+.theater-scene-row.has-scene-move-actions:not(.is-grid):hover .theater-scene-card, .theater-scene-row.has-scene-move-actions:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-move-actions:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 66px; }
+.theater-scene-row.has-scene-publish-actions:not(.is-grid):hover .theater-scene-card, .theater-scene-row.has-scene-publish-actions:not(.is-grid):has(button:focus-visible) .theater-scene-card, .theater-scene-row.has-scene-publish-actions:not(.is-grid).has-preload-pulse .theater-scene-card { padding-right: 96px; }
+.theater-scene-row.is-dragging .theater-scene-card {
+  outline: 1px dashed color-mix(in srgb, var(--theater-accent, #38bdf8) 68%, transparent); outline-offset: -2px;
+}
+:global(.theater-scene-drag-preview) {
+  position: fixed; z-index: 10003; top: 0; left: 0; box-sizing: border-box; max-width: 220px; padding: 6px 9px;
+  overflow: hidden; border: 1px solid color-mix(in srgb, var(--theater-accent, #38bdf8) 58%, transparent); border-radius: 5px;
+  color: var(--sc-text-primary, #f4f4f5); background: var(--sc-bg-panel, #26262b); box-shadow: 0 8px 20px rgba(0, 0, 0, .24);
+  font-size: 11px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; user-select: none;
+  contain: paint; will-change: transform;
 }
 .theater-scene-row.is-drop-before::before, .theater-scene-row.is-drop-after::after {
   position: absolute; z-index: 1; right: 5px; left: 5px; height: 2px; border-radius: 1px; background: #38bdf8; content: '';
@@ -11329,6 +12193,60 @@ onBeforeUnmount(() => {
   68% { transform: translateY(1px) scale(.96); }
 }
 @media (prefers-reduced-motion: reduce) { .theater-scene-preload.is-ready-pulse { animation: none; } }
+.theater-scene-browser { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.theater-scene-browser__toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 0 6px 6px; }
+.theater-scene-browser__toolbar > .n-input { flex: 1 1 auto; min-width: 0; }
+.theater-scene-browser__sizes { flex: 0 0 auto; display: flex; gap: 1px; padding: 1px; border: 1px solid var(--theater-border); border-radius: 5px; }
+.theater-scene-browser__sizes button {
+  min-width: 22px; height: 20px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--sc-text-secondary, #b5b5c5);
+  background: transparent; font-size: 10px; cursor: pointer;
+}
+.theater-scene-browser__sizes button.is-active { color: var(--sc-text-primary, #f4f4f5); background: color-mix(in srgb, var(--theater-accent) 22%, transparent); }
+.theater-scene-browser__empty { grid-column: 1 / -1; }
+.theater-scene-folder-tabs { flex: 0 0 auto; display: flex; gap: 4px; overflow-x: auto; padding: 0 6px 6px; scrollbar-width: thin; }
+.theater-scene-folder-tab {
+  flex: 0 0 auto; max-width: 160px; display: flex; align-items: center; border: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .1)); border-radius: 999px;
+  color: var(--sc-text-secondary, #b5b5c5); background: color-mix(in srgb, var(--theater-panel) 70%, transparent); transition: color .14s ease, border-color .14s ease, background .14s ease;
+}
+.theater-scene-folder-tab > button { min-width: 0; display: flex; align-items: center; gap: 5px; padding: 3px 9px; border: 0; color: inherit; background: transparent; font-size: 11px; cursor: pointer; }
+.theater-scene-folder-tab > button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theater-scene-folder-tab > button small { color: var(--sc-fg-muted, #71717a); font-size: 10px; }
+.theater-scene-folder-tab:hover { color: var(--sc-text-primary, #f4f4f5); }
+.theater-scene-folder-tab.is-active { color: var(--sc-text-primary, #f4f4f5); border-color: color-mix(in srgb, var(--theater-accent) 65%, transparent); background: color-mix(in srgb, var(--theater-accent) 16%, transparent); }
+.theater-scene-folder-tab > .n-button { width: 20px; height: 20px; margin-right: 2px; }
+.theater-scene-folder.is-drop-target, .theater-scene-folder-tab.is-drop-target { outline: 1px dashed #38bdf8; outline-offset: -1px; background: color-mix(in srgb, #38bdf8 14%, transparent); }
+.theater-scene-folder.is-drop-target { border-radius: 5px; }
+.theater-scene-list.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--theater-scene-thumb-min, 120px), 1fr)); align-content: start; gap: 6px; }
+.theater-scene-list.is-thumb-small { --theater-scene-thumb-min: 84px; }
+.theater-scene-list.is-thumb-medium { --theater-scene-thumb-min: 120px; }
+.theater-scene-list.is-thumb-large { --theater-scene-thumb-min: 172px; }
+.theater-scene-row.is-grid, .theater-scene-row.is-grid.is-edit-mode, .theater-scene-row.is-grid.is-batch-mode { display: block; min-width: 0; }
+.theater-scene-row.is-grid .theater-scene-card { flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 4px; }
+.theater-scene-row.is-grid .theater-scene-card__title { font-size: 11px; }
+.theater-scene-card__meta { min-width: 0; display: flex; align-items: center; gap: 4px; padding: 0 2px; }
+.theater-scene-card__meta .theater-scene-card__construction { margin-left: 0; font-size: 12px; }
+.theater-scene-card__published { flex: 0 0 auto; color: var(--theater-accent, #38bdf8); font-size: 12px; }
+.theater-scene-card__preload { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--sc-fg-muted, #71717a); }
+.theater-scene-card__preload.is-loading { background: var(--theater-accent, #38bdf8); animation: theater-scene-preload-dot 1s ease-in-out infinite alternate; }
+.theater-scene-card__preload.is-ready { background: #22c55e; }
+.theater-scene-card__preload.is-error { background: #ef4444; }
+@keyframes theater-scene-preload-dot { from { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .theater-scene-card__preload.is-loading { animation: none; } }
+.theater-scene-card__folder { min-width: 0; padding: 0 2px; overflow: hidden; color: var(--sc-fg-muted, #71717a); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.theater-scene-row.is-grid .theater-scene-row__select, .theater-scene-row.is-grid .theater-scene-row__grip {
+  position: absolute; z-index: 2; top: 8px; left: 8px; width: 22px; height: 22px; border-radius: 5px; background: color-mix(in srgb, var(--theater-panel) 84%, transparent);
+}
+.theater-scene-row.is-grid .theater-scene-row__grip { color: var(--sc-text-primary, #f4f4f5); }
+.theater-scene-row.is-grid .theater-scene-row__actions { top: 8px; right: 8px; padding: 1px; border-radius: 999px; background: color-mix(in srgb, var(--theater-panel) 86%, transparent); }
+.theater-scene-row.is-grid .theater-scene-preload { width: 22px; height: 22px; }
+.theater-scene-row.is-grid.is-drop-before::before, .theater-scene-row.is-grid.is-drop-after::after { top: 4px; right: auto; bottom: 4px; left: -4px; width: 2px; height: auto; }
+.theater-scene-row.is-grid.is-drop-after::after { right: -4px; left: auto; }
+@media (hover: none) {
+  .theater-scene-row .theater-scene-row__actions { opacity: 1; pointer-events: auto; }
+  .theater-scene-row:not(.is-grid) .theater-scene-card { padding-right: 36px; }
+  .theater-scene-row.has-scene-move-actions:not(.is-grid) .theater-scene-card { padding-right: 66px; }
+  .theater-scene-row.has-scene-publish-actions:not(.is-grid) .theater-scene-card { padding-right: 96px; }
+}
 .theater-scene-actions { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 1px; padding: 6px; border-top: 1px solid var(--theater-border); background: var(--theater-panel); }
 .theater-scene-playback-toggles { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .theater-scene-playback-toggle { display: flex; align-items: center; gap: 5px; color: var(--sc-text-secondary, #b5b5c5); font-size: 11px; }
@@ -11359,6 +12277,10 @@ onBeforeUnmount(() => {
 .theater-batch-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .theater-media-settings { display: grid; gap: 5px; padding: 9px; border-bottom: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .08)); }
 .theater-media-settings label, .theater-inspector label { color: var(--sc-fg-muted, #71717a); font-size: 10px; }
+.theater-surface-setting-heading { min-width: 0; min-height: 22px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.theater-surface-setting-heading > label { min-width: 0; }
+.theater-surface-visibility-toggle { flex: 0 0 auto; width: 22px; min-width: 22px; height: 22px; padding: 0; color: var(--sc-fg-muted, #71717a); }
+.theater-surface-visibility-toggle :deep(.n-icon) { font-size: 14px; }
 .theater-image-actions { display: flex; align-items: center; gap: 4px; }
 .theater-scene-overlay-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 3px; border-top: 1px solid var(--sc-border-mute, rgba(255, 255, 255, .08)); }
 .theater-scene-overlay-settings-row .theater-image-actions { min-width: 0; }

@@ -15,12 +15,13 @@ import (
 // behavior. New protocol fields must be added here and to the corresponding
 // typed client state in the same change.
 var theaterSceneStateAllowedKeys = map[string]struct{}{
-	"background":    {},
-	"foreground":    {},
-	"surfaceStyles": {},
-	"surfaceEmbeds": {},
-	"fieldWidth":    {},
-	"fieldHeight":   {},
+	"background":      {},
+	"foreground":      {},
+	"surfaceStyles":   {},
+	"surfaceEmbeds":   {},
+	"surfaceVariants": {},
+	"fieldWidth":      {},
+	"fieldHeight":     {},
 	// Grid options, including the newer onTop flag, stay nested here.
 	"grid":          {},
 	"transition":    {},

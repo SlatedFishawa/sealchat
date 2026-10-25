@@ -102,6 +102,34 @@ emailAuth:
 
 Docker 镜像已安装 FFmpeg。二进制部署若需要转码，应自行准备与平台匹配的 FFmpeg/FFprobe，并在启动日志中确认检测结果。`audio.tempDir` 应有足够空间，且最好与最终音频目录位于同一挂载点。
 
+## LOG 后台 PDF 导出
+
+后台 PDF 需要在 **SealChat 服务所在机器或容器内**准备浏览器，SealChat 不会自动下载依赖：
+
+- 浏览器：推荐 [Chrome for Testing 的 chrome-headless-shell](https://googlechromelabs.github.io/chrome-for-testing/)，选择匹配操作系统和 CPU 架构的压缩包，完整解压；也可使用兼容的 Chrome、Chromium 或 Edge。
+- 合并工具：推荐 [qpdf](https://github.com/qpdf/qpdf/releases) 或 `pdfunite`（Debian/Ubuntu 的 `poppler-utils`）。未配置可用的合并工具时，超长 LOG 会导出为分段 PDF 压缩包。
+
+在管理后台的“PDF 导出”页填写工具路径并保存，或修改 `config.yaml` 的 `export` 段后重启服务。例如 Linux：
+
+```yaml
+export:
+  storageDir: /opt/sealchat/data/exports
+  pdf:
+    enabled: true
+    renderer: chromium-cli
+    browserPath: /opt/sealchat/tools/chrome-headless-shell/chrome-headless-shell-linux64/chrome-headless-shell
+    mergerPath: /usr/bin/qpdf
+    workerConcurrency: 1
+    timeoutSeconds: 120
+    noSandbox: false
+```
+
+Windows 可将 `browserPath` 设为 `E:/SealChat/bin/chrome-headless-shell/chrome-headless-shell-win64/chrome-headless-shell.exe`，`mergerPath` 设为 `E:/SealChat/bin/qpdf/bin/qpdf.exe`，`storageDir` 设为 `E:/SealChat/data/exports`。保留压缩包中的 DLL 和资源文件，不要只复制 `.exe`。
+
+建议使用绝对路径；相对路径以服务进程的工作目录为基准。工具路径留空时会从程序目录及工作目录下的 `tools/`、`PATH` 等位置自动发现；放在 `bin/` 下的工具应显式填写路径。Docker 配置必须填写容器内路径，服务用户须能执行工具并读写导出目录。`noSandbox` 默认保持 `false`，仅在容器环境确实无法启用浏览器沙箱时设为 `true`。
+
+配置完成后点击“重新探测”，确认浏览器和合并工具均为“可用”，再导出一个短 LOG 验证。若出现“等待 DevTools 调试端口”超时或“合并输入路径无效”，先确认已更新到包含相对路径修复的版本，检查工具路径、工作目录和权限，并使用绝对路径重新探测。`timeoutSeconds` 控制单段导出超时，不控制依赖探测超时。
+
 ## 字体资源
 
 平台字体由 `storage.local.fontDir` 或 S3 的 `fontsEnabled` 分类保存。普通字体访问和全局 UI 字体不要求安装字体分割运行时；只有管理员执行“分割并发布”时才需要 `bin/cn-font-split/`。运行时准备和版本对应方式见[开发指南](development.md#平台字体分割器)。
