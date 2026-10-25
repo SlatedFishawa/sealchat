@@ -154,8 +154,8 @@
                   class="sheet-window__json-input"
                   @blur="handleJsonSave"
                 />
-                <div v-if="jsonError" class="sheet-window__json-error">
-                  {{ jsonError }}
+                <div v-if="jsonError || windowData?.syncError" class="sheet-window__json-error">
+                  {{ jsonError || windowData?.syncError }}
                 </div>
               </div>
             </n-tab-pane>
